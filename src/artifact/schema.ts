@@ -1,0 +1,182 @@
+// The capability artifact: a typed, versioned, reviewable contract for one
+// recorded flow. This is what an AI agent invokes in production — so it
+// declares parameters and outputs like a function signature, not just steps.
+//
+// Values that vary per invocation are stored as "{{param}}" templates and
+// resolved at replay time. Raw values from the discovery run never persist.
+
+import { z } from 'zod';
+
+// ---------- Targeting ----------
+// Ordered, robustness-ranked strategies for finding one control. Replay tries
+// them top to bottom and fails loudly on ambiguity instead of guessing.
+export const TargetStrategy = z.discriminatedUnion('kind', [
+  // Accessibility tree: role + accessible name. Most stable, and the only
+  // tier that transfers conceptually to desktop surfaces (UIA/AX APIs).
+  z.object({ kind: z.literal('role'), role: z.string(), name: z.string() }),
+  // Form-control name attribute. In legacy server-rendered apps the input
+  // name is load-bearing (the server reads it), so it changes rarely.
+  z.object({ kind: z.literal('nameAttr'), name: z.string() }),
+  // Visible text (links, cells). Exact match unless exact=false.
+  z.object({ kind: z.literal('text'), text: z.string(), exact: z.boolean().default(true) }),
+  // Structural CSS. Last resort; brittle by definition.
+  z.object({ kind: z.literal('css'), selector: z.string() }),
+]);
+export type TargetStrategy = z.infer<typeof TargetStrategy>;
+
+export const TargetDescriptor = z.object({
+  description: z.string(), // human-readable, for reviewers
+  frame: z.string().optional(), // frame name (framesets are real in this world)
+  strategies: z.array(TargetStrategy).min(1),
+  nth: z.number().int().nonnegative().optional(), // only honored when a strategy matches >1
+  // What discovery observed — not used to act, but invaluable when a replay
+  // fails and you need to diff "then" vs "now" (drift diagnostics).
+  snapshot: z
+    .object({ tag: z.string().optional(), role: z.string().optional(), text: z.string().optional() })
+    .optional(),
+});
+export type TargetDescriptor = z.infer<typeof TargetDescriptor>;
+
+// ---------- Runtime-condition detectors ----------
+// Known page states that can legitimately appear at any step: error banners,
+// session expiry, interstitials. Each is classified so replay responds
+// deliberately instead of blindly proceeding.
+export const Detector = z.object({
+  id: z.string(),
+  description: z.string(),
+  match: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('textVisible'), text: z.string() }),
+    z.object({ kind: z.literal('urlMatches'), pattern: z.string() }),
+  ]),
+  classification: z.enum(['business_outcome', 'recoverable', 'fatal']),
+  // business_outcome: a legitimate result the caller needs (e.g. NO_SUCH_MEMBER)
+  outcomeCode: z.string().optional(),
+  // recoverable: how to get past it (dismiss an interstitial), bounded to one
+  // attempt per step so a persistent condition can't loop forever
+  recovery: z
+    .object({ action: z.enum(['click', 'none']), target: TargetDescriptor.optional() })
+    .optional(),
+});
+export type Detector = z.infer<typeof Detector>;
+
+// ---------- Steps ----------
+export const RiskClass = z.enum(['read', 'reversible_write', 'irreversible']);
+export type RiskClass = z.infer<typeof RiskClass>;
+
+export const Assertion = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('urlMatches'), pattern: z.string() }),
+  z.object({ kind: z.literal('textVisible'), text: z.string(), frame: z.string().optional() }),
+]);
+export type Assertion = z.infer<typeof Assertion>;
+
+export const Step = z.object({
+  id: z.string(),
+  intent: z.string(), // why this step exists — reviewability
+  action: z.enum(['navigate', 'click', 'fill', 'select', 'extract', 'assert']),
+  target: TargetDescriptor.optional(), // click/fill/select/extract
+  url: z.string().optional(), // navigate; may contain {{param}}
+  value: z.string().optional(), // fill/select; may contain {{param}}
+  extract: z.object({ output: z.string() }).optional(), // extract -> which declared output
+  assert: Assertion.optional(), // assert steps = checkpoints
+  risk: RiskClass.default('read'),
+  timeoutMs: z.number().int().positive().default(10_000),
+});
+export type Step = z.infer<typeof Step>;
+
+// ---------- Contract ----------
+export const Parameter = z.object({
+  name: z.string(),
+  type: z.enum(['string', 'number']),
+  description: z.string(),
+  required: z.boolean().default(true),
+  // sensitive params are redacted in all logs/evidence and must never be
+  // written into the artifact as literals
+  sensitive: z.boolean().default(false),
+});
+export type Parameter = z.infer<typeof Parameter>;
+
+export const Output = z.object({
+  name: z.string(),
+  type: z.enum(['string', 'number']),
+  description: z.string(),
+});
+export type Output = z.infer<typeof Output>;
+
+export const CapabilityArtifact = z.object({
+  schemaVersion: z.literal(1),
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  // draft artifacts require supervision; only approved ones may replay unattended
+  status: z.enum(['draft', 'approved']),
+  app: z.object({
+    appId: z.string(),
+    entryUrl: z.string(), // may contain {{param}}
+    // Origins this capability is allowed to touch. Intersected with the
+    // system-level policy allowlist at replay time — both must permit.
+    allowedOrigins: z.array(z.string()).min(1),
+  }),
+  parameters: z.array(Parameter),
+  outputs: z.array(Output),
+  steps: z.array(Step).min(1),
+  successCondition: Assertion,
+  detectors: z.array(Detector).default([]),
+  provenance: z.object({
+    discoveredAt: z.string(),
+    model: z.string(),
+    discoveryRunId: z.string(),
+    goal: z.string(),
+  }),
+});
+export type CapabilityArtifact = z.infer<typeof CapabilityArtifact>;
+
+// ---------- Param templating ----------
+const TEMPLATE_RE = /\{\{(\w+)\}\}/g;
+
+export function resolveTemplate(template: string, params: Record<string, string | number>): string {
+  return template.replace(TEMPLATE_RE, (_, name: string) => {
+    if (!(name in params)) throw new Error(`Missing parameter "${name}" for template "${template}"`);
+    return String(params[name]);
+  });
+}
+
+/** Resolve {{param}} templates inside a target descriptor's strategies. */
+export function resolveTarget(
+  target: TargetDescriptor,
+  params: Record<string, string | number>,
+): TargetDescriptor {
+  return {
+    ...target,
+    strategies: target.strategies.map((s) => {
+      switch (s.kind) {
+        case 'role': return { ...s, name: resolveTemplate(s.name, params) };
+        case 'text': return { ...s, text: resolveTemplate(s.text, params) };
+        case 'css': return { ...s, selector: resolveTemplate(s.selector, params) };
+        case 'nameAttr': return s;
+      }
+    }),
+  };
+}
+
+/** Validate caller-supplied params against the artifact's declared contract. */
+export function validateParams(
+  artifact: CapabilityArtifact,
+  params: Record<string, string | number>,
+): { ok: true } | { ok: false; error: string } {
+  for (const p of artifact.parameters) {
+    const v = params[p.name];
+    if (v === undefined) {
+      if (p.required) return { ok: false, error: `Missing required parameter "${p.name}"` };
+      continue;
+    }
+    if (p.type === 'number' && Number.isNaN(Number(v))) {
+      return { ok: false, error: `Parameter "${p.name}" must be a number, got "${v}"` };
+    }
+  }
+  const declared = new Set(artifact.parameters.map((p) => p.name));
+  for (const k of Object.keys(params)) {
+    if (!declared.has(k)) return { ok: false, error: `Unknown parameter "${k}"` };
+  }
+  return { ok: true };
+}

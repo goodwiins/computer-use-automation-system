@@ -1,0 +1,122 @@
+# Computer-Use Automation System
+
+An LLM discovers how to complete a goal against a live legacy-style UI, records
+what it learned as a **typed, versioned capability artifact**, and from then on
+the capability replays **deterministically — no model in the loop** — with an
+explicit error taxonomy, safety guardrails, and a human-escalation path that
+takes over the live session.
+
+> The model discovers. The artifact becomes a reusable capability.
+> Deterministic replay is how an AI agent invokes it in production.
+
+Design rationale, trade-offs, and cut lines: **[REPORT.md](REPORT.md)**.
+Evidence from real runs: **[evidence/](evidence/)**.
+
+## Setup
+
+Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs one).
+
+```bash
+npm install
+npx playwright install chromium
+export OPENAI_API_KEY=sk-...          # discovery only
+# optional: export OPENAI_MODEL=gpt-4o   (default)
+```
+
+Everything runs locally. The target application is a deliberately hostile mock
+"legacy credit-union servicing" app (framesets, nested tables, no test IDs)
+that ships in this repo — no external services, no real credentials, no real PII.
+
+## Demo path
+
+**1. Start the target app** (keep it running in its own terminal):
+
+```bash
+npm run target-app
+```
+
+**2. Discovery — the LLM works out the flow and records a capability:**
+
+```bash
+npm run discover -- --goal "Look up member 12345 and read their current savings balance" \
+  --name lookup-member-balance --param memberId=12345
+```
+
+This produces `artifacts/lookup-member-balance.v1.0.0.json` (status: `draft`)
+and a full evidence trail under `evidence/runs/<runId>/`.
+
+**3. Review + approve the artifact** (drafts refuse to replay unattended):
+
+```bash
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --approve
+```
+
+**4. Deterministic replay — different member, no LLM:**
+
+```bash
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"23456"}'
+```
+
+Returns `{"status":"success","outputs":{"savingsBalance":"9,812.55"}}`.
+
+**5. Error & exceptional-state replays:**
+
+```bash
+# Legitimate business outcome — not a crash:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"99999"}'
+#   -> {"status":"business_outcome","outcomeCode":"NO_SUCH_MEMBER", ...}
+
+# Recoverable interstitial — dismissed automatically, run still succeeds:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
+  --entry-override "http://localhost:4173/?sim=maintenance"
+
+# Hard failure — session expiry detected and reported with evidence:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
+  --entry-override "http://localhost:4173/?sim=timeout"
+```
+
+**6. Human escalation & handoff** (scripted end-to-end demo):
+
+```bash
+# Terminal A — start the app with simulated vendor drift (renamed button):
+BREAK_MARKUP=1 npm run target-app
+
+# Terminal B — replay hits the drift, escalates, a scripted "operator"
+# attaches to the SAME live session over CDP, performs the step, hands back:
+npx tsx scripts/demo-escalation.ts
+```
+
+For a live manual handoff instead, run any replay with `--attended`: the
+browser runs headful, and when the run gets stuck you operate the window
+yourself, then answer `retry` / `skip` / `abort` at the operator prompt.
+
+**7. Capability catalog** (what an agent could discover and invoke):
+
+```bash
+npm run list
+```
+
+## Running without live services
+
+Replay needs no API key. The test suite (including a full discovery→record→replay
+integration test with a scripted stand-in LLM) runs completely offline:
+
+```bash
+npm test
+```
+
+## Repo map
+
+```
+target-app/       the hostile mock bank app (+ ?sim=... error injection)
+src/surface/      Surface abstraction (perceive/act seam) + Playwright impl + policy guard
+src/agent/        LLM discovery loop (OpenAI tool-calling)
+src/artifact/     capability schema (Zod) + recorder (trace -> parameterized artifact)
+src/replay/       deterministic executor, tiered locators, detectors, outcome taxonomy
+src/escalation/   control-owner state machine + operator console
+src/safety/       policy allowlist + redaction
+src/evidence/     structured run logging
+config/           policy.json + per-app detector profiles
+artifacts/        recorded capabilities (JSON, reviewable, versioned)
+evidence/         committed demo runs (discovery, replays, escalation)
+```

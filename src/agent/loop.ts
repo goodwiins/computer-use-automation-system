@@ -1,0 +1,187 @@
+// The discovery loop: observe → decide (LLM) → act, until the goal is met or
+// a stopping condition fires. Produces the action trace the recorder turns
+// into a capability artifact. This is the only place the model exists; replay
+// never sees it.
+
+import OpenAI from 'openai';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { TargetDescriptor } from '../artifact/schema.js';
+import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
+import type { RunLogger } from '../evidence/logger.js';
+import type { Surface } from '../surface/types.js';
+import { DISCOVERY_TOOLS, hintToDescriptor, systemPrompt, type TargetHint } from './tools.js';
+
+export interface TraceEntry {
+  action: 'navigate' | 'click' | 'fill' | 'select' | 'extract';
+  reason: string;
+  descriptor?: TargetDescriptor; // robust, derived from the live element
+  url?: string;
+  value?: string;
+  outputName?: string;
+  extractedText?: string;
+  urlAfter: string;
+}
+
+export interface DiscoveryResult {
+  status: 'success' | 'escalated' | 'stopped';
+  trace: TraceEntry[];
+  outputs: Record<string, string>;
+  summary?: string;
+  finalUrl: string;
+  stopReason?: string;
+}
+
+export interface DiscoveryDeps {
+  surface: Surface; // policy-guarded
+  logger: RunLogger;
+  openai: OpenAI;
+  model: string;
+  maxSteps: number;
+  escalate?: (req: InterventionRequest) => Promise<InterventionDecision>;
+}
+
+const MAX_SNAPSHOT_CHARS = 4000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+export async function runDiscovery(
+  goal: string,
+  entryUrl: string,
+  params: Record<string, string | number>,
+  origins: string[],
+  deps: DiscoveryDeps,
+): Promise<DiscoveryResult> {
+  const { surface, logger, openai, model } = deps;
+  const trace: TraceEntry[] = [];
+  const outputs: Record<string, string> = {};
+
+  logger.log('discovery.start', { goal, entryUrl, model, params });
+  await surface.start(entryUrl);
+
+  const messages: ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt(goal, params, origins) },
+  ];
+
+  let consecutiveFailures = 0;
+
+  for (let turn = 1; turn <= deps.maxSteps; turn++) {
+    const obs = await surface.observe();
+    const shot = await logger.screenshot(surface, `turn${turn}`);
+    const obsText =
+      `URL: ${obs.url}\nTITLE: ${obs.title}\n` +
+      obs.frames
+        .map((f) => `--- frame "${f.frame || '(main)'}" ---\n${f.snapshot.slice(0, MAX_SNAPSHOT_CHARS)}`)
+        .join('\n');
+    messages.push({ role: 'user', content: obsText });
+    logger.log('discovery.observe', { turn, url: obs.url, screenshot: shot });
+
+    const completion = await openai.chat.completions.create({
+      model,
+      messages,
+      tools: DISCOVERY_TOOLS,
+      tool_choice: 'required',
+    });
+    const msg = completion.choices[0]?.message;
+    const call = msg?.tool_calls?.[0];
+    if (!msg || !call) {
+      return finish('stopped', 'model returned no tool call');
+    }
+    messages.push({ role: 'assistant', content: msg.content ?? '', tool_calls: [call] });
+    const args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown> & TargetHint;
+    const reason = String(args.reason ?? '');
+    logger.log('discovery.decision', { turn, tool: call.function.name, args });
+
+    const respond = (content: string) =>
+      messages.push({ role: 'tool', tool_call_id: call.id, content });
+
+    try {
+      switch (call.function.name) {
+        case 'done': {
+          for (const [k, v] of Object.entries((args.outputs as Record<string, string>) ?? {})) {
+            if (!(k in outputs)) outputs[k] = v;
+          }
+          return finish('success', undefined, String(args.summary ?? ''));
+        }
+        case 'escalate': {
+          logger.log('discovery.escalate', { reason });
+          if (deps.escalate) {
+            const decision = await deps.escalate({
+              kind: 'discovery_stuck',
+              capability: '(discovery)',
+              goal,
+              reason,
+              url: surface.currentUrl(),
+              screenshot: shot,
+            });
+            if (decision !== 'abort') {
+              respond('A human operator intervened on the live session. Re-observe and continue.');
+              continue;
+            }
+          }
+          return finish('escalated', reason);
+        }
+        case 'navigate': {
+          const url = String(args.url);
+          await surface.navigate(url);
+          trace.push({ action: 'navigate', reason, url, urlAfter: surface.currentUrl() });
+          respond(`Navigated to ${surface.currentUrl()}`);
+          break;
+        }
+        case 'click':
+        case 'fill':
+        case 'select':
+        case 'extract': {
+          const hint = hintToDescriptor(args, reason);
+          // Derive the robust descriptor BEFORE acting — the click may navigate away.
+          const descriptor = await surface.describeTarget(hint);
+          const entry: TraceEntry = { action: call.function.name, reason, descriptor, urlAfter: '' };
+          if (call.function.name === 'click') {
+            await surface.click(descriptor);
+            respond(`Clicked "${descriptor.description}". Now at ${surface.currentUrl()}`);
+          } else if (call.function.name === 'fill') {
+            entry.value = String(args.value);
+            await surface.fill(descriptor, entry.value);
+            respond(`Filled.`);
+          } else if (call.function.name === 'select') {
+            entry.value = String(args.value);
+            await surface.select(descriptor, entry.value);
+            respond(`Selected "${entry.value}".`);
+          } else {
+            const { text } = await surface.readText(descriptor);
+            entry.outputName = String(args.outputName);
+            entry.extractedText = text;
+            outputs[entry.outputName] = text;
+            respond(`Extracted ${entry.outputName} = "${text}"`);
+          }
+          entry.urlAfter = surface.currentUrl();
+          trace.push(entry);
+          break;
+        }
+        default:
+          respond(`Unknown tool ${call.function.name}`);
+      }
+      consecutiveFailures = 0;
+    } catch (err) {
+      consecutiveFailures++;
+      const message = err instanceof Error ? err.message : String(err);
+      logger.log('discovery.action_error', { turn, error: message, consecutiveFailures });
+      respond(`ERROR: ${message}. Re-observe and try a different approach.`);
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        return finish('stopped', `stuck: ${consecutiveFailures} consecutive action failures (last: ${message})`);
+      }
+    }
+  }
+  return finish('stopped', `max steps (${deps.maxSteps}) reached`);
+
+  function finish(status: DiscoveryResult['status'], stopReason?: string, summary?: string): DiscoveryResult {
+    const result: DiscoveryResult = {
+      status,
+      trace,
+      outputs,
+      summary,
+      finalUrl: surface.currentUrl(),
+      stopReason,
+    };
+    logger.log('discovery.finish', { status, stopReason, outputs, steps: trace.length });
+    return result;
+  }
+}

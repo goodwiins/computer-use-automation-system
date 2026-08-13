@@ -1,0 +1,11 @@
+{
+  "allowedOrigins": ["http://localhost:4173"],
+  "allowedActions": ["navigate", "click", "fill", "select", "extract", "assert"],
+  "riskHandling": {
+    "read": "allow",
+    "reversible_write": "allow",
+    "irreversible": "escalate"
+  },
+  "maxSteps": 25,
+  "requireApprovedForUnattended": true
+}

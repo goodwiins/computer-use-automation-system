@@ -1,0 +1,6 @@
+node_modules/
+evidence/test-runs/
+evidence/runs/
+!evidence/runs/.gitkeep
+*.log
+.env
