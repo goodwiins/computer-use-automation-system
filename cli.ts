@@ -53,7 +53,7 @@ async function discover(argv: string[]) {
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
   const entry = typeof flags.entry === 'string' ? flags.entry : 'http://localhost:4173/';
   if (!process.env.OPENAI_API_KEY) fatal('OPENAI_API_KEY is not set');
-  const model = process.env.OPENAI_MODEL ?? 'gpt-4o';
+  const model = process.env.OPENAI_MODEL ?? 'gpt-5.6-luna';
 
   const policy = loadPolicy(POLICY_PATH);
   const redactor = new Redactor();

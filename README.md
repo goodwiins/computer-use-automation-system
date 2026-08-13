@@ -20,7 +20,7 @@ Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs
 npm install
 npx playwright install chromium
 export OPENAI_API_KEY=sk-...          # discovery only
-# optional: export OPENAI_MODEL=gpt-4o   (default)
+# optional: export OPENAI_MODEL=gpt-5.6-luna (default)
 ```
 
 Everything runs locally. The target application is a deliberately hostile mock
