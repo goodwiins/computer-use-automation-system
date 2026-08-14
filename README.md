@@ -12,6 +12,8 @@ takes over the live session.
 Design rationale, trade-offs, and cut lines: **[REPORT.md](REPORT.md)**.
 Evidence from real runs: **[evidence/](evidence/)**.
 
+![Architecture](docs/architecture.png)
+
 ## Setup
 
 Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs one).
