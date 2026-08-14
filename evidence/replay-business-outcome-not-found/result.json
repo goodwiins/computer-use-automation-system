@@ -1,0 +1,8 @@
+{
+  "status": "business_outcome",
+  "outcomeCode": "NO_SUCH_MEMBER",
+  "detail": "Inquiry returned no matching member records",
+  "runId": "replay-2026-08-13T05-49-03-111Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-13T05-49-03-111Z",
+  "recoveries": []
+}

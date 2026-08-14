@@ -1,0 +1,14 @@
+{"ts":"2026-08-13T05:49:03.112Z","seq":0,"event":"replay.start","capability":"hand-lookup-member-balance","version":"1.0.0","params":{"memberId":"99999"}}
+{"ts":"2026-08-13T05:49:03.253Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"open the member inquiry screen from the main menu","risk":"read"}
+{"ts":"2026-08-13T05:49:03.288Z","seq":2,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:03.325Z","seq":3,"event":"step.ok","stepId":"s1","action":"click","ms":37,"isRetry":false}
+{"ts":"2026-08-13T05:49:03.325Z","seq":4,"event":"step.start","stepId":"s2","action":"fill","intent":"enter the member number in the search field","risk":"reversible_write"}
+{"ts":"2026-08-13T05:49:03.362Z","seq":5,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-13T05:49:03.366Z","seq":6,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
+{"ts":"2026-08-13T05:49:03.366Z","seq":7,"event":"step.start","stepId":"s3","action":"click","intent":"run the search","risk":"read"}
+{"ts":"2026-08-13T05:49:03.371Z","seq":8,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:03.386Z","seq":9,"event":"step.ok","stepId":"s3","action":"click","ms":15,"isRetry":false}
+{"ts":"2026-08-13T05:49:03.386Z","seq":10,"event":"step.start","stepId":"s4","action":"click","intent":"open the matching member record from the results table","risk":"read"}
+{"ts":"2026-08-13T05:49:03.391Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:13.508Z","seq":12,"event":"detector.hit","stepId":"s4","detector":"no-records-found","classification":"business_outcome"}
+{"ts":"2026-08-13T05:49:13.521Z","seq":13,"event":"replay.business_outcome","outcomeCode":"NO_SUCH_MEMBER","screenshot":"evidence/runs/replay-2026-08-13T05-49-03-111Z/013-outcome-no-records-found.png"}

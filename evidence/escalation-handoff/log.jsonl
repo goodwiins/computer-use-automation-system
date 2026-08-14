@@ -1,0 +1,27 @@
+{"ts":"2026-08-13T05:51:15.665Z","seq":0,"event":"replay.start","capability":"drift-lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
+{"ts":"2026-08-13T05:51:16.119Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"open the member inquiry screen from the main menu","risk":"read"}
+{"ts":"2026-08-13T05:51:16.173Z","seq":2,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:51:16.221Z","seq":3,"event":"step.ok","stepId":"s1","action":"click","ms":48,"isRetry":false}
+{"ts":"2026-08-13T05:51:16.221Z","seq":4,"event":"step.start","stepId":"s2","action":"fill","intent":"enter the member number in the search field","risk":"reversible_write"}
+{"ts":"2026-08-13T05:51:16.285Z","seq":5,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-13T05:51:16.297Z","seq":6,"event":"step.ok","stepId":"s2","action":"fill","ms":12,"isRetry":false}
+{"ts":"2026-08-13T05:51:16.297Z","seq":7,"event":"step.start","stepId":"s3","action":"click","intent":"run the search","risk":"read"}
+{"ts":"2026-08-13T05:51:16.303Z","seq":8,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:51:20.363Z","seq":9,"event":"escalation.raised","stepId":"s3","reason":"Could not uniquely resolve target \"Search submit button\": role=0"}
+{"ts":"2026-08-13T05:51:20.363Z","seq":10,"event":"control.transfer","from":"automation","to":"human","reason":"run the search: expected actionable \"Search submit button\", observed Could not uniquely resolve target \"Search submit button\": role=0"}
+{"ts":"2026-08-13T05:51:20.363Z","seq":11,"event":"handoff.to_human","request":{"kind":"replay_stuck","capability":"drift-lookup-member-balance@1.0.0","goal":"Drift fixture: same lookup flow, but the Search-button step has only the role-tier locator, so a renamed button (BREAK_MARKUP=1) forces escalation","stepId":"s3","reason":"run the search: expected actionable \"Search submit button\", observed Could not uniquely resolve target \"Search submit button\": role=0","screenshot":"evidence/runs/replay-2026-08-13T05-51-15-664Z/009-failed-s3.png","url":"http://localhost:4173/members/search"}}
+{"ts":"2026-08-13T05:51:20.752Z","seq":12,"event":"human.action","action":{"type":"change","tag":"INPUT","name":"q","valueLength":5}}
+{"ts":"2026-08-13T05:51:20.752Z","seq":13,"event":"human.action","action":{"type":"click","tag":"INPUT","text":""}}
+{"ts":"2026-08-13T05:51:20.758Z","seq":14,"event":"control.transfer","from":"human","to":"automation","reason":"operator chose skip"}
+{"ts":"2026-08-13T05:51:20.758Z","seq":15,"event":"handoff.to_automation","decision":"skip"}
+{"ts":"2026-08-13T05:51:20.758Z","seq":16,"event":"escalation.decision","decision":"skip"}
+{"ts":"2026-08-13T05:51:20.758Z","seq":17,"event":"step.start","stepId":"s4","action":"click","intent":"open the matching member record from the results table","risk":"read"}
+{"ts":"2026-08-13T05:51:20.768Z","seq":18,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=12345","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:51:20.779Z","seq":19,"event":"step.ok","stepId":"s4","action":"click","ms":11,"isRetry":false}
+{"ts":"2026-08-13T05:51:20.779Z","seq":20,"event":"step.start","stepId":"s5","action":"assert","intent":"confirm the member profile screen is showing","risk":"read"}
+{"ts":"2026-08-13T05:51:20.795Z","seq":21,"event":"step.ok","stepId":"s5","action":"assert","ms":1,"isRetry":false}
+{"ts":"2026-08-13T05:51:20.795Z","seq":22,"event":"step.start","stepId":"s6","action":"extract","intent":"read the savings balance from the accounts table","risk":"read"}
+{"ts":"2026-08-13T05:51:20.799Z","seq":23,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/12345","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:51:20.802Z","seq":24,"event":"step.extracted","stepId":"s6","output":"savingsBalance","value":"4,250.13","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
+{"ts":"2026-08-13T05:51:20.802Z","seq":25,"event":"step.ok","stepId":"s6","action":"extract","ms":3,"isRetry":false}
+{"ts":"2026-08-13T05:51:20.817Z","seq":26,"event":"replay.success","outputs":{"savingsBalance":"4,250.13"},"screenshot":"evidence/runs/replay-2026-08-13T05-51-15-664Z/026-success.png"}

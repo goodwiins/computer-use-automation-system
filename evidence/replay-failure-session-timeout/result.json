@@ -1,0 +1,14 @@
+{
+  "status": "failure",
+  "failure": {
+    "stepId": "s1",
+    "intent": "pass runtime-condition checks",
+    "expected": "no fatal condition",
+    "observed": "session-expired: Session timed out; flow state is lost and requires sign-on",
+    "screenshot": "evidence/runs/replay-2026-08-13T05-49-15-085Z/003-fatal-session-expired.png"
+  },
+  "escalated": false,
+  "runId": "replay-2026-08-13T05-49-15-085Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-13T05-49-15-085Z",
+  "recoveries": []
+}

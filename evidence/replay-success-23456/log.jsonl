@@ -1,0 +1,20 @@
+{"ts":"2026-08-13T05:49:01.933Z","seq":0,"event":"replay.start","capability":"hand-lookup-member-balance","version":"1.0.0","params":{"memberId":"23456"}}
+{"ts":"2026-08-13T05:49:02.295Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"open the member inquiry screen from the main menu","risk":"read"}
+{"ts":"2026-08-13T05:49:02.341Z","seq":2,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:02.385Z","seq":3,"event":"step.ok","stepId":"s1","action":"click","ms":44,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.385Z","seq":4,"event":"step.start","stepId":"s2","action":"fill","intent":"enter the member number in the search field","risk":"reversible_write"}
+{"ts":"2026-08-13T05:49:02.436Z","seq":5,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-13T05:49:02.456Z","seq":6,"event":"step.ok","stepId":"s2","action":"fill","ms":20,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.456Z","seq":7,"event":"step.start","stepId":"s3","action":"click","intent":"run the search","risk":"read"}
+{"ts":"2026-08-13T05:49:02.471Z","seq":8,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:02.478Z","seq":9,"event":"step.ok","stepId":"s3","action":"click","ms":7,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.479Z","seq":10,"event":"step.start","stepId":"s4","action":"click","intent":"open the matching member record from the results table","risk":"read"}
+{"ts":"2026-08-13T05:49:02.484Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:02.513Z","seq":12,"event":"step.ok","stepId":"s4","action":"click","ms":29,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.513Z","seq":13,"event":"step.start","stepId":"s5","action":"assert","intent":"confirm the member profile screen is showing","risk":"read"}
+{"ts":"2026-08-13T05:49:02.527Z","seq":14,"event":"step.ok","stepId":"s5","action":"assert","ms":0,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.528Z","seq":15,"event":"step.start","stepId":"s6","action":"extract","intent":"read the savings balance from the accounts table","risk":"read"}
+{"ts":"2026-08-13T05:49:02.533Z","seq":16,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/23456","risk":"read","verdict":"allow"}
+{"ts":"2026-08-13T05:49:02.536Z","seq":17,"event":"step.extracted","stepId":"s6","output":"savingsBalance","value":"9,812.55","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
+{"ts":"2026-08-13T05:49:02.536Z","seq":18,"event":"step.ok","stepId":"s6","action":"extract","ms":3,"isRetry":false}
+{"ts":"2026-08-13T05:49:02.554Z","seq":19,"event":"replay.success","outputs":{"savingsBalance":"9,812.55"},"screenshot":"evidence/runs/replay-2026-08-13T05-49-01-933Z/019-success.png"}
