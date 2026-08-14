@@ -23,7 +23,7 @@ Key decisions:
 
 A capability is a **callable contract**, not a step list. The schema (Zod, `src/artifact/schema.ts`) declares:
 
-- **`parameters` / `outputs`** — typed inputs per invocation and typed returns, like a function signature. Parameters marked `sensitive` are redacted everywhere and never persisted as literals: every occurrence of a parameter's value observed during discovery (in URLs, filled values, even link names like a member number) is lifted into a `{{param}}` template by the recorder.
+- **`parameters` / `outputs`** — typed inputs per invocation and typed returns, like a function signature. Parameters marked `sensitive` are redacted everywhere and never persisted as literals: every occurrence of a parameter's value observed during discovery (in URLs, filled values, even link names like a member number) is lifted into a `{{param}}` template by the recorder (including step intents, target descriptions, drift snapshots, and provenance).
 - **`steps`** — each with a human-readable `intent` (reviewability), an action, a **risk class** (`read` / `reversible_write` / `irreversible`) feeding the safety gate, and a timeout.
 - **`TargetDescriptor`** — per control, an *ordered tier* of locator strategies: ARIA role + accessible name → form `name` attribute (load-bearing in server-rendered apps: the server reads it) → exact visible text → structural CSS as last resort. Plus the frame name, and a `snapshot` of what discovery saw for drift diagnostics. Replay logs which tier resolved; tier degradation over time is a drift signal.
 - **`detectors`** — known runtime conditions (error banners, interstitials, session expiry) with a classification and optional recovery. These are app-level knowledge, curated per app profile and stamped into artifacts at record time.
@@ -33,7 +33,7 @@ Ambiguity policy: a strategy that matches more than one element **fails** (unles
 
 ## 3. Determinism & error handling
 
-Replay (`src/replay/executor.ts`) never consults a model. Determinism comes from: tiered resolution with uniqueness enforcement; bounded polling waits (absorbing slow loads like the `?sim=slow` 5s delay) instead of sleeps; parameter binding at invocation; and checkpoints — mid-flow `assert` steps plus a final `successCondition` that is verified, not assumed, before outputs are returned.
+Replay (`src/replay/executor.ts`) never consults a model. Determinism comes from: tiered resolution with uniqueness enforcement; bounded polling waits (absorbing slow loads like the `?sim=slow` 5s delay) instead of sleeps; parameter binding at invocation; and a final `successCondition` that is verified, not assumed, before outputs are returned. The schema supports mid-flow `assert` checkpoints too (used in hand-written artifacts/fixtures); recorder-generated artifacts currently rely on self-verifying extracts plus the final success condition — an `assert` tool for discovery is listed as a next step in §7.
 
 The result contract separates three things the brief warns against conflating:
 
@@ -61,7 +61,7 @@ Detectors run before every step, and — importantly — **again when a step fai
 
 ## 6. Safety
 
-- **Allowlist** (`config/policy.json`): permitted origins and action types, enforced in the `GuardedSurface` decorator for every actor. Artifact origins must be a subset of policy origins — both gates must pass. Denials never echo query strings (which may carry member data).
+- **Allowlist** (`config/policy.json`): permitted origins and action types, enforced in the `GuardedSurface` decorator for every actor — including session start and post-navigation origin verification. Artifact origins must be a subset of policy origins — both gates must pass. Denials never echo query strings (which may carry member data).
 - **Risk classes**: per-step `read` / `reversible_write` / `irreversible`, with per-class handling (`allow` / `confirm` / `escalate` / `block`). Default policy escalates irreversible steps to a human; discovery never auto-approves them — the model is instructed to `escalate` instead. Limit: risk classification of a recorded step is assigned by heuristics + review, and a mislabeled step is the main residual risk — which is why `draft` artifacts refuse unattended replay until a human promotes them.
 - **Data handling**: artifacts store `{{param}}` templates, never runtime values; the recorder also templatizes values that leaked into locator names and drift snapshots. All evidence passes through a redactor that masks registered sensitive values (including inside URLs) and credential-shaped strings. Secrets live in env vars, never in the repo or artifacts.
 - **Limits**: redaction is deny-list-of-values, not NLP — free text an app renders (e.g. a name on screen) can appear in screenshots; production would add region masking and encrypted evidence storage.

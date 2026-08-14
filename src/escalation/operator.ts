@@ -25,6 +25,8 @@ export class OperatorConsole {
     // Bring the live window to the operator's attention.
     await this.page.bringToFront().catch(() => {});
 
+    const isRiskApproval = req.kind === 'risk_approval';
+
     console.log('\n┌──────────────── HUMAN INTERVENTION REQUIRED ────────────────');
     console.log(`│ capability : ${req.capability}`);
     console.log(`│ goal       : ${req.goal}`);
@@ -33,16 +35,38 @@ export class OperatorConsole {
     console.log(`│ url        : ${req.url}`);
     if (req.screenshot) console.log(`│ screenshot : ${req.screenshot}`);
     console.log('│');
-    console.log('│ The live browser window is now yours. Fix the state, then choose:');
-    console.log('│   retry — automation re-attempts the stuck step');
-    console.log('│   skip  — you completed the step manually; continue after it');
-    console.log('│   abort — stop the run');
-    console.log('└──────────────────────────────────────────────────────────────');
+    if (isRiskApproval) {
+      // A risk approval is a go/no-go on an action that has not run yet —
+      // "skip" (human performed it manually) would double-execute it, so it
+      // is not offered here.
+      console.log('│ This action needs approval before it runs. Choose:');
+      console.log('│   approve — proceed with the action');
+      console.log('│   abort   — stop the run');
+      console.log('└──────────────────────────────────────────────────────────────');
+    } else {
+      console.log('│ The live browser window is now yours. Fix the state, then choose:');
+      console.log('│   retry — automation re-attempts the stuck step');
+      console.log('│   skip  — you completed the step manually; continue after it');
+      console.log('│   abort — stop the run');
+      console.log('└──────────────────────────────────────────────────────────────');
+    }
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     let decision: InterventionDecision;
     for (;;) {
       const answer = (await rl.question('operator> ')).trim().toLowerCase();
+      if (isRiskApproval) {
+        if (answer === 'approve') {
+          decision = 'retry';
+          break;
+        }
+        if (answer === 'abort') {
+          decision = 'abort';
+          break;
+        }
+        console.log('Please type: approve | abort');
+        continue;
+      }
       if (answer === 'retry' || answer === 'skip' || answer === 'abort') {
         decision = answer;
         break;

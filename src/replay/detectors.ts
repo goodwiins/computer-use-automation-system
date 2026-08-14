@@ -24,12 +24,19 @@ export async function checkDetectors(
   artifact: CapabilityArtifact,
 ): Promise<DetectorHit | null> {
   for (const detector of [...artifact.detectors, ...BUILTIN_DETECTORS]) {
-    const m = detector.match;
-    const hit =
-      m.kind === 'textVisible'
-        ? await surface.isTextVisible(m.text)
-        : new RegExp(m.pattern).test(surface.currentUrl());
-    if (hit) return { detector };
+    if (await matchDetector(surface, detector)) return { detector };
   }
   return null;
+}
+
+/** Check a single detector's match condition against the live page. */
+export async function matchDetector(surface: Surface, detector: Detector): Promise<boolean> {
+  const m = detector.match;
+  if (m.kind === 'textVisible') return surface.isTextVisible(m.text);
+  try {
+    return new RegExp(m.pattern).test(surface.currentUrl());
+  } catch {
+    // Invalid regex authored into a detector — skip it rather than crash replay.
+    return false;
+  }
 }

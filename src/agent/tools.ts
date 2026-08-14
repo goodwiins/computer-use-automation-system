@@ -23,7 +23,18 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'click',
       description: 'Click a link, button, or other control.',
-      parameters: { type: 'object', properties: targetProps, required: ['reason'] },
+      parameters: {
+        type: 'object',
+        properties: {
+          ...targetProps,
+          risk: {
+            type: 'string',
+            enum: ['read', 'reversible_write', 'irreversible'],
+            description: 'classify the click: does it submit/mutate state? irreversible = commits a transaction',
+          },
+        },
+        required: ['reason'],
+      },
     },
   },
   {
@@ -137,6 +148,8 @@ Rules:
 - Prefer targeting elements by role + accessible name, or by exact visible text. Use nameAttr for form fields. CSS only as a last resort.
 - The app may use frames; pass the frame name you see in the observation.
 - Use extract to read any data the goal asks for, THEN call done with those outputs.
+- For extract targets inside tables, pass a css selector anchored to a stable row label rather than position, e.g. tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4) — row order can differ between records.
 - Do not perform destructive or irreversible actions; if one seems required, call escalate.
+- On click, classify clicks that submit forms or commit changes with the appropriate risk (read / reversible_write / irreversible).
 - If an action fails, read the error, re-observe, and try a different approach. If you are stuck after a few attempts, call escalate.`;
 }

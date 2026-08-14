@@ -1,14 +1,18 @@
-{"ts":"2026-08-14T06:39:52.578Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"99999"}}
-{"ts":"2026-08-14T06:39:52.773Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"Open member search to look up member {{memberId}}.","risk":"read"}
-{"ts":"2026-08-14T06:39:52.815Z","seq":2,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:52.845Z","seq":3,"event":"step.ok","stepId":"s1","action":"click","ms":31,"isRetry":false}
-{"ts":"2026-08-14T06:39:52.845Z","seq":4,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
-{"ts":"2026-08-14T06:39:52.895Z","seq":5,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
-{"ts":"2026-08-14T06:39:52.900Z","seq":6,"event":"step.ok","stepId":"s2","action":"fill","ms":5,"isRetry":false}
-{"ts":"2026-08-14T06:39:52.900Z","seq":7,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the search for member {{memberId}}.","risk":"read"}
-{"ts":"2026-08-14T06:39:52.908Z","seq":8,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:52.924Z","seq":9,"event":"step.ok","stepId":"s3","action":"click","ms":16,"isRetry":false}
-{"ts":"2026-08-14T06:39:52.924Z","seq":10,"event":"step.start","stepId":"s4","action":"click","intent":"Open the exact member record to view account details and savings balance.","risk":"read"}
-{"ts":"2026-08-14T06:39:52.938Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=99999","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:40:03.086Z","seq":12,"event":"detector.hit","stepId":"s4","detector":"no-records-found","classification":"business_outcome"}
-{"ts":"2026-08-14T06:40:03.111Z","seq":13,"event":"replay.business_outcome","outcomeCode":"NO_SUCH_MEMBER","screenshot":"evidence/runs/replay-2026-08-14T06-39-52-577Z/013-outcome-no-records-found.png"}
+{"ts":"2026-08-14T21:52:17.366Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"99999"}}
+{"ts":"2026-08-14T21:52:17.366Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:17.480Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:17.514Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:17.546Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T21:52:17.546Z","seq":5,"event":"step.ok","stepId":"s1","action":"click","ms":32,"isRetry":false}
+{"ts":"2026-08-14T21:52:17.546Z","seq":6,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
+{"ts":"2026-08-14T21:52:17.581Z","seq":7,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T21:52:17.585Z","seq":8,"event":"step.resolution","stepId":"s2","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T21:52:17.585Z","seq":9,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
+{"ts":"2026-08-14T21:52:17.585Z","seq":10,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the member inquiry for member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:17.591Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:17.608Z","seq":12,"event":"step.resolution","stepId":"s3","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T21:52:17.608Z","seq":13,"event":"step.ok","stepId":"s3","action":"click","ms":17,"isRetry":false}
+{"ts":"2026-08-14T21:52:17.608Z","seq":14,"event":"step.start","stepId":"s4","action":"click","intent":"Open the matching member record to view account balances.","risk":"read"}
+{"ts":"2026-08-14T21:52:17.614Z","seq":15,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:27.717Z","seq":16,"event":"detector.hit","stepId":"s4","detector":"no-records-found","classification":"business_outcome"}
+{"ts":"2026-08-14T21:52:27.734Z","seq":17,"event":"replay.business_outcome","outcomeCode":"NO_SUCH_MEMBER","screenshot":"evidence/runs/replay-2026-08-14T21-52-17-365Z/017-outcome-no-records-found.png"}

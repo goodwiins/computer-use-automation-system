@@ -1,18 +1,23 @@
-{"ts":"2026-08-14T06:39:51.334Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"23456"}}
-{"ts":"2026-08-14T06:39:51.801Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"Open member search to look up member {{memberId}}.","risk":"read"}
-{"ts":"2026-08-14T06:39:51.864Z","seq":2,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:51.903Z","seq":3,"event":"step.ok","stepId":"s1","action":"click","ms":39,"isRetry":false}
-{"ts":"2026-08-14T06:39:51.903Z","seq":4,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
-{"ts":"2026-08-14T06:39:51.949Z","seq":5,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
-{"ts":"2026-08-14T06:39:51.959Z","seq":6,"event":"step.ok","stepId":"s2","action":"fill","ms":10,"isRetry":false}
-{"ts":"2026-08-14T06:39:51.959Z","seq":7,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the search for member {{memberId}}.","risk":"read"}
-{"ts":"2026-08-14T06:39:51.968Z","seq":8,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:51.987Z","seq":9,"event":"step.ok","stepId":"s3","action":"click","ms":19,"isRetry":false}
-{"ts":"2026-08-14T06:39:51.989Z","seq":10,"event":"step.start","stepId":"s4","action":"click","intent":"Open the exact member record to view account details and savings balance.","risk":"read"}
-{"ts":"2026-08-14T06:39:52.002Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=23456","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:52.016Z","seq":12,"event":"step.ok","stepId":"s4","action":"click","ms":14,"isRetry":false}
-{"ts":"2026-08-14T06:39:52.017Z","seq":13,"event":"step.start","stepId":"s5","action":"extract","intent":"Read the current balance for member {{memberId}}'s SAVINGS account.","risk":"read"}
-{"ts":"2026-08-14T06:39:52.032Z","seq":14,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/23456","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T06:39:52.035Z","seq":15,"event":"step.extracted","stepId":"s5","output":"savings_balance","value":"9,812.55","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
-{"ts":"2026-08-14T06:39:52.035Z","seq":16,"event":"step.ok","stepId":"s5","action":"extract","ms":3,"isRetry":false}
-{"ts":"2026-08-14T06:39:52.054Z","seq":17,"event":"replay.success","outputs":{"savings_balance":"9,812.55"},"screenshot":"evidence/runs/replay-2026-08-14T06-39-51-333Z/017-success.png"}
+{"ts":"2026-08-14T21:52:16.628Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"23456"}}
+{"ts":"2026-08-14T21:52:16.628Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.751Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:16.785Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.810Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T21:52:16.811Z","seq":5,"event":"step.ok","stepId":"s1","action":"click","ms":27,"isRetry":false}
+{"ts":"2026-08-14T21:52:16.811Z","seq":6,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
+{"ts":"2026-08-14T21:52:16.842Z","seq":7,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.845Z","seq":8,"event":"step.resolution","stepId":"s2","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T21:52:16.846Z","seq":9,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
+{"ts":"2026-08-14T21:52:16.846Z","seq":10,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the member inquiry for member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:16.852Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.877Z","seq":12,"event":"step.resolution","stepId":"s3","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T21:52:16.877Z","seq":13,"event":"step.ok","stepId":"s3","action":"click","ms":26,"isRetry":false}
+{"ts":"2026-08-14T21:52:16.877Z","seq":14,"event":"step.start","stepId":"s4","action":"click","intent":"Open the matching member record to view account balances.","risk":"read"}
+{"ts":"2026-08-14T21:52:16.890Z","seq":15,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=23456","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.910Z","seq":16,"event":"step.resolution","stepId":"s4","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T21:52:16.910Z","seq":17,"event":"step.ok","stepId":"s4","action":"click","ms":20,"isRetry":false}
+{"ts":"2026-08-14T21:52:16.910Z","seq":18,"event":"step.start","stepId":"s5","action":"extract","intent":"Read the current balance from the SAVINGS account row for member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:16.921Z","seq":19,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/23456","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:16.923Z","seq":20,"event":"step.extracted","stepId":"s5","output":"savings_balance","value":"9,812.55","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
+{"ts":"2026-08-14T21:52:16.924Z","seq":21,"event":"step.ok","stepId":"s5","action":"extract","ms":3,"isRetry":false}
+{"ts":"2026-08-14T21:52:16.939Z","seq":22,"event":"replay.success","outputs":{"savings_balance":"9,812.55"},"screenshot":"evidence/runs/replay-2026-08-14T21-52-16-627Z/022-success.png"}

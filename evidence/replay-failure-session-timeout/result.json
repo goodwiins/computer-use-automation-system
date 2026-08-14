@@ -5,10 +5,10 @@
     "intent": "pass runtime-condition checks",
     "expected": "no fatal condition",
     "observed": "session-expired: Session timed out; flow state is lost and requires sign-on",
-    "screenshot": "evidence/runs/replay-2026-08-14T06-40-04-650Z/003-fatal-session-expired.png"
+    "screenshot": "evidence/runs/replay-2026-08-14T21-52-28-902Z/004-fatal-session-expired.png"
   },
   "escalated": false,
-  "runId": "replay-2026-08-14T06-40-04-650Z",
-  "evidenceDir": "evidence/runs/replay-2026-08-14T06-40-04-650Z",
+  "runId": "replay-2026-08-14T21-52-28-902Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-14T21-52-28-902Z",
   "recoveries": []
 }

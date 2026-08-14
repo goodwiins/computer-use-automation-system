@@ -15,6 +15,7 @@ import { RunLogger } from './src/evidence/logger.js';
 import { loadPolicy } from './src/safety/policy.js';
 import { Redactor } from './src/safety/redact.js';
 import { runReplay } from './src/replay/executor.js';
+import { originAllowed } from './src/safety/policy.js';
 import { BrowserSurface } from './src/surface/browser.js';
 import { GuardedSurface, type HumanGate } from './src/surface/guarded.js';
 
@@ -154,13 +155,17 @@ async function replay(argv: string[]) {
 
   const params: Record<string, string | number> =
     typeof flags.params === 'string' ? JSON.parse(flags.params) : {};
+  const policy = loadPolicy(POLICY_PATH);
   if (typeof flags['entry-override'] === 'string') {
     // For demos: point the same capability at an entry URL that injects a
-    // simulated runtime condition (e.g. ?sim=maintenance).
-    artifact.app.entryUrl = flags['entry-override'];
+    // simulated runtime condition (e.g. ?sim=maintenance). Still has to land
+    // inside both the artifact's and the policy's allowed origins.
+    const override = flags['entry-override'];
+    if (!originAllowed(artifact.app.allowedOrigins, override) || !originAllowed(policy.allowedOrigins, override)) {
+      fatal(`--entry-override ${override} is outside the artifact's or policy's allowed origins`);
+    }
+    artifact.app.entryUrl = override;
   }
-
-  const policy = loadPolicy(POLICY_PATH);
   const redactor = new Redactor();
   redactor.addSensitiveValues(
     artifact.parameters.filter((p) => p.sensitive).map((p) => params[p.name] ?? '').filter(Boolean),

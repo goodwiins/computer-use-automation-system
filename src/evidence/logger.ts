@@ -29,7 +29,8 @@ export class RunLogger {
   }
 
   async screenshot(surface: Surface, label: string): Promise<string> {
-    const file = join(this.dir, `${String(this.seq).padStart(3, '0')}-${label}.png`);
+    const safeLabel = label.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const file = join(this.dir, `${String(this.seq).padStart(3, '0')}-${safeLabel}.png`);
     try {
       await surface.screenshot(file);
       return file;

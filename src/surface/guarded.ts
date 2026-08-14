@@ -3,7 +3,7 @@
 // same gate, so no code path can act outside the allowlist.
 
 import type { RiskClass, TargetDescriptor } from '../artifact/schema.js';
-import { checkAction, type Policy, type PolicyVerdict } from '../safety/policy.js';
+import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ResolutionReport, Surface } from './types.js';
 
 export class PolicyViolationError extends Error {
@@ -42,7 +42,10 @@ export class GuardedSurface implements Surface {
   }
 
   // Reads are ungated observations; actions are gated.
-  start(entryUrl: string) { return this.inner.start(entryUrl); }
+  async start(entryUrl: string): Promise<void> {
+    await this.gate('navigate', 'read', entryUrl);
+    return this.inner.start(entryUrl);
+  }
   observe(): Promise<Observation> { return this.inner.observe(); }
   currentUrl(): string { return this.inner.currentUrl(); }
   isTextVisible(text: string, frame?: string) { return this.inner.isTextVisible(text, frame); }
@@ -50,13 +53,27 @@ export class GuardedSurface implements Surface {
   screenshot(path: string) { return this.inner.screenshot(path); }
   close() { return this.inner.close(); }
 
+  /** After an action that may navigate, verify we didn't land outside the allowlist. */
+  private assertStillInBounds(action: string): void {
+    const url = this.inner.currentUrl();
+    if (!originAllowed(this.policy.allowedOrigins, url)) {
+      throw new PolicyViolationError(
+        { verdict: 'deny', reason: `navigation escaped the allowed origins during "${action}"` },
+        action,
+      );
+    }
+  }
+
   async navigate(url: string): Promise<void> {
     await this.gate('navigate', 'read', url);
-    return this.inner.navigate(url);
+    await this.inner.navigate(url);
+    this.assertStillInBounds('navigate');
   }
   async click(t: TargetDescriptor, timeoutMs?: number, risk: RiskClass = 'read'): Promise<ResolutionReport> {
     await this.gate('click', risk);
-    return this.inner.click(t, timeoutMs);
+    const report = await this.inner.click(t, timeoutMs);
+    this.assertStillInBounds('click');
+    return report;
   }
   async fill(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
     await this.gate('fill', risk);

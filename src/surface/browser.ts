@@ -224,7 +224,12 @@ export class BrowserSurface implements Surface {
     if (info.role && info.accName) strategies.push({ kind: 'role', role: info.role, name: info.accName });
     if (info.nameAttr) strategies.push({ kind: 'nameAttr', name: info.nameAttr });
     if (info.text) strategies.push({ kind: 'text', text: info.text, exact: true });
-    strategies.push({ kind: 'css', selector: info.cssPath });
+    // A model-supplied semantic css hint (e.g. `tr:has(...)`) is more robust
+    // than the derived positional nth-of-type path, so it outranks it —
+    // inserted here, before the structural fallback. Dedupe if identical.
+    const hintCss = hint.strategies.find((s): s is Extract<TargetStrategy, { kind: 'css' }> => s.kind === 'css');
+    if (hintCss) strategies.push(hintCss);
+    if (!hintCss || hintCss.selector !== info.cssPath) strategies.push({ kind: 'css', selector: info.cssPath });
 
     return {
       description: hint.description,

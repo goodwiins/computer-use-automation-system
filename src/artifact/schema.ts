@@ -42,7 +42,7 @@ export type TargetDescriptor = z.infer<typeof TargetDescriptor>;
 // session expiry, interstitials. Each is classified so replay responds
 // deliberately instead of blindly proceeding.
 export const Detector = z.object({
-  id: z.string(),
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   description: z.string(),
   match: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('textVisible'), text: z.string() }),
@@ -70,7 +70,7 @@ export const Assertion = z.discriminatedUnion('kind', [
 export type Assertion = z.infer<typeof Assertion>;
 
 export const Step = z.object({
-  id: z.string(),
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   intent: z.string(), // why this step exists — reviewability
   action: z.enum(['navigate', 'click', 'fill', 'select', 'extract', 'assert']),
   target: TargetDescriptor.optional(), // click/fill/select/extract
@@ -85,7 +85,7 @@ export type Step = z.infer<typeof Step>;
 
 // ---------- Contract ----------
 export const Parameter = z.object({
-  name: z.string(),
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
   type: z.enum(['string', 'number']),
   description: z.string(),
   required: z.boolean().default(true),
@@ -136,8 +136,22 @@ const TEMPLATE_RE = /\{\{(\w+)\}\}/g;
 
 export function resolveTemplate(template: string, params: Record<string, string | number>): string {
   return template.replace(TEMPLATE_RE, (_, name: string) => {
-    if (!(name in params)) throw new Error(`Missing parameter "${name}" for template "${template}"`);
+    if (!Object.hasOwn(params, name)) throw new Error(`Missing parameter "${name}" for template "${template}"`);
     return String(params[name]);
+  });
+}
+
+const escapeRegexChars = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Like resolveTemplate, but for templates that will themselves be compiled
+ * as a RegExp (e.g. urlMatches patterns): each substituted param value is
+ * regex-escaped so a param value can never inject regex syntax.
+ */
+export function resolveTemplateForRegex(template: string, params: Record<string, string | number>): string {
+  return template.replace(TEMPLATE_RE, (_, name: string) => {
+    if (!Object.hasOwn(params, name)) throw new Error(`Missing parameter "${name}" for template "${template}"`);
+    return escapeRegexChars(String(params[name]));
   });
 }
 
@@ -165,12 +179,18 @@ export function validateParams(
   params: Record<string, string | number>,
 ): { ok: true } | { ok: false; error: string } {
   for (const p of artifact.parameters) {
-    const v = params[p.name];
-    if (v === undefined) {
+    if (!Object.hasOwn(params, p.name)) {
       if (p.required) return { ok: false, error: `Missing required parameter "${p.name}"` };
       continue;
     }
-    if (p.type === 'number' && Number.isNaN(Number(v))) {
+    const v = params[p.name];
+    if (p.type === 'string' && typeof v !== 'string') {
+      return { ok: false, error: `Parameter "${p.name}" must be a string, got "${v}"` };
+    }
+    if (
+      p.type === 'number' &&
+      (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '' || Number.isNaN(Number(v))))
+    ) {
       return { ok: false, error: `Parameter "${p.name}" must be a number, got "${v}"` };
     }
   }

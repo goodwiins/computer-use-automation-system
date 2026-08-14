@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "lookup-member-balance",
   "name": "lookup-member-balance",
-  "description": "Look up member 12345 and read their current savings balance",
+  "description": "Look up member {{memberId}} and read their current savings balance",
   "version": "1.0.0",
   "status": "approved",
   "app": {
@@ -16,7 +16,7 @@
     {
       "name": "memberId",
       "type": "string",
-      "description": "Value for memberId (observed as \"12345\" during discovery)",
+      "description": "Invocation parameter \"memberId\"",
       "required": true,
       "sensitive": false
     }
@@ -25,16 +25,16 @@
     {
       "name": "savings_balance",
       "type": "string",
-      "description": "Extracted during the flow (discovery observed: \"4,250.13\")"
+      "description": "Extracted during the flow at step s5"
     }
   ],
   "steps": [
     {
       "id": "s1",
-      "intent": "Open member search to look up member {{memberId}}.",
+      "intent": "Open member inquiry to look up member {{memberId}}.",
       "action": "click",
       "target": {
-        "description": "Open member search to look up member {{memberId}}.",
+        "description": "Open member inquiry to look up member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
           {
@@ -89,10 +89,10 @@
     },
     {
       "id": "s3",
-      "intent": "Submit the search for member {{memberId}}.",
+      "intent": "Submit the member inquiry for member {{memberId}}.",
       "action": "click",
       "target": {
-        "description": "Submit the search for member {{memberId}}.",
+        "description": "Submit the member inquiry for member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
           {
@@ -116,10 +116,10 @@
     },
     {
       "id": "s4",
-      "intent": "Open the exact member record to view account details and savings balance.",
+      "intent": "Open the matching member record to view account balances.",
       "action": "click",
       "target": {
-        "description": "Open the exact member record to view account details and savings balance.",
+        "description": "Open the matching member record to view account balances.",
         "frame": "workarea",
         "strategies": [
           {
@@ -148,12 +148,16 @@
     },
     {
       "id": "s5",
-      "intent": "Read the current balance for member {{memberId}}'s SAVINGS account.",
+      "intent": "Read the current balance from the SAVINGS account row for member {{memberId}}.",
       "action": "extract",
       "target": {
-        "description": "Read the current balance for member {{memberId}}'s SAVINGS account.",
+        "description": "Read the current balance from the SAVINGS account row for member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
+          {
+            "kind": "css",
+            "selector": "tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)"
+          },
           {
             "kind": "css",
             "selector": "td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(4)"
@@ -242,9 +246,9 @@
     }
   ],
   "provenance": {
-    "discoveredAt": "2026-08-14T06:39:40.461Z",
+    "discoveredAt": "2026-08-14T21:52:06.288Z",
     "model": "gpt-5.6-luna",
-    "discoveryRunId": "discovery-2026-08-14T06-39-11-882Z",
-    "goal": "Look up member 12345 and read their current savings balance"
+    "discoveryRunId": "discovery-2026-08-14T21-51-39-003Z",
+    "goal": "Look up member {{memberId}} and read their current savings balance"
   }
 }

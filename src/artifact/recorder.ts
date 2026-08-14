@@ -45,7 +45,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
     name,
     type: typeof value === 'number' ? 'number' : 'string',
-    description: `Value for ${name} (observed as "${input.sensitiveParams.includes(name) ? '***' : value}" during discovery)`,
+    description: `Invocation parameter "${name}"`,
     required: true,
     sensitive: input.sensitiveParams.includes(name),
   }));
@@ -56,7 +56,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       case 'navigate':
         return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
-        return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: entry.risk ?? 'read', timeoutMs: 10_000 };
       case 'fill':
         return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'select':
@@ -92,17 +92,21 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     pattern: `${escapeRegex(templatize(finalPath)).replace(/\\\{\\\{(\w+)\\\}\\\}/g, '{{$1}}')}$`,
   };
 
+  // Find which step extracted each output, for a description that carries no
+  // observed values (PII may have been extracted during discovery).
+  const outputStepId = (name: string): string =>
+    steps.find((s) => s.action === 'extract' && s.extract?.output === name)?.id ?? '?';
   const outputs = Object.keys(discovery.outputs).map((name) => ({
     name,
     type: 'string' as const,
-    description: `Extracted during the flow (discovery observed: "${discovery.outputs[name]}")`,
+    description: `Extracted during the flow at step ${outputStepId(name)}`,
   }));
 
   return CapabilityArtifact.parse({
     schemaVersion: 1,
     id: input.name,
     name: input.name,
-    description: input.goal,
+    description: templatize(input.goal),
     version: '1.0.0',
     status: 'draft', // human review promotes to approved
     app: { appId: input.appId, entryUrl: templatize(input.entryUrl), allowedOrigins: input.allowedOrigins },
@@ -115,7 +119,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       discoveredAt: new Date().toISOString(),
       model: input.model,
       discoveryRunId: input.discoveryRunId,
-      goal: input.goal,
+      goal: templatize(input.goal),
     },
   });
 }

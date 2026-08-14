@@ -1,4 +1,5 @@
-{"ts":"2026-08-14T06:40:04.651Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
-{"ts":"2026-08-14T06:40:04.850Z","seq":1,"event":"step.start","stepId":"s1","action":"click","intent":"Open member search to look up member {{memberId}}.","risk":"read"}
-{"ts":"2026-08-14T06:40:04.865Z","seq":2,"event":"detector.hit","stepId":"s1","detector":"session-expired","classification":"fatal"}
-{"ts":"2026-08-14T06:40:04.884Z","seq":3,"event":"replay.failure","stepId":"s1","intent":"pass runtime-condition checks","expected":"no fatal condition","observed":"session-expired: Session timed out; flow state is lost and requires sign-on","screenshot":"evidence/runs/replay-2026-08-14T06-40-04-650Z/003-fatal-session-expired.png","escalated":false}
+{"ts":"2026-08-14T21:52:28.902Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
+{"ts":"2026-08-14T21:52:28.902Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/?sim=timeout","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T21:52:29.009Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T21:52:29.020Z","seq":3,"event":"detector.hit","stepId":"s1","detector":"session-expired","classification":"fatal"}
+{"ts":"2026-08-14T21:52:29.037Z","seq":4,"event":"replay.failure","stepId":"s1","intent":"pass runtime-condition checks","expected":"no fatal condition","observed":"session-expired: Session timed out; flow state is lost and requires sign-on","screenshot":"evidence/runs/replay-2026-08-14T21-52-28-902Z/004-fatal-session-expired.png","escalated":false}

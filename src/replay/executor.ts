@@ -13,6 +13,7 @@
 import {
   resolveTarget,
   resolveTemplate,
+  resolveTemplateForRegex,
   validateParams,
   type Assertion,
   type CapabilityArtifact,
@@ -20,10 +21,10 @@ import {
 } from '../artifact/schema.js';
 import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
 import type { RunLogger } from '../evidence/logger.js';
-import type { Policy } from '../safety/policy.js';
+import { originAllowed, type Policy } from '../safety/policy.js';
 import { PolicyViolationError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
-import { checkDetectors } from './detectors.js';
+import { checkDetectors, matchDetector } from './detectors.js';
 import type { ReplayResult, StepFailure } from './outcomes.js';
 
 export interface ReplayDeps {
@@ -48,6 +49,15 @@ export async function runReplay(
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
   }
+  const originsOk = artifact.app.allowedOrigins.every((o) => deps.policy.allowedOrigins.includes(o));
+  if (!originsOk) {
+    return fail({
+      stepId: '(pre-flight)',
+      intent: 'authorize the artifact\'s declared origins',
+      expected: 'artifact.app.allowedOrigins is a subset of policy.allowedOrigins',
+      observed: `artifact origins [${artifact.app.allowedOrigins.join(', ')}] not all within policy origins [${deps.policy.allowedOrigins.join(', ')}]`,
+    });
+  }
   if (artifact.status === 'draft' && deps.policy.requireApprovedForUnattended && !deps.escalate) {
     return fail({ stepId: '(pre-flight)', intent: 'authorize unattended replay', expected: 'artifact status "approved"', observed: 'status "draft" — run attended (--attended) or approve the artifact' });
   }
@@ -65,35 +75,57 @@ export async function runReplay(
   // Returns null to continue, or a terminal result.
   async function handleConditions(stepId: string): Promise<ReplayResult | null> {
     for (let round = 0; round < 2; round++) {
-      const hit = await checkDetectors(surface, artifact);
-      if (!hit) return null;
-      const d = hit.detector;
-      logger.log('detector.hit', { stepId, detector: d.id, classification: d.classification });
-      if (d.classification === 'business_outcome') {
-        const shot = await logger.screenshot(surface, `outcome-${d.id}`);
-        logger.log('replay.business_outcome', { outcomeCode: d.outcomeCode, screenshot: shot });
-        const result: ReplayResult = {
-          status: 'business_outcome',
-          outcomeCode: d.outcomeCode ?? d.id,
-          detail: d.description,
-          ...base,
-        };
-        logger.writeResult(result);
-        return result;
-      }
-      if (d.classification === 'recoverable' && d.recovery && !recoveries.includes(`${stepId}:${d.id}`)) {
-        recoveries.push(`${stepId}:${d.id}`);
-        logger.log('detector.recovering', { detector: d.id, action: d.recovery.action });
-        if (d.recovery.action === 'click' && d.recovery.target) {
-          await surface.click(d.recovery.target);
+      try {
+        const hit = await checkDetectors(surface, artifact);
+        if (!hit) return null;
+        const d = hit.detector;
+        logger.log('detector.hit', { stepId, detector: d.id, classification: d.classification });
+        if (d.classification === 'business_outcome') {
+          const shot = await logger.screenshot(surface, `outcome-${d.id}`);
+          logger.log('replay.business_outcome', { outcomeCode: d.outcomeCode, screenshot: shot });
+          const result: ReplayResult = {
+            status: 'business_outcome',
+            outcomeCode: d.outcomeCode ?? d.id,
+            detail: d.description,
+            ...base,
+          };
+          logger.writeResult(result);
+          return result;
         }
-        continue; // re-check: recovery may reveal another condition
+        if (d.classification === 'recoverable' && d.recovery && !recoveries.includes(`${stepId}:${d.id}`)) {
+          recoveries.push(`${stepId}:${d.id}`);
+          logger.log('detector.recovering', { detector: d.id, action: d.recovery.action });
+          if (d.recovery.action === 'click' && d.recovery.target) {
+            await surface.click(d.recovery.target);
+          }
+          // Recovery is bounded to one attempt: re-check only THIS detector's
+          // own match, not the whole list. Still present -> fatal, not a loop.
+          if (await matchDetector(surface, d)) {
+            const shot = await logger.screenshot(surface, `fatal-${d.id}`);
+            return await failOrEscalate({
+              stepId,
+              intent: 'recover from runtime condition',
+              expected: `detector "${d.id}" cleared after recovery`,
+              observed: `${d.id}: ${d.description} still present after recovery action`,
+              screenshot: shot,
+            });
+          }
+          continue; // recovery cleared it: re-check the full list for another condition
+        }
+        // Fatal, or a recoverable that already failed recovery once.
+        const shot = await logger.screenshot(surface, `fatal-${d.id}`);
+        return await failOrEscalate(
+          { stepId, intent: 'pass runtime-condition checks', expected: 'no fatal condition', observed: `${d.id}: ${d.description}`, screenshot: shot },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return await failOrEscalate({
+          stepId,
+          intent: 'recover from runtime condition',
+          expected: 'detector checks and recovery actions to run without error',
+          observed: message,
+        });
       }
-      // Fatal, or a recoverable that already failed recovery once.
-      const shot = await logger.screenshot(surface, `fatal-${d.id}`);
-      return await failOrEscalate(
-        { stepId, intent: 'pass runtime-condition checks', expected: 'no fatal condition', observed: `${d.id}: ${d.description}`, screenshot: shot },
-      );
     }
     return null;
   }
@@ -130,7 +162,7 @@ export async function runReplay(
     do {
       const ok =
         a.kind === 'urlMatches'
-          ? new RegExp(resolveTemplate(a.pattern, params)).test(surface.currentUrl())
+          ? new RegExp(resolveTemplateForRegex(a.pattern, params)).test(surface.currentUrl())
           : await surface.isTextVisible(resolveTemplate(a.text, params), a.frame);
       if (ok) return true;
       await new Promise((r) => setTimeout(r, 250));
@@ -149,21 +181,27 @@ export async function runReplay(
         case 'navigate':
           await surface.navigate(resolveTemplate(step.url!, params));
           break;
-        case 'click':
-          await (surface.click as (t: unknown, ms?: number, risk?: string) => Promise<unknown>)(
+        case 'click': {
+          const report = await (surface.click as (t: unknown, ms?: number, risk?: string) => Promise<unknown>)(
             target!, step.timeoutMs, step.risk,
           );
+          logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
-        case 'fill':
-          await (surface.fill as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
+        }
+        case 'fill': {
+          const report = await (surface.fill as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
             target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk,
           );
+          logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
-        case 'select':
-          await (surface.select as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
+        }
+        case 'select': {
+          const report = await (surface.select as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
             target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk,
           );
+          logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
+        }
         case 'extract': {
           const { text, report } = await surface.readText(target!, step.timeoutMs);
           outputs[step.extract!.output] = text;
@@ -203,27 +241,55 @@ export async function runReplay(
   for (const step of artifact.steps) {
     logger.log('step.start', { stepId: step.id, action: step.action, intent: step.intent, risk: step.risk });
     const conditionResult = await handleConditions(step.id);
-    if (conditionResult && conditionResult !== CONTINUE_SENTINEL) return conditionResult;
+    if (conditionResult === CONTINUE_SENTINEL) continue; // escalation path already executed/skipped this step
+    if (conditionResult) return conditionResult;
     const result = await runStep(step);
     if (result) return result;
   }
 
-  // Final checkpoint: never assume the flow worked — verify it.
+  // Final checkpoint: never assume the flow worked — verify it. Route through
+  // failOrEscalate so attended mode gets a chance to fix the end state before
+  // this replay is declared broken (unattended behavior is unchanged, since
+  // failOrEscalate falls back to a hard fail when no escalate handler exists).
   if (!(await verifyAssertion(artifact.successCondition))) {
     const shot = await logger.screenshot(surface, 'success-condition-failed');
-    return fail({
+    const r = await failOrEscalate({
       stepId: '(success-condition)',
       intent: 'verify the capability reached its declared end state',
       expected: JSON.stringify(artifact.successCondition),
       observed: `url=${surface.currentUrl()}`,
       screenshot: shot,
     });
+    if (r !== CONTINUE_SENTINEL) return r;
+    // Human intervened: re-verify once, don't loop.
+    if (!(await verifyAssertion(artifact.successCondition))) {
+      return fail({
+        stepId: '(success-condition)',
+        intent: 'verify the capability reached its declared end state',
+        expected: JSON.stringify(artifact.successCondition),
+        observed: `url=${surface.currentUrl()} (still failing after intervention)`,
+      });
+    }
   }
 
   // Type-check declared outputs were all produced.
   for (const o of artifact.outputs) {
     if (!(o.name in outputs)) {
-      return fail({ stepId: '(outputs)', intent: 'produce declared outputs', expected: `output "${o.name}"`, observed: `only [${Object.keys(outputs).join(', ')}]` });
+      const r = await failOrEscalate({
+        stepId: '(outputs)',
+        intent: 'produce declared outputs',
+        expected: `output "${o.name}"`,
+        observed: `only [${Object.keys(outputs).join(', ')}]`,
+      });
+      if (r !== CONTINUE_SENTINEL) return r;
+      if (!(await verifyAssertion(artifact.successCondition))) {
+        return fail({
+          stepId: '(outputs)',
+          intent: 'produce declared outputs',
+          expected: `output "${o.name}"`,
+          observed: `only [${Object.keys(outputs).join(', ')}] (success condition also failing after intervention)`,
+        });
+      }
     }
   }
 

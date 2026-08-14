@@ -20,6 +20,8 @@ export interface TraceEntry {
   outputName?: string;
   extractedText?: string;
   urlAfter: string;
+  /** Model-classified risk for click steps (submits/mutates state?). Defaults to 'read'. */
+  risk?: 'read' | 'reversible_write' | 'irreversible';
 }
 
 export interface DiscoveryResult {
@@ -141,7 +143,13 @@ export async function runDiscovery(
           const descriptor = await surface.describeTarget(hint);
           const entry: TraceEntry = { action: call.function.name, reason, descriptor, urlAfter: '' };
           if (call.function.name === 'click') {
-            await surface.click(descriptor);
+            const risk = (args.risk as TraceEntry['risk']) ?? 'read';
+            entry.risk = risk;
+            // Surface.click's public signature omits risk (only GuardedSurface
+            // consumes it, to gate discovery's risky clicks like replay's).
+            await (surface.click as (t: TargetDescriptor, ms?: number, risk?: string) => Promise<unknown>)(
+              descriptor, undefined, risk,
+            );
             respond(`Clicked "${descriptor.description}". Now at ${surface.currentUrl()}`);
           } else if (call.function.name === 'fill') {
             entry.value = String(args.value);
@@ -175,6 +183,22 @@ export async function runDiscovery(
           `nameAttr for form fields, exact visible text for links/buttons, css as last resort.`,
       );
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        if (deps.escalate) {
+          logger.log('discovery.escalate', { reason: message, trigger: 'consecutive_failures' });
+          const decision = await deps.escalate({
+            kind: 'discovery_stuck',
+            capability: '(discovery)',
+            goal,
+            reason: message,
+            url: surface.currentUrl(),
+            screenshot: shot,
+          });
+          if (decision !== 'abort') {
+            consecutiveFailures = 0;
+            respond('A human operator intervened on the live session. Re-observe and continue.');
+            continue;
+          }
+        }
         return finish('stopped', `stuck: ${consecutiveFailures} consecutive action failures (last: ${message})`);
       }
     }
