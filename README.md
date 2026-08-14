@@ -67,7 +67,7 @@ npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --appro
 npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"23456"}'
 ```
 
-Returns `{"status":"success","outputs":{"savingsBalance":"9,812.55"}}`.
+Returns `{"status":"success","outputs":{"savings_balance":"9,812.55"}}`.
 
 **5. Error & exceptional-state replays:**
 
