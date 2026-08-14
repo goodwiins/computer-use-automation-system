@@ -146,7 +146,11 @@ export async function runReplay(
     logger.log('escalation.decision', { decision });
     if (decision === 'abort') return fail(failure, true);
     if (decision === 'retry') {
-      const retry = await runStep(stepsById.get(failure.stepId)!, true);
+      // Terminal-phase failures ("(success-condition)", "(outputs)") have no
+      // artifact step to re-run — the caller re-verifies after the sentinel.
+      const step = stepsById.get(failure.stepId);
+      if (!step) return CONTINUE_SENTINEL;
+      const retry = await runStep(step, true);
       if (retry) return retry;
       return CONTINUE_SENTINEL;
     }
@@ -274,7 +278,7 @@ export async function runReplay(
 
   // Type-check declared outputs were all produced.
   for (const o of artifact.outputs) {
-    if (!(o.name in outputs)) {
+    if (!Object.hasOwn(outputs, o.name)) {
       const r = await failOrEscalate({
         stepId: '(outputs)',
         intent: 'produce declared outputs',
@@ -282,12 +286,16 @@ export async function runReplay(
         observed: `only [${Object.keys(outputs).join(', ')}]`,
       });
       if (r !== CONTINUE_SENTINEL) return r;
-      if (!(await verifyAssertion(artifact.successCondition))) {
+      // A human cannot type an output into the caller's result — re-run the
+      // extract step that declares this output, then require it to exist.
+      const extractStep = artifact.steps.find((s) => s.extract?.output === o.name);
+      if (extractStep) await runStep(extractStep, true);
+      if (!Object.hasOwn(outputs, o.name)) {
         return fail({
           stepId: '(outputs)',
           intent: 'produce declared outputs',
           expected: `output "${o.name}"`,
-          observed: `only [${Object.keys(outputs).join(', ')}] (success condition also failing after intervention)`,
+          observed: `only [${Object.keys(outputs).join(', ')}] (still missing after intervention)`,
         });
       }
     }

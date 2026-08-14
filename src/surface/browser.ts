@@ -4,6 +4,7 @@
 
 import { chromium, type Browser, type Frame, type Locator, type Page } from 'playwright';
 import type { TargetDescriptor, TargetStrategy } from '../artifact/schema.js';
+import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
   type Observation,
@@ -17,7 +18,16 @@ export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
 
-  constructor(private readonly opts: { headful?: boolean } = {}) {}
+  // When allowedOrigins is set, frames outside it are invisible to observation
+  // and untouchable by locator resolution — a foreign iframe embedded in a
+  // legacy page can neither be read nor clicked.
+  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[] } = {}) {}
+
+  private frameInBounds(frame: Frame): boolean {
+    const url = frame.url();
+    if (url === 'about:blank' || url.startsWith('about:')) return true;
+    return !this.opts.allowedOrigins || originAllowed(this.opts.allowedOrigins, url);
+  }
 
   async start(entryUrl: string): Promise<void> {
     // CU_CDP_PORT exposes the live session over the Chrome DevTools Protocol.
@@ -41,7 +51,7 @@ export class BrowserSurface implements Surface {
   async observe(): Promise<Observation> {
     const frames: Observation['frames'] = [];
     for (const frame of this.page.frames()) {
-      if (frame.url() === 'about:blank') continue;
+      if (frame.url() === 'about:blank' || !this.frameInBounds(frame)) continue;
       try {
         const snapshot = await frame.locator('body').ariaSnapshot({ timeout: 3000 });
         const fields = await frame.evaluate(() =>
@@ -119,9 +129,11 @@ export class BrowserSurface implements Surface {
   // ---------- Locator resolution (the determinism core) ----------
 
   private framesToSearch(frameName?: string): Frame[] {
-    const all = this.page.frames().filter((f) => f.url() !== 'about:blank');
+    const all = this.page
+      .frames()
+      .filter((f) => f.url() !== 'about:blank' && this.frameInBounds(f));
     if (frameName === undefined) return all;
-    if (frameName === '') return [this.page.mainFrame()];
+    if (frameName === '') return [this.page.mainFrame()].filter((f) => this.frameInBounds(f));
     return all.filter((f) => f.name() === frameName);
   }
 

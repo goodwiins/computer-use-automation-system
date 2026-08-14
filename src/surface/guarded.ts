@@ -44,7 +44,8 @@ export class GuardedSurface implements Surface {
   // Reads are ungated observations; actions are gated.
   async start(entryUrl: string): Promise<void> {
     await this.gate('navigate', 'read', entryUrl);
-    return this.inner.start(entryUrl);
+    await this.inner.start(entryUrl);
+    this.assertStillInBounds('start'); // a redirect could land outside the allowlist
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
   currentUrl(): string { return this.inner.currentUrl(); }
@@ -77,11 +78,15 @@ export class GuardedSurface implements Surface {
   }
   async fill(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
     await this.gate('fill', risk);
-    return this.inner.fill(t, value, timeoutMs);
+    const report = await this.inner.fill(t, value, timeoutMs);
+    this.assertStillInBounds('fill'); // change handlers can navigate in legacy apps
+    return report;
   }
   async select(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
     await this.gate('select', risk);
-    return this.inner.select(t, value, timeoutMs);
+    const report = await this.inner.select(t, value, timeoutMs);
+    this.assertStillInBounds('select'); // onchange submits are a legacy staple
+    return report;
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     await this.gate('extract', 'read');

@@ -33,7 +33,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
             description: 'classify the click: does it submit/mutate state? irreversible = commits a transaction',
           },
         },
-        required: ['reason'],
+        required: ['reason', 'risk'],
       },
     },
   },

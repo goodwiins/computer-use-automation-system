@@ -87,7 +87,7 @@ async function discover(argv: string[]) {
   console.log(`discovery run ${logger.runId} → ${logger.dir}`);
 
   const headful = !!flags.headful;
-  const browser = new BrowserSurface({ headful });
+  const browser = new BrowserSurface({ headful, allowedOrigins: policy.allowedOrigins });
   const session = new ControlSession((t) => logger.log('control.transfer', t));
   // During discovery risky actions are never auto-approved; the model is told
   // to call escalate instead, which routes through the operator when headful.
@@ -176,7 +176,10 @@ async function replay(argv: string[]) {
   const attended = !!flags.attended;
   // Attended runs show the live window locally — unless the session is being
   // exposed over CDP (CU_CDP_PORT), where the operator attaches remotely.
-  const browser = new BrowserSurface({ headful: (attended && !process.env.CU_CDP_PORT) || !!flags.headful });
+  const browser = new BrowserSurface({
+    headful: (attended && !process.env.CU_CDP_PORT) || !!flags.headful,
+    allowedOrigins: policy.allowedOrigins,
+  });
   const session = new ControlSession((t) => logger.log('control.transfer', t));
   const humanGate: HumanGate = async (action, risk, reason) => {
     if (!attended) {
