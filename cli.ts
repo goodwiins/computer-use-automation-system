@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import OpenAI from 'openai';
+import OpenAI, { AzureOpenAI } from 'openai';
 import { runDiscovery } from './src/agent/loop.js';
 import { newRunId, recordArtifact } from './src/artifact/recorder.js';
 import { CapabilityArtifact, Detector } from './src/artifact/schema.js';
@@ -47,13 +47,37 @@ function fatal(msg: string): never {
   process.exit(1);
 }
 
+/**
+ * Discovery-model client. Azure OpenAI when AZURE_OPENAI_ENDPOINT is set,
+ * plain OpenAI otherwise. Both speak the same chat-completions + tools API,
+ * so the agent loop is provider-agnostic.
+ */
+function makeLLMClient(): { openai: OpenAI; model: string } {
+  if (process.env.AZURE_OPENAI_ENDPOINT) {
+    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT ?? fatal('AZURE_OPENAI_DEPLOYMENT is not set');
+    if (!process.env.AZURE_OPENAI_API_KEY) fatal('AZURE_OPENAI_API_KEY is not set');
+    return {
+      openai: new AzureOpenAI({
+        endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+        apiKey: process.env.AZURE_OPENAI_API_KEY,
+        apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? '2024-10-21',
+        deployment,
+      }),
+      model: deployment,
+    };
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    fatal('No LLM credentials: set AZURE_OPENAI_ENDPOINT/_API_KEY/_DEPLOYMENT, or OPENAI_API_KEY');
+  }
+  return { openai: new OpenAI(), model: process.env.OPENAI_MODEL ?? 'gpt-5.6-luna' };
+}
+
 async function discover(argv: string[]) {
   const { flags, params, sensitive } = parseArgs(argv);
   const goal = typeof flags.goal === 'string' ? flags.goal : fatal('--goal is required');
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
   const entry = typeof flags.entry === 'string' ? flags.entry : 'http://localhost:4173/';
-  if (!process.env.OPENAI_API_KEY) fatal('OPENAI_API_KEY is not set');
-  const model = process.env.OPENAI_MODEL ?? 'gpt-5.6-luna';
+  const { openai, model } = makeLLMClient();
 
   const policy = loadPolicy(POLICY_PATH);
   const redactor = new Redactor();
@@ -75,7 +99,7 @@ async function discover(argv: string[]) {
   const result = await runDiscovery(goal, entry, params, policy.allowedOrigins, {
     surface,
     logger,
-    openai: new OpenAI(),
+    openai,
     model,
     maxSteps: policy.maxSteps,
     escalate: headful
