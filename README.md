@@ -21,8 +21,16 @@ Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs
 ```bash
 npm install
 npx playwright install chromium
-export OPENAI_API_KEY=sk-...          # discovery only
-# optional: export OPENAI_MODEL=gpt-5.6-luna (default)
+
+# Discovery credentials — either plain OpenAI:
+export OPENAI_API_KEY=sk-...
+# optional: export OPENAI_MODEL=gpt-5.6-luna   (default)
+
+# ...or Azure OpenAI (takes precedence when set):
+export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+export AZURE_OPENAI_API_KEY=...
+export AZURE_OPENAI_DEPLOYMENT=<deployment name, used as the model>
+# optional: export AZURE_OPENAI_API_VERSION=2024-10-21
 ```
 
 Everything runs locally. The target application is a deliberately hostile mock
