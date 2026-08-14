@@ -289,7 +289,10 @@ export async function runReplay(
       // A human cannot type an output into the caller's result — re-run the
       // extract step that declares this output, then require it to exist.
       const extractStep = artifact.steps.find((s) => s.extract?.output === o.name);
-      if (extractStep) await runStep(extractStep, true);
+      if (extractStep) {
+        const rerun = await runStep(extractStep, true);
+        if (rerun) return rerun; // terminal outcome from the re-run wins
+      }
       if (!Object.hasOwn(outputs, o.name)) {
         return fail({
           stepId: '(outputs)',

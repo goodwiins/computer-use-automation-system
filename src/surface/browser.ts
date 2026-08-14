@@ -25,7 +25,13 @@ export class BrowserSurface implements Surface {
 
   private frameInBounds(frame: Frame): boolean {
     const url = frame.url();
-    if (url === 'about:blank' || url.startsWith('about:')) return true;
+    // Only bare about:blank passes; about:srcdoc inherits its parent's origin,
+    // so it is in bounds only when its parent frame is.
+    if (url === 'about:blank') return true;
+    if (url.startsWith('about:')) {
+      const parent = frame.parentFrame();
+      return parent ? this.frameInBounds(parent) : true;
+    }
     return !this.opts.allowedOrigins || originAllowed(this.opts.allowedOrigins, url);
   }
 
