@@ -1,10 +1,10 @@
 {
   "status": "success",
   "outputs": {
-    "savingsBalance": "4,250.13"
+    "savings_balance": "4,250.13"
   },
-  "runId": "replay-2026-08-13T05-49-14-145Z",
-  "evidenceDir": "evidence/runs/replay-2026-08-13T05-49-14-145Z",
+  "runId": "replay-2026-08-14T06-40-03-715Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-14T06-40-03-715Z",
   "recoveries": [
     "s1:maintenance-interstitial"
   ]

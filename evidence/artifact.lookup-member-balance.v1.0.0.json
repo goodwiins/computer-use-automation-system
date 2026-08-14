@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 1,
+  "id": "lookup-member-balance",
+  "name": "lookup-member-balance",
+  "description": "Look up member 12345 and read their current savings balance",
+  "version": "1.0.0",
+  "status": "approved",
+  "app": {
+    "appId": "cu-nexus",
+    "entryUrl": "http://localhost:4173/",
+    "allowedOrigins": [
+      "http://localhost:4173"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "memberId",
+      "type": "string",
+      "description": "Value for memberId (observed as \"12345\" during discovery)",
+      "required": true,
+      "sensitive": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "type": "string",
+      "description": "Extracted during the flow (discovery observed: \"4,250.13\")"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Open member search to look up member {{memberId}}.",
+      "action": "click",
+      "target": {
+        "description": "Open member search to look up member {{memberId}}.",
+        "frame": "workarea",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Member Inquiry / Maintenance"
+          },
+          {
+            "kind": "text",
+            "text": "Member Inquiry / Maintenance",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(1) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Member Inquiry / Maintenance"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the specified member ID for lookup.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the specified member ID for lookup.",
+        "frame": "workarea",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "q"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{memberId}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s3",
+      "intent": "Submit the search for member {{memberId}}.",
+      "action": "click",
+      "target": {
+        "description": "Submit the search for member {{memberId}}.",
+        "frame": "workarea",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(3) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Search"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s4",
+      "intent": "Open the exact member record to view account details and savings balance.",
+      "action": "click",
+      "target": {
+        "description": "Open the exact member record to view account details and savings balance.",
+        "frame": "workarea",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "{{memberId}}"
+          },
+          {
+            "kind": "text",
+            "text": "{{memberId}}",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "{{memberId}}"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s5",
+      "intent": "Read the current balance for member {{memberId}}'s SAVINGS account.",
+      "action": "extract",
+      "target": {
+        "description": "Read the current balance for member {{memberId}}'s SAVINGS account.",
+        "frame": "workarea",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(4)"
+          }
+        ],
+        "snapshot": {
+          "tag": "td"
+        }
+      },
+      "extract": {
+        "output": "savings_balance"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    }
+  ],
+  "successCondition": {
+    "kind": "urlMatches",
+    "pattern": "/members/{{memberId}}$"
+  },
+  "detectors": [
+    {
+      "id": "no-records-found",
+      "description": "Inquiry returned no matching member records",
+      "match": {
+        "kind": "textVisible",
+        "text": "No records found"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "validation-rejected",
+      "description": "Form submission rejected with field validation errors",
+      "match": {
+        "kind": "textVisible",
+        "text": "Correct the following before continuing"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "session-expired",
+      "description": "Session timed out; flow state is lost and requires sign-on",
+      "match": {
+        "kind": "textVisible",
+        "text": "Your session has timed out"
+      },
+      "classification": "fatal"
+    },
+    {
+      "id": "maintenance-interstitial",
+      "description": "Dismissable scheduled-maintenance notice",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE NOTICE"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue link on the maintenance notice",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue to application"
+            },
+            {
+              "kind": "text",
+              "text": "Continue to application",
+              "exact": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trancode-failure",
+      "description": "Host error page (TRANCODE FAILURE)",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANCODE FAILURE"
+      },
+      "classification": "fatal"
+    }
+  ],
+  "provenance": {
+    "discoveredAt": "2026-08-14T06:39:40.461Z",
+    "model": "gpt-5.6-luna",
+    "discoveryRunId": "discovery-2026-08-14T06-39-11-882Z",
+    "goal": "Look up member 12345 and read their current savings balance"
+  }
+}

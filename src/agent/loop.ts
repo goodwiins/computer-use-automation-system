@@ -69,7 +69,13 @@ export async function runDiscovery(
     const obsText =
       `URL: ${obs.url}\nTITLE: ${obs.title}\n` +
       obs.frames
-        .map((f) => `--- frame "${f.frame || '(main)'}" ---\n${f.snapshot.slice(0, MAX_SNAPSHOT_CHARS)}`)
+        .map(
+          (f) =>
+            `--- frame "${f.frame || '(main)'}" ---\n${f.snapshot.slice(0, MAX_SNAPSHOT_CHARS)}` +
+            (f.fields.length
+              ? `\nform fields in this frame (use nameAttr to target them): ${f.fields.map((x) => `${x.name} (${x.type})`).join(', ')}`
+              : ''),
+        )
         .join('\n');
     messages.push({ role: 'user', content: obsText });
     logger.log('discovery.observe', { turn, url: obs.url, screenshot: shot });
@@ -164,7 +170,10 @@ export async function runDiscovery(
       consecutiveFailures++;
       const message = err instanceof Error ? err.message : String(err);
       logger.log('discovery.action_error', { turn, error: message, consecutiveFailures });
-      respond(`ERROR: ${message}. Re-observe and try a different approach.`);
+      respond(
+        `ERROR: ${message}. Re-observe and try a DIFFERENT targeting strategy — ` +
+          `nameAttr for form fields, exact visible text for links/buttons, css as last resort.`,
+      );
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         return finish('stopped', `stuck: ${consecutiveFailures} consecutive action failures (last: ${message})`);
       }

@@ -1,0 +1,8 @@
+{
+  "status": "success",
+  "artifact": "artifacts/lookup-member-balance.v1.0.0.json",
+  "outputs": {
+    "savings_balance": "4,250.13"
+  },
+  "summary": "Looked up member 12345. The current SAVINGS balance is $4,250.13."
+}

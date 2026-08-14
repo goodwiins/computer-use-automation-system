@@ -54,15 +54,15 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     const id = `s${i + 1}`;
     switch (entry.action) {
       case 'navigate':
-        return { id, intent: entry.reason, action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
-        return { id, intent: entry.reason, action: 'click', target: entry.descriptor!, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: 'read', timeoutMs: 10_000 };
       case 'fill':
-        return { id, intent: entry.reason, action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'select':
-        return { id, intent: entry.reason, action: 'select', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'extract':
-        return { id, intent: entry.reason, action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName! }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName! }, risk: 'read', timeoutMs: 10_000 };
     }
   });
 
@@ -72,6 +72,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     if (!step.target) continue;
     step.target = {
       ...step.target,
+      description: templatize(step.target.description),
       strategies: step.target.strategies.map((s) => {
         if (s.kind === 'text') return { ...s, text: templatize(s.text) };
         if (s.kind === 'role') return { ...s, name: templatize(s.name) };

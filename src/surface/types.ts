@@ -9,6 +9,10 @@ import type { TargetDescriptor } from '../artifact/schema.js';
 export interface FrameObservation {
   frame: string; // '' = main frame
   snapshot: string; // accessibility-tree text (aria snapshot)
+  // Form controls by name attribute. Legacy inputs rarely have accessible
+  // names (no <label>), so the aria snapshot alone leaves them anonymous —
+  // this is the reliable handle for them.
+  fields: Array<{ name: string; type: string }>;
 }
 
 export interface Observation {

@@ -9,7 +9,7 @@ const discovery: DiscoveryResult = {
   trace: [
     {
       action: 'fill',
-      reason: 'enter the member number',
+      reason: 'enter the member number 12345',
       descriptor: {
         description: 'member number input',
         frame: 'workarea',

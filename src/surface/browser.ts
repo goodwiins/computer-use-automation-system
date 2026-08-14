@@ -44,7 +44,15 @@ export class BrowserSurface implements Surface {
       if (frame.url() === 'about:blank') continue;
       try {
         const snapshot = await frame.locator('body').ariaSnapshot({ timeout: 3000 });
-        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot });
+        const fields = await frame.evaluate(() =>
+          Array.from(document.querySelectorAll('input, select, textarea'))
+            .map((e) => ({
+              name: e.getAttribute('name') ?? '',
+              type: e instanceof HTMLInputElement ? e.type : e.tagName.toLowerCase(),
+            }))
+            .filter((f) => f.name),
+        );
+        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields });
       } catch {
         // Frameset parent pages have no body; skip silently.
       }
