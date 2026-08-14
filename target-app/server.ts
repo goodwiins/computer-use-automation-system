@@ -33,28 +33,28 @@ app.get('/', (req, res) => {
   res.send(v.framesetPage(new URL(req.url, 'http://x').search.slice(1)));
 });
 app.get('/banner', (_req, res) => res.send(v.bannerFrame()));
-app.get('/main', (req, res) => res.send(v.page(v.mainMenu(), { maintenance: maint(req) })));
+app.get('/main', (req, res) => res.send(v.page(v.mainMenu(), { maintenance: maint(req), panel: 'MNMAIN-01' })));
 
 app.get('/members/search', (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : undefined;
-  if (q === undefined) return void res.send(v.page(v.searchForm(), { maintenance: maint(req) }));
+  if (q === undefined) return void res.send(v.page(v.searchForm(), { maintenance: maint(req), panel: 'MNSERV-02' }));
   if (q === '') return void res.send(v.page(v.searchForm('Enter a member number or last name.')));
   const matches = Object.values(MEMBERS).filter(
     (m) => m.id === q || m.name.toLowerCase().includes(q.toLowerCase()),
   );
-  res.send(v.page(v.searchResults(q, matches), { maintenance: maint(req) }));
+  res.send(v.page(v.searchResults(q, matches), { maintenance: maint(req), panel: 'MNSERV-02' }));
 });
 
 app.get('/members/:id', (req, res) => {
   const m = MEMBERS[req.params.id];
   if (!m) return void res.send(v.page(v.searchResults(req.params.id, [])));
-  res.send(v.page(v.memberDetail(m), { maintenance: maint(req) }));
+  res.send(v.page(v.memberDetail(m), { maintenance: maint(req), panel: 'MNSERV-03' }));
 });
 
 app.get('/members/:id/subaccount/new', (req, res) => {
   const m = MEMBERS[req.params.id];
   if (!m) return void res.send(v.page(v.searchResults(req.params.id, [])));
-  res.send(v.page(v.subAccountForm(m), { maintenance: maint(req) }));
+  res.send(v.page(v.subAccountForm(m), { maintenance: maint(req), panel: 'MNSERV-04' }));
 });
 
 app.post('/members/:id/subaccount/new', (req, res) => {

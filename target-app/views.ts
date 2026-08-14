@@ -33,12 +33,18 @@ export function bannerFrame(): string {
 
 // Wraps body content in the legacy chrome. `sim=maintenance` renders a
 // dismissable interstitial on top of whatever page was requested.
-export function page(body: string, opts: { maintenance?: boolean; bare?: boolean } = {}): string {
+// The chrome imitates a WebFacing/HATS-style refaced green screen: panel
+// codes, a function-key legend, and an IE-era footer.
+export function page(
+  body: string,
+  opts: { maintenance?: boolean; bare?: boolean; panel?: string } = {},
+): string {
   const interstitial = opts.maintenance
     ? `<table width="100%" bgcolor="#ffffcc" border="1" cellpadding="6" class="c0">
         <tr><td align="center">
           <font size="3"><b>SCHEDULED MAINTENANCE NOTICE</b></font><br>
-          <font size="2">Core processing will be unavailable Sunday 02:00-04:00 ET. Transactions entered during this window will queue.</font><br>
+          <font size="2">HOST UNAVAILABLE &mdash; END-OF-DAY BATCH PROCESSING IN PROGRESS (02:00-04:00 ET).
+          TRANSACTIONS ENTERED DURING THIS WINDOW WILL MEMO-POST ONLY.</font><br>
           <a href="?ack=1">Continue to application</a>
         </td></tr>
       </table>`
@@ -48,14 +54,29 @@ export function page(body: string, opts: { maintenance?: boolean; bare?: boolean
     : `<table width="100%" bgcolor="#dddddd" cellpadding="4"><tr>
         <td class="c2"><a href="/main">Home</a> | <a href="/members/search">Member Services</a> | <a href="#" onclick="alert('Not available in this environment');return false">Reports</a></td>
       </tr></table>`;
+  const panelBar = opts.bare
+    ? ''
+    : `<table width="100%" bgcolor="#e8e8e8" cellpadding="2"><tr>
+        <td><font size="1" face="Courier New">${opts.panel ?? 'MN0000-00'}</font></td>
+        <td align="right"><font size="1" face="Courier New">MODE: INQ&nbsp;&nbsp;ENV: PROD</font></td>
+      </tr></table>`;
+  const footer = opts.bare
+    ? ''
+    : `<hr><table width="100%" cellpadding="2"><tr>
+        <td><font size="1" face="Courier New">F1=HELP&nbsp; F3=EXIT&nbsp; F5=REFRESH&nbsp; F12=CANCEL</font></td>
+        <td align="right"><font size="1" color="#666666">Best viewed in Internet Explorer 6.0 at 1024x768.
+        Do not use the browser Back button.</font></td>
+      </tr></table>`;
   return `<html>
 <head><title>CU*NEXUS</title></head>
 <body bgcolor="#f0f0f0" text="#000000" link="#003366">
 ${interstitial}
 ${nav}
+${panelBar}
 <table width="96%" align="center" cellpadding="10"><tr><td class="c1">
 ${body}
 </td></tr></table>
+${footer}
 </body></html>`;
 }
 
@@ -72,7 +93,7 @@ export function searchForm(err?: string): string {
 ${err ? `<font color="#cc0000"><b>${esc(err)}</b></font><br>` : ''}
 <form method="GET" action="/members/search">
 <table cellpadding="4"><tr>
-  <td><font size="2">Member Number or Last Name:</font></td>
+  <td><font size="2" face="Courier New">MEMBER NUMBER OR LAST NAME:</font></td>
   <td><input type="text" name="q" size="24"></td>
   <td><input type="submit" value="${process.env.BREAK_MARKUP ? 'Execute Query' : 'Search'}"></td>
 </tr></table>
