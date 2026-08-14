@@ -1,0 +1,8 @@
+{
+  "status": "business_outcome",
+  "outcomeCode": "VALIDATION_REJECTED",
+  "detail": "Form submission rejected with field validation errors",
+  "runId": "replay-2026-08-14T22-57-32-645Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-14T22-57-32-645Z",
+  "recoveries": []
+}

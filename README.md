@@ -85,7 +85,21 @@ npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --param
   --entry-override "http://localhost:4173/?sim=timeout"
 ```
 
-**6. Human escalation & handoff** (scripted end-to-end demo):
+**6. The mutating flow — second capability** (form fill → confirmation review, commit never clicked):
+
+```bash
+npm run discover -- --goal "For member 12345, start opening a new sub-account of type Secondary Savings with nickname VACATION FUND and initial deposit 25.00. Stop at the confirmation review screen — do NOT click Open Account — and read the confirmed nickname and deposit from the review table." \
+  --name open-subaccount-to-confirmation --param memberId=12345 --param nickname="VACATION FUND" --param deposit=25.00
+npm run replay -- --artifact artifacts/open-subaccount-to-confirmation.v1.0.0.json --approve
+# Different member and values:
+npm run replay -- --artifact artifacts/open-subaccount-to-confirmation.v1.0.0.json \
+  --params '{"memberId":"23456","nickname":"RAINY DAY","deposit":"50.00"}'
+# Below-minimum deposit -> business_outcome VALIDATION_REJECTED:
+npm run replay -- --artifact artifacts/open-subaccount-to-confirmation.v1.0.0.json \
+  --params '{"memberId":"12345","nickname":"TEST","deposit":"1.00"}'
+```
+
+**7. Human escalation & handoff** (scripted end-to-end demo):
 
 ```bash
 # Terminal A — start the app with simulated vendor drift (renamed button):
@@ -100,7 +114,7 @@ For a live manual handoff instead, run any replay with `--attended`: the
 browser runs headful, and when the run gets stuck you operate the window
 yourself, then answer `retry` / `skip` / `abort` at the operator prompt.
 
-**7. Capability catalog** (what an agent could discover and invoke):
+**8. Capability catalog** (what an agent could discover and invoke):
 
 ```bash
 npm run list

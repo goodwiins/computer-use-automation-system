@@ -25,6 +25,20 @@ injected runtime conditions:
 | `replay-recovered-maintenance/` | `memberId=12345`, entry `?sim=maintenance` | `success` after auto-dismissing the maintenance interstitial (`recoveries: ["s1:maintenance-interstitial"]`) |
 | `replay-failure-session-timeout/` | entry `?sim=timeout` | `failure` — session-expiry detector classified fatal; structured error + screenshot |
 
+## Second capability — the mutating flow
+
+`discovery-run-subaccount/` — a second genuine LLM discovery of the brief's
+example goal: open a sub-account for a member and stop at the confirmation
+review screen (the commit click is never made). The model classified the
+form-submit click `reversible_write` on its own; three typed parameters
+(`memberId`, `nickname`, `deposit`) and two outputs were recorded into
+`artifact.open-subaccount-to-confirmation.v1.0.0.json`.
+
+| Folder | Params / condition | Result |
+|---|---|---|
+| `replay-subaccount-success/` | member `23456`, nickname `RAINY DAY`, deposit `50.00` | `success` — same artifact, entirely different member and values |
+| `replay-subaccount-validation-rejected/` | deposit `1.00` (below the 5.00 minimum) | `business_outcome`, `VALIDATION_REJECTED` |
+
 ## Escalation & handoff
 
 `escalation-handoff/` — target app started with `BREAK_MARKUP=1` (vendor-drift

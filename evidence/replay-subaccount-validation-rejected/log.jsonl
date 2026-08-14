@@ -1,0 +1,42 @@
+{"ts":"2026-08-14T22:57:32.646Z","seq":0,"event":"replay.start","capability":"open-subaccount-to-confirmation","version":"1.0.0","params":{"memberId":"12345","nickname":"TEST","deposit":"1.00"}}
+{"ts":"2026-08-14T22:57:32.646Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.762Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member services to locate member {{memberId}} and start the sub-account workflow.","risk":"read"}
+{"ts":"2026-08-14T22:57:32.795Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.822Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T22:57:32.822Z","seq":5,"event":"step.ok","stepId":"s1","action":"click","ms":27,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.823Z","seq":6,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the provided member ID to retrieve member {{memberId}}.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.853Z","seq":7,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.857Z","seq":8,"event":"step.resolution","stepId":"s2","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T22:57:32.857Z","seq":9,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.857Z","seq":10,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the member inquiry for member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T22:57:32.863Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.878Z","seq":12,"event":"step.resolution","stepId":"s3","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T22:57:32.878Z","seq":13,"event":"step.ok","stepId":"s3","action":"click","ms":15,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.878Z","seq":14,"event":"step.start","stepId":"s4","action":"click","intent":"Open the confirmed member record for member {{memberId}}.","risk":"read"}
+{"ts":"2026-08-14T22:57:32.884Z","seq":15,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.913Z","seq":16,"event":"step.resolution","stepId":"s4","resolution":{"strategyUsed":2,"kind":"css","matches":1}}
+{"ts":"2026-08-14T22:57:32.914Z","seq":17,"event":"step.ok","stepId":"s4","action":"click","ms":30,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.914Z","seq":18,"event":"step.start","stepId":"s5","action":"click","intent":"Start the new sub-account application for confirmed member {{memberId}}.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.925Z","seq":19,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/12345","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.947Z","seq":20,"event":"step.resolution","stepId":"s5","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T22:57:32.947Z","seq":21,"event":"step.ok","stepId":"s5","action":"click","ms":22,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.947Z","seq":22,"event":"step.start","stepId":"s6","action":"select","intent":"Set the requested sub-account type to Secondary Savings.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.959Z","seq":23,"event":"policy.decision","action":"select","url":"http://localhost:4173/members/12345/subaccount/new","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.962Z","seq":24,"event":"step.resolution","stepId":"s6","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T22:57:32.962Z","seq":25,"event":"step.ok","stepId":"s6","action":"select","ms":3,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.962Z","seq":26,"event":"step.start","stepId":"s7","action":"fill","intent":"Enter the requested nickname exactly as provided.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.968Z","seq":27,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/12345/subaccount/new","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.970Z","seq":28,"event":"step.resolution","stepId":"s7","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T22:57:32.970Z","seq":29,"event":"step.ok","stepId":"s7","action":"fill","ms":2,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.970Z","seq":30,"event":"step.start","stepId":"s8","action":"fill","intent":"Enter the requested initial deposit amount of {{deposit}}.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.975Z","seq":31,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/12345/subaccount/new","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:32.977Z","seq":32,"event":"step.resolution","stepId":"s8","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-08-14T22:57:32.977Z","seq":33,"event":"step.ok","stepId":"s8","action":"fill","ms":2,"isRetry":false}
+{"ts":"2026-08-14T22:57:32.977Z","seq":34,"event":"step.start","stepId":"s9","action":"click","intent":"Proceed to the confirmation review for the entered sub-account details without opening the account.","risk":"reversible_write"}
+{"ts":"2026-08-14T22:57:32.981Z","seq":35,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/12345/subaccount/new","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-08-14T22:57:33.005Z","seq":36,"event":"step.resolution","stepId":"s9","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-08-14T22:57:33.005Z","seq":37,"event":"step.ok","stepId":"s9","action":"click","ms":24,"isRetry":false}
+{"ts":"2026-08-14T22:57:33.005Z","seq":38,"event":"step.start","stepId":"s10","action":"extract","intent":"Read the confirmed nickname from the review table row.","risk":"read"}
+{"ts":"2026-08-14T22:57:33.019Z","seq":39,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/12345/subaccount/new","risk":"read","verdict":"allow"}
+{"ts":"2026-08-14T22:57:43.256Z","seq":40,"event":"detector.hit","stepId":"s10","detector":"validation-rejected","classification":"business_outcome"}
+{"ts":"2026-08-14T22:57:43.280Z","seq":41,"event":"replay.business_outcome","outcomeCode":"VALIDATION_REJECTED","screenshot":"evidence/runs/replay-2026-08-14T22-57-32-645Z/041-outcome-validation-rejected.png"}

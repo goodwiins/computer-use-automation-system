@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "outputs": {
+    "confirmedNickname": "Nickname:\tRAINY DAY",
+    "confirmedDeposit": "Initial Deposit:\t50.00"
+  },
+  "runId": "replay-2026-08-14T22-57-31-549Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-14T22-57-31-549Z",
+  "recoveries": []
+}

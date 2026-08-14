@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "artifact": "artifacts/open-subaccount-to-confirmation.v1.0.0.json",
+  "outputs": {
+    "confirmedNickname": "Nickname:\tVACATION FUND",
+    "confirmedDeposit": "Initial Deposit:\t25.00"
+  },
+  "summary": "Reached the confirmation review screen for member 12345 and stopped without opening the account. The review confirms the requested nickname and initial deposit."
+}
