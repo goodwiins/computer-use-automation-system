@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "outputs": {
+    "savings_balance": "9,812.55"
+  },
+  "runId": "replay-2026-08-20T00-33-47-922Z",
+  "evidenceDir": "evidence/runs/replay-2026-08-20T00-33-47-922Z",
+  "recoveries": []
+}
