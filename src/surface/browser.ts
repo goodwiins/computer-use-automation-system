@@ -54,6 +54,10 @@ export class BrowserSurface implements Surface {
     return work && work.url() !== 'about:blank' ? work.url() : this.page.url();
   }
 
+  frameUrls(): string[] {
+    return this.page.frames().map((f) => f.url());
+  }
+
   async observe(): Promise<Observation> {
     const frames: Observation['frames'] = [];
     for (const frame of this.page.frames()) {
@@ -80,7 +84,7 @@ export class BrowserSurface implements Surface {
     await this.page.goto(url, { waitUntil: 'load' });
   }
 
-  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     // Legacy pages navigate on click; wait for the frame to settle.
     await Promise.all([
@@ -90,13 +94,13 @@ export class BrowserSurface implements Surface {
     return report;
   }
 
-  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.fill(value, { timeout: timeoutMs });
     return report;
   }
 
-  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
       await locator.selectOption(value, { timeout: timeoutMs }); // fall back to value=
@@ -124,8 +128,49 @@ export class BrowserSurface implements Surface {
     return false;
   }
 
-  async screenshot(path: string): Promise<void> {
-    await this.page.screenshot({ path, fullPage: true });
+  async screenshot(path: string, opts: { maskValues?: string[] } = {}): Promise<void> {
+    const restore = await this.maskSensitiveInputs(opts.maskValues ?? []);
+    try {
+      await this.page.screenshot({ path, fullPage: true });
+    } finally {
+      await restore();
+    }
+  }
+
+  /**
+   * Render matching inputs as password fields for the duration of a
+   * screenshot, so sensitive values never persist in evidence PNGs. Returns
+   * an unmask function that restores the original state.
+   */
+  private async maskSensitiveInputs(maskValues: string[]): Promise<() => Promise<void>> {
+    if (maskValues.length === 0) return async () => {};
+    for (const frame of this.page.frames()) {
+      await frame
+        .evaluate((values: string[]) => {
+          for (const el of Array.from(document.querySelectorAll('input'))) {
+            if (!(values.includes(el.value))) continue;
+            const input = el as HTMLInputElement & { dataset: Record<string, string> };
+            input.dataset.cuMaskType = input.getAttribute('type') ?? '';
+            input.setAttribute('type', 'password');
+          }
+        }, maskValues)
+        .catch(() => {}); // frame may be navigating — nothing to mask there
+    }
+    return async () => {
+      for (const frame of this.page.frames()) {
+        await frame
+          .evaluate(() => {
+            for (const el of Array.from(document.querySelectorAll('input[data-cu-mask-type]'))) {
+              const input = el as HTMLInputElement & { dataset: Record<string, string> };
+              const origType = input.dataset.cuMaskType ?? '';
+              if (origType === '') input.removeAttribute('type');
+              else input.setAttribute('type', origType);
+              delete input.dataset.cuMaskType;
+            }
+          })
+          .catch(() => {});
+      }
+    };
   }
 
   async close(): Promise<void> {

@@ -114,7 +114,23 @@ For a live manual handoff instead, run any replay with `--attended`: the
 browser runs headful, and when the run gets stuck you operate the window
 yourself, then answer `retry` / `skip` / `abort` at the operator prompt.
 
-**8. Capability catalog** (what an agent could discover and invoke):
+**8. Cross-tenant replay — one capability, many tenants** (the second
+"tenant" runs the same mock app with `?tenant=premier`: rebranded banner,
+menu entry renamed to "Account Inquiry"):
+
+```bash
+# Without the overlay the base artifact fails loudly at the renamed control:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json \
+  --entry-override "http://localhost:4173/?tenant=premier" --params '{"memberId":"23456"}'
+#   -> {"status":"failure","failure":{"stepId":"s1","observed":"Could not uniquely resolve target ...: role=0, text=0, css=2"}}
+
+# With a thin tenant overlay, the same base replays — no re-recording:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json \
+  --overlay config/overlays/premier.json --params '{"memberId":"23456"}'
+#   -> {"status":"success","outputs":{"savings_balance":"9,812.55"}}
+```
+
+**9. Capability catalog** (what an agent could discover and invoke):
 
 ```bash
 npm run list
@@ -140,7 +156,7 @@ src/replay/       deterministic executor, tiered locators, detectors, outcome ta
 src/escalation/   control-owner state machine + operator console
 src/safety/       policy allowlist + redaction
 src/evidence/     structured run logging
-config/           policy.json + per-app detector profiles
+config/           policy.json + per-app detector profiles + tenant overlays
 artifacts/        recorded capabilities (JSON, reviewable, versioned)
 evidence/         committed demo runs (discovery, replays, escalation)
 ```

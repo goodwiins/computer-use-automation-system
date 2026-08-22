@@ -7,6 +7,9 @@
 //   ?sim=crash        -> 500 error page
 //   member 99999      -> "No records found" (legit business outcome)
 //   BREAK_MARKUP=1    -> renames the search button (simulates vendor-version drift)
+//   ?tenant=premier   -> "Premier" configuration of the same vendor product:
+//                        rebranded banner + renamed menu link (a second tenant
+//                        running the same app, configured differently)
 
 import express from 'express';
 import { MEMBERS, openedSubAccounts } from './data.js';
@@ -28,12 +31,16 @@ app.use((req, res, next) => {
 const maint = (req: express.Request) => req.query.sim === 'maintenance' && req.query.ack !== '1';
 
 app.get('/', (req, res) => {
-  // The frameset shell forwards its query to the working frame so simulated
-  // conditions (?sim=...) reach the pages the automation actually drives.
-  res.send(v.framesetPage(new URL(req.url, 'http://x').search.slice(1)));
+  // The frameset shell forwards its query to the working frames so simulated
+  // conditions (?sim=...) and tenant skins (?tenant=...) reach the pages the
+  // automation actually drives.
+  const qs = new URL(req.url, 'http://x').search;
+  res.send(v.framesetPage(qs.slice(1)));
 });
-app.get('/banner', (_req, res) => res.send(v.bannerFrame()));
-app.get('/main', (req, res) => res.send(v.page(v.mainMenu(), { maintenance: maint(req), panel: 'MNMAIN-01' })));
+app.get('/banner', (req, res) => res.send(v.bannerFrame(req.query.tenant === 'premier')));
+app.get('/main', (req, res) =>
+  res.send(v.page(v.mainMenu(req.query.tenant === 'premier'), { maintenance: maint(req), panel: 'MNMAIN-01' })),
+);
 
 app.get('/members/search', (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : undefined;

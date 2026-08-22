@@ -55,6 +55,10 @@ export function checkAction(
 }
 
 export function originAllowed(allowed: string[], url: string): boolean {
+  // Scheme-less "authority" forms (protocol-relative `//host/path`, and the
+  // backslash variant some browsers normalize) are NOT relative paths: a
+  // browser resolves them against a full origin and escapes the allowlist.
+  if (url.startsWith('//') || url.startsWith('\\\\')) return false;
   try {
     const origin = new URL(url).origin;
     return allowed.includes(origin);

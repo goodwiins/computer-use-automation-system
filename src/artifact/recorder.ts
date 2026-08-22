@@ -13,6 +13,35 @@ import { CapabilityArtifact, type Detector, type Parameter, type Step } from './
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const RISK_RANK: Record<Step['risk'], number> = { read: 0, reversible_write: 1, irreversible: 2 };
+
+// Commit-shaped control text implies a risk floor regardless of what the
+// model claimed — a downlabeled irreversible click would sail through the
+// policy gate unattended.
+const IRREVERSIBLE_TEXT_RE =
+  /\b(open account|open a|commit|finalize|confirm (?:the )?(?:transfer|order|payment)|delete|remove|approve|post(?:ing)? the|submit transfer|pay now)\b/i;
+const SUBMIT_ROLE_RE = /^(button|submit)$/;
+
+/**
+ * Risk floor implied by the element itself (from the discovery snapshot).
+ * Returns null when the element implies nothing beyond a read (e.g. links).
+ */
+export function riskFloorFor(descriptor: { snapshot?: { tag?: string; role?: string; text?: string } }): Step['risk'] | null {
+  const snap = descriptor.snapshot;
+  if (!snap) return null;
+  const isButtonish = snap.tag === 'button' || SUBMIT_ROLE_RE.test(snap.role ?? '') ||
+    (snap.tag === 'input' && SUBMIT_ROLE_RE.test(snap.role ?? ''));
+  if (!isButtonish) return null;
+  if (IRREVERSIBLE_TEXT_RE.test(snap.text ?? '')) return 'irreversible';
+  return 'reversible_write';
+}
+
+function floorRisk(modelRisk: Step['risk'], descriptor: { snapshot?: { tag?: string; role?: string; text?: string } }): Step['risk'] {
+  const floor = riskFloorFor(descriptor);
+  if (!floor) return modelRisk;
+  return RISK_RANK[modelRisk] >= RISK_RANK[floor] ? modelRisk : floor;
+}
+
 export interface RecorderInput {
   name: string;
   description: string;
@@ -56,7 +85,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       case 'navigate':
         return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
-        return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: entry.risk ?? 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: floorRisk(entry.risk ?? 'read', entry.descriptor!), timeoutMs: 10_000 };
       case 'fill':
         return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'select':

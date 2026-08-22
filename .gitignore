@@ -4,3 +4,5 @@ evidence/runs/
 !evidence/runs/.gitkeep
 *.log
 .env
+
+.DS_Store

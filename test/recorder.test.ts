@@ -87,3 +87,45 @@ describe('recordArtifact parameterization', () => {
     expect(() => recordArtifact(input, { ...discovery, status: 'stopped' })).toThrow();
   });
 });
+
+describe('recordArtifact risk-label floor', () => {
+  // The model classifies click risk, but its label must never be lower than
+  // what the element itself implies — a mislabeled commit click would sail
+  // through the policy gate unattended.
+  const clickTrace = (snapshotText: string, tag: string, role: string, modelRisk: 'read' | 'reversible_write' | 'irreversible'): DiscoveryResult => ({
+    ...discovery,
+    trace: [
+      {
+        action: 'click',
+        reason: 'do the thing',
+        descriptor: {
+          description: 'the control',
+          strategies: [{ kind: 'role', role, name: snapshotText }],
+          snapshot: { tag, role, text: snapshotText },
+        },
+        risk: modelRisk,
+        urlAfter: 'http://localhost:4173/x',
+      },
+    ],
+  });
+
+  it('raises a model-read on an "Open Account" button to irreversible', () => {
+    const a = recordArtifact(input, clickTrace('Open Account', 'button', 'button', 'read'));
+    expect(a.steps[0]!.risk).toBe('irreversible');
+  });
+
+  it('raises a model-read on a generic submit button to reversible_write', () => {
+    const a = recordArtifact(input, clickTrace('Apply Filters', 'button', 'button', 'read'));
+    expect(a.steps[0]!.risk).toBe('reversible_write');
+  });
+
+  it('keeps the model label when it already meets the floor', () => {
+    const a = recordArtifact(input, clickTrace('Open Account', 'button', 'button', 'irreversible'));
+    expect(a.steps[0]!.risk).toBe('irreversible');
+  });
+
+  it('never floors plain link clicks', () => {
+    const a = recordArtifact(input, clickTrace('12345', 'a', 'link', 'read'));
+    expect(a.steps[0]!.risk).toBe('read');
+  });
+});

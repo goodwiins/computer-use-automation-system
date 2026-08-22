@@ -14,17 +14,20 @@ export function framesetPage(query = ''): string {
 <html>
 <head><title>CU*NEXUS Teller Workstation</title></head>
 <frameset rows="64,*" border="1">
-  <frame src="/banner" name="banner" scrolling="no">
+  <frame src="/banner${qs}" name="banner" scrolling="no">
   <frame src="/main${qs}" name="workarea">
   <noframes><body>This application requires frame support.</body></noframes>
 </frameset>
 </html>`;
 }
 
-export function bannerFrame(): string {
+export function bannerFrame(premier = false): string {
+  const brand = premier
+    ? '<b>CU*NEXUS Premier</b> &nbsp;Teller Workstation v4.0.1'
+    : '<b>CU*NEXUS</b> &nbsp;Teller Workstation v3.2.11';
   return page(
     `<table width="100%" bgcolor="#003366" cellpadding="8"><tr>
-      <td><font color="#ffffff" size="4"><b>CU*NEXUS</b> &nbsp;Teller Workstation v3.2.11</font></td>
+      <td><font color="#ffffff" size="4">${brand}</font></td>
       <td align="right"><font color="#cccccc" size="2">Operator: TELLER01 &nbsp;|&nbsp; Branch: 004</font></td>
     </tr></table>`,
     { bare: true },
@@ -80,10 +83,15 @@ ${footer}
 </body></html>`;
 }
 
-export function mainMenu(): string {
+export function mainMenu(premier = false): string {
+  // The "Premier" configuration renames the inquiry entry point — same
+  // product, different tenant branding/labels (the cross-tenant case).
+  const inquiry = premier
+    ? '<a href="/members/search"><b>Account Inquiry</b></a><br><font size="2">Member inquiry, maintenance, sub-accounts</font>'
+    : '<a href="/members/search"><b>Member Inquiry / Maintenance</b></a><br><font size="2">Inquiry, maintenance, sub-accounts</font>';
   return `<font size="4"><b>Main Menu</b></font><hr>
 <table cellpadding="6"><tr>
-  <td bgcolor="#e8e8ff" class="c3"><a href="/members/search"><b>Member Inquiry / Maintenance</b></a><br><font size="2">Inquiry, maintenance, sub-accounts</font></td>
+  <td bgcolor="#e8e8ff" class="c3">${inquiry}</td>
   <td bgcolor="#e8ffe8" class="c3"><a href="#" onclick="alert('Not available in this environment');return false"><b>Transaction Processing</b></a><br><font size="2">Deposits, withdrawals, transfers</font></td>
 </tr></table>`;
 }

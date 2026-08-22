@@ -122,6 +122,13 @@ export const CapabilityArtifact = z.object({
   steps: z.array(Step).min(1),
   successCondition: Assertion,
   detectors: z.array(Detector).default([]),
+  // Present only when a tenant overlay was composed onto a base artifact at
+  // load time (see overlay.ts): the composed artifact is reviewable as a
+  // distinct thing from its base, and the base file is never modified.
+  overlay: z.object({ tenant: z.string(), source: z.string() }).optional(),
+  // Optional per-tenant defaults for declared parameters; merged under the
+  // caller's explicit params at replay time.
+  paramDefaults: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
   provenance: z.object({
     discoveredAt: z.string(),
     model: z.string(),

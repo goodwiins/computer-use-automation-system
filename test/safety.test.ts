@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkAction, Policy } from '../src/safety/policy.js';
+import { originAllowed } from '../src/safety/policy.js';
 import { Redactor } from '../src/safety/redact.js';
 
 const policy = Policy.parse({
@@ -30,6 +31,13 @@ describe('policy.checkAction', () => {
   });
   it('treats relative URLs as same-origin', () => {
     expect(checkAction(policy, 'navigate', '/members/search', 'read')).toEqual({ verdict: 'allow' });
+  });
+  it('denies protocol-relative URLs — scheme-less authority is not relative', () => {
+    expect(originAllowed(policy.allowedOrigins, '//evil.example.com/x')).toBe(false);
+    expect(checkAction(policy, 'navigate', '//evil.example.com/x', 'read').verdict).toBe('deny');
+  });
+  it('denies backslash-relative URLs that browsers treat as authority', () => {
+    expect(originAllowed(policy.allowedOrigins, '\\\\evil.example.com/x')).toBe(false);
   });
 });
 

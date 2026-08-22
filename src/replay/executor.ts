@@ -45,6 +45,8 @@ export async function runReplay(
   const outputs: Record<string, string> = {};
   const base = { runId: logger.runId, evidenceDir: logger.dir, recoveries };
 
+  // Per-tenant defaults (from an overlay) fill in under the caller's params.
+  params = { ...artifact.paramDefaults, ...params };
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
@@ -96,7 +98,10 @@ export async function runReplay(
           recoveries.push(`${stepId}:${d.id}`);
           logger.log('detector.recovering', { detector: d.id, action: d.recovery.action });
           if (d.recovery.action === 'click' && d.recovery.target) {
-            await surface.click(d.recovery.target);
+            // Recovery actions come from config, not the reviewed step list —
+            // pass an explicit risk so they go through the policy gate like
+            // any other state-touching click instead of riding a silent default.
+            await surface.click(d.recovery.target, undefined, 'reversible_write');
           }
           // Recovery is bounded to one attempt: re-check only THIS detector's
           // own match, not the whole list. Still present -> fatal, not a loop.
@@ -186,23 +191,17 @@ export async function runReplay(
           await surface.navigate(resolveTemplate(step.url!, params));
           break;
         case 'click': {
-          const report = await (surface.click as (t: unknown, ms?: number, risk?: string) => Promise<unknown>)(
-            target!, step.timeoutMs, step.risk,
-          );
+          const report = await surface.click(target!, step.timeoutMs, step.risk);
           logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
         }
         case 'fill': {
-          const report = await (surface.fill as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
-            target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk,
-          );
+          const report = await surface.fill(target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk);
           logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
         }
         case 'select': {
-          const report = await (surface.select as (t: unknown, v: string, ms?: number, risk?: string) => Promise<unknown>)(
-            target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk,
-          );
+          const report = await surface.select(target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk);
           logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
         }

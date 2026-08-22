@@ -4,7 +4,7 @@
 // (OS accessibility APIs) or a screenshot+coordinates implementation can slot
 // in without touching artifacts or the replay engine.
 
-import type { TargetDescriptor } from '../artifact/schema.js';
+import type { RiskClass, TargetDescriptor } from '../artifact/schema.js';
 
 export interface FrameObservation {
   frame: string; // '' = main frame
@@ -44,17 +44,21 @@ export interface Surface {
   start(entryUrl: string): Promise<void>;
   observe(): Promise<Observation>;
   currentUrl(): string;
+  /** URL of every live frame (top included) — bounds checks must cover all of them. */
+  frameUrls(): string[];
 
   navigate(url: string): Promise<void>;
-  click(target: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport>;
-  fill(target: TargetDescriptor, value: string, timeoutMs?: number): Promise<ResolutionReport>;
-  select(target: TargetDescriptor, value: string, timeoutMs?: number): Promise<ResolutionReport>;
+  // `risk` is consumed by guarding implementations to route through the
+  // policy gate; unguarded implementations ignore it.
+  click(target: TargetDescriptor, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
+  fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
+  select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   readText(target: TargetDescriptor, timeoutMs?: number): Promise<{ text: string; report: ResolutionReport }>;
   isTextVisible(text: string, frame?: string): Promise<boolean>;
 
   /** Build a robust TargetDescriptor from whatever hint found the element. */
   describeTarget(hint: TargetDescriptor): Promise<TargetDescriptor>;
 
-  screenshot(path: string): Promise<void>;
+  screenshot(path: string, opts?: { maskValues?: string[] }): Promise<void>;
   close(): Promise<void>;
 }

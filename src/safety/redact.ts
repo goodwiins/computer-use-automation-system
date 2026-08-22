@@ -26,6 +26,11 @@ export class Redactor {
     return out;
   }
 
+  /** Concrete values registered for masking (e.g. for screenshot input masking). */
+  maskValues(): string[] {
+    return [...this.sensitiveValues];
+  }
+
   /** Deep-redact any JSON-serializable value. */
   redact<T>(value: T): T {
     if (typeof value === 'string') return this.redactString(value) as T;

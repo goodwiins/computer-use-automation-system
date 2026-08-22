@@ -1,6 +1,6 @@
 // CLI entry points.
 //   discover --goal "..." --name <capability> [--param k=v ...] [--sensitive k] [--entry URL] [--headful]
-//   replay   --artifact <path> [--params '{"k":"v"}'] [--entry-override URL] [--attended] [--approve]
+//   replay   --artifact <path> [--overlay <tenant overlay>] [--params '{"k":"v"}'] [--entry-override URL] [--attended] [--approve]
 //   list     — catalog of saved capabilities (name, params, outputs)
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { runDiscovery } from './src/agent/loop.js';
 import { newRunId, recordArtifact } from './src/artifact/recorder.js';
+import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
+import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
 import { CapabilityArtifact, Detector } from './src/artifact/schema.js';
 import { OperatorConsole } from './src/escalation/operator.js';
 import { ControlSession } from './src/escalation/session.js';
@@ -77,6 +79,7 @@ async function discover(argv: string[]) {
   const { flags, params, sensitive } = parseArgs(argv);
   const goal = typeof flags.goal === 'string' ? flags.goal : fatal('--goal is required');
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
+  assertSafeCapabilityName(name); // becomes a filename under artifacts/
   const entry = typeof flags.entry === 'string' ? flags.entry : 'http://localhost:4173/';
   const { openai, model } = makeLLMClient();
 
@@ -144,13 +147,28 @@ async function discover(argv: string[]) {
 async function replay(argv: string[]) {
   const { flags } = parseArgs(argv);
   const artifactPath = typeof flags.artifact === 'string' ? flags.artifact : fatal('--artifact is required');
-  const artifact = CapabilityArtifact.parse(JSON.parse(readFileSync(artifactPath, 'utf8')));
+  const rawArtifact = readFileSync(artifactPath, 'utf8');
 
+  // Promotion always acts on the BASE artifact file. Refuse to combine it
+  // with an overlay: writing a tenant-composed artifact back over the base
+  // would corrupt the base (this used to be the actual behavior).
+  if (flags.approve && flags.overlay) {
+    fatal('Cannot combine --approve with --overlay — promote the base artifact by itself');
+  }
   if (flags.approve) {
-    artifact.status = 'approved';
-    writeFileSync(artifactPath, JSON.stringify(artifact, null, 2));
-    console.log(`✔ ${artifact.id}@${artifact.version} promoted to approved`);
+    writeFileSync(artifactPath, promoteToApproved(rawArtifact));
+    console.log(`✔ promoted ${artifactPath} to approved`);
     return;
+  }
+
+  let artifact = CapabilityArtifact.parse(JSON.parse(rawArtifact));
+
+  // Compose a tenant overlay onto the base (cross-tenant reuse): the base
+  // file is never modified; the composed artifact carries overlay provenance.
+  if (typeof flags.overlay === 'string') {
+    const overlay = TenantOverlay.parse(JSON.parse(readFileSync(flags.overlay, 'utf8')));
+    artifact = applyOverlay(artifact, overlay);
+    console.log(`composed tenant overlay "${overlay.tenant}" onto ${overlay.base.id}@${overlay.base.version}`);
   }
 
   const params: Record<string, string | number> =

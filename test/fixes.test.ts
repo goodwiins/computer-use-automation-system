@@ -33,6 +33,7 @@ function makeStubSurface(overrides: Partial<Surface> = {}): Surface {
     start: async () => {},
     observe: async (): Promise<Observation> => ({ url: '', title: '', frames: [] }),
     currentUrl: () => 'http://localhost:4173/',
+    frameUrls: () => ['http://localhost:4173/'],
     navigate: async () => {},
     click: async () => okReport,
     fill: async () => okReport,
@@ -192,5 +193,87 @@ describe('sentinel double-execution fix', () => {
     expect(calls.navigate).toBe(1); // s1 ran normally
     expect(calls.click).toBe(1); // only s3's click — s2 was skipped, never executed
     expect(result.status).toBe('success');
+  });
+});
+
+describe('screenshot evidence passes sensitive values to the surface for masking', () => {
+  it('forwards registered sensitive values as maskValues', async () => {
+    const seen: Array<unknown> = [];
+    const surface = makeStubSurface({
+      screenshot: async (_path: string, opts?: { maskValues?: string[] }) => {
+        seen.push(opts);
+      },
+    });
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(['SECRETPASSWORD']);
+    const logger = new RunLogger('replay', redactor, 'evidence/test-runs');
+    await logger.screenshot(surface, 'masked-shot');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({ maskValues: ['SECRETPASSWORD'] });
+  });
+
+  it('sends no maskValues when nothing sensitive is registered', async () => {
+    const seen: Array<unknown> = [];
+    const surface = makeStubSurface({
+      screenshot: async (_path: string, opts?: { maskValues?: string[] }) => {
+        seen.push(opts);
+      },
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    await logger.screenshot(surface, 'plain-shot');
+    expect(seen[0]).toEqual({});
+  });
+});
+
+describe('detector recovery actions are risk-gated', () => {
+  it('executes a recovery click with an explicit reversible_write risk, not the silent default', async () => {
+    const NOTICE = 'SCHEDULED MAINTENANCE NOTICE';
+    let noticeVisible = true;
+    const clickArgs: Array<{ targetDescription: string; risk: string | undefined }> = [];
+    const surface = makeStubSurface({
+      isTextVisible: async (text: string) => (text === NOTICE ? noticeVisible : false),
+      click: async (target: { description: string }, _ms?: number, risk?: string) => {
+        clickArgs.push({ targetDescription: target.description, risk });
+        noticeVisible = false; // recovery clears the condition
+        return { strategyUsed: 0, kind: 'css', matches: 1 };
+      },
+    });
+
+    const artifact = CapabilityArtifact.parse({
+      schemaVersion: 1,
+      id: 'recovery-risk-fixture',
+      name: 'recovery-risk-fixture',
+      description: 'test',
+      version: '1.0.0',
+      status: 'approved',
+      app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+      parameters: [],
+      outputs: [],
+      steps: [
+        { id: 's1', intent: 'x', action: 'navigate', url: 'http://localhost:4173/', risk: 'read', timeoutMs: 1000 },
+      ],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [
+        {
+          id: 'notice',
+          description: 'interstitial',
+          match: { kind: 'textVisible', text: NOTICE },
+          classification: 'recoverable',
+          recovery: {
+            action: 'click',
+            target: { description: 'Continue to application', strategies: [{ kind: 'css', selector: '#continue' }] },
+          },
+        },
+      ],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'test' },
+    });
+
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+
+    expect(result.status).toBe('success');
+    expect(clickArgs).toHaveLength(1);
+    expect(clickArgs[0]!.targetDescription).toBe('Continue to application');
+    expect(clickArgs[0]!.risk).toBe('reversible_write');
   });
 });

@@ -31,8 +31,11 @@ export class RunLogger {
   async screenshot(surface: Surface, label: string): Promise<string> {
     const safeLabel = label.replace(/[^a-zA-Z0-9._-]/g, '_');
     const file = join(this.dir, `${String(this.seq).padStart(3, '0')}-${safeLabel}.png`);
+    // Screenshots bypass text redaction by nature — hand the surface the
+    // sensitive values so it can mask matching on-screen inputs for the shot.
+    const values = this.redactor.maskValues();
     try {
-      await surface.screenshot(file);
+      await surface.screenshot(file, values.length ? { maskValues: values } : {});
       return file;
     } catch {
       return '(screenshot failed)';

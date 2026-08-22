@@ -49,6 +49,7 @@ export class GuardedSurface implements Surface {
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
   currentUrl(): string { return this.inner.currentUrl(); }
+  frameUrls(): string[] { return this.inner.frameUrls(); }
   isTextVisible(text: string, frame?: string) { return this.inner.isTextVisible(text, frame); }
   describeTarget(hint: TargetDescriptor) { return this.inner.describeTarget(hint); }
   screenshot(path: string) { return this.inner.screenshot(path); }
@@ -56,12 +57,18 @@ export class GuardedSurface implements Surface {
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
   private assertStillInBounds(action: string): void {
-    const url = this.inner.currentUrl();
-    if (!originAllowed(this.policy.allowedOrigins, url)) {
-      throw new PolicyViolationError(
-        { verdict: 'deny', reason: `navigation escaped the allowed origins during "${action}"` },
-        action,
-      );
+    // Check EVERY live frame, not just the reported working URL: in a frameset
+    // app currentUrl() prefers a named child frame, which can go stale while
+    // the top-level page navigates somewhere hostile.
+    const urls = [this.inner.currentUrl(), ...this.inner.frameUrls()];
+    for (const url of urls) {
+      if (url.startsWith('about:')) continue; // blank/srcdoc frames inherit their parent
+      if (!originAllowed(this.policy.allowedOrigins, url)) {
+        throw new PolicyViolationError(
+          { verdict: 'deny', reason: `navigation escaped the allowed origins during "${action}"` },
+          action,
+        );
+      }
     }
   }
 
