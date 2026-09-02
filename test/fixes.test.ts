@@ -417,3 +417,15 @@ describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
     expect(res.status).toBe(0);
   });
 });
+
+describe('Sep-02 audit LOW findings', () => {
+  it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {
+    const r = new Redactor();
+    r.addSensitiveValues([1, 'SECRETPASSWORD']);
+    const out = r.redactString('id=1 amount 12 at step s1 — xSECRETPASSWORDy');
+    expect(out.startsWith('id=•')).toBe(true); // the standalone value is masked
+    expect(out).toContain('amount 12'); // ...but not inside a longer number
+    expect(out).toContain('step s1'); // ...nor inside an identifier
+    expect(out).not.toContain('SECRETPASSWORD'); // long values stay substring-masked
+  });
+});

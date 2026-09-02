@@ -9,6 +9,9 @@
 const CREDENTIAL_RE =
   /\b(?:(?:sk|pk|key|token|secret|bearer)[-_]?[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[bap]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})\b/gi;
 const MASK = '•••redacted•••';
+/** Shorter sensitive values are matched as whole tokens, not as substrings. */
+const MIN_SUBSTRING_LEN = 4;
+const escapeRegexChars = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export class Redactor {
   private sensitiveValues: string[] = [];
@@ -27,7 +30,13 @@ export class Redactor {
 
   redactString(s: string): string {
     let out = s.replace(CREDENTIAL_RE, MASK);
-    for (const v of this.sensitiveValues) out = out.split(v).join(MASK);
+    for (const v of this.sensitiveValues) {
+      // A short sensitive value (a member id of "1", an amount of "0") occurs
+      // inside unrelated log text constantly, so substring-masking it shreds
+      // the evidence trail. Below the threshold, match whole tokens only.
+      if (v.length >= MIN_SUBSTRING_LEN) out = out.split(v).join(MASK);
+      else out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegexChars(v)}(?![A-Za-z0-9])`, 'g'), MASK);
+    }
     return out;
   }
 
