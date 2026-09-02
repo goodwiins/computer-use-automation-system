@@ -54,6 +54,7 @@ export class GuardedSurface implements Surface {
   describeTarget(hint: TargetDescriptor) { return this.inner.describeTarget(hint); }
   screenshot(path: string) { return this.inner.screenshot(path); }
   close() { return this.inner.close(); }
+  drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
   private assertStillInBounds(action: string): void {

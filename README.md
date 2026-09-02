@@ -83,6 +83,16 @@ npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --param
 # Hard failure — session expiry detected and reported with evidence:
 npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
   --entry-override "http://localhost:4173/?sim=timeout"
+
+# Hard failure — permission denied (operator security profile), fatal detector:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
+  --entry-override "http://localhost:4173/?sim=denied"
+
+# Hard failure — an unexpected native confirm() dialog is dismissed (never accepted)
+# and named in the failure that follows:
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
+  --entry-override "http://localhost:4173/?sim=confirm"
+#   -> {"status":"failure","failure":{"stepId":"s2","observed":"unexpected confirm dialog \"...\" was dismissed at s1; then ..."}}
 ```
 
 **6. The mutating flow — second capability** (form fill → confirmation review, commit never clicked):

@@ -1,0 +1,14 @@
+{
+  "status": "failure",
+  "failure": {
+    "stepId": "s1",
+    "intent": "pass runtime-condition checks",
+    "expected": "no fatal condition",
+    "observed": "permission-denied: Operator security profile does not include this function (SEC-4031)",
+    "screenshot": "evidence/runs/replay-2026-09-02T21-56-26-547Z/004-fatal-permission-denied.png"
+  },
+  "escalated": false,
+  "runId": "replay-2026-09-02T21-56-26-547Z",
+  "evidenceDir": "evidence/runs/replay-2026-09-02T21-56-26-547Z",
+  "recoveries": []
+}

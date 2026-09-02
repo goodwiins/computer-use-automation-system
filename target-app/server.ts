@@ -5,6 +5,8 @@
 //   ?sim=slow         -> 5s artificial delay
 //   ?sim=maintenance  -> dismissable maintenance notice (until ?ack=1)
 //   ?sim=crash        -> 500 error page
+//   ?sim=denied       -> 403 operator-not-authorized page (any page)
+//   ?sim=confirm      -> menu entry point pops a confirm() dialog before navigating
 //   member 99999      -> "No records found" (legit business outcome)
 //   BREAK_MARKUP=1    -> renames the search button (simulates vendor-version drift)
 //   ?tenant=premier   -> "Premier" configuration of the same vendor product:
@@ -24,6 +26,7 @@ app.use((req, res, next) => {
   const sim = req.query.sim;
   if (sim === 'timeout') return void res.send(v.page(v.sessionExpired()));
   if (sim === 'crash') return void res.status(500).send(v.page(v.appError()));
+  if (sim === 'denied') return void res.status(403).send(v.page(v.permissionDenied()));
   if (sim === 'slow') return void setTimeout(next, 5000);
   next();
 });
@@ -39,7 +42,7 @@ app.get('/', (req, res) => {
 });
 app.get('/banner', (req, res) => res.send(v.bannerFrame(req.query.tenant === 'premier')));
 app.get('/main', (req, res) =>
-  res.send(v.page(v.mainMenu(req.query.tenant === 'premier'), { maintenance: maint(req), panel: 'MNMAIN-01' })),
+  res.send(v.page(v.mainMenu(req.query.tenant === 'premier', req.query.sim === 'confirm'), { maintenance: maint(req), panel: 'MNMAIN-01' })),
 );
 
 app.get('/members/search', (req, res) => {

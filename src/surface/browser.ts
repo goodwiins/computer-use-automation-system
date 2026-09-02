@@ -23,6 +23,7 @@ export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
+  private dialogs: Array<{ type: string; message: string }> = [];
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
@@ -62,7 +63,18 @@ export class BrowserSurface implements Surface {
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
+    // An unexpected native dialog is never answered "yes" by automation:
+    // dismiss (the conservative branch), remember it, and let the executor
+    // explain the step that failed because of it.
+    this.page.on('dialog', (d) => {
+      this.dialogs.push({ type: d.type(), message: d.message() });
+      d.dismiss().catch(() => {});
+    });
     await this.page.goto(entryUrl, { waitUntil: 'load' });
+  }
+
+  drainDialogs(): Array<{ type: string; message: string }> {
+    return this.dialogs.splice(0);
   }
 
   currentUrl(): string {

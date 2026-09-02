@@ -44,6 +44,8 @@ runtime conditions:
 | `business-outcome-not-found/` | `memberId=99999` | `business_outcome`, `NO_SUCH_MEMBER` — a legitimate answer, not a crash |
 | `recovered-maintenance/` | `memberId=12345`, entry `?sim=maintenance` | `success` after auto-dismissing the maintenance interstitial (`recoveries: ["s1:maintenance-interstitial"]`) |
 | `failure-session-timeout/` | entry `?sim=timeout` | `failure` — session-expiry detector classified fatal; structured error + screenshot |
+| `failure-permission-denied/` | entry `?sim=denied` | `failure` — permission-denied detector (SEC-4031) classified fatal before the first step |
+| `failure-unexpected-dialog/` | entry `?sim=confirm` | `failure` — a native `confirm()` on the menu link is dismissed (automation never accepts a dialog), logged as `dialog.unexpected`, and named in the failure at the step it broke |
 
 ### `replays/` — open-subaccount-to-confirmation capability
 
@@ -69,6 +71,8 @@ simulation renames the Search button). Replay of a drift-narrowed artifact gets
 stuck, raises an intervention, a human operator attaches to the **same live
 browser session** over CDP, performs the step manually (2 recorded, redacted
 `human.action` events), answers `skip`, and automation resumes to `success`.
-See `control.transfer` / `handoff.*` events in `log.jsonl`. (This run predates
-the LLM-recorded artifact and used an equivalent hand-narrowed fixture —
-`test/fixtures/drift-lookup.json` — to force the drift.)
+See `control.transfer` / `handoff.*` events in `log.jsonl`. The artifact is
+`test/fixtures/drift-lookup.json`: a copy of the LLM-recorded
+`lookup-member-balance@1.0.0` with step `s3` narrowed to its role-tier locator
+only (the CSS fallback would otherwise absorb the rename), so the drift is
+forced against the real recording.

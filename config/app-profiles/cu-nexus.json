@@ -5,35 +5,55 @@
     {
       "id": "no-records-found",
       "description": "Inquiry returned no matching member records",
-      "match": { "kind": "textVisible", "text": "No records found" },
+      "match": {
+        "kind": "textVisible",
+        "text": "No records found"
+      },
       "classification": "business_outcome",
       "outcomeCode": "NO_SUCH_MEMBER"
     },
     {
       "id": "validation-rejected",
       "description": "Form submission rejected with field validation errors",
-      "match": { "kind": "textVisible", "text": "Correct the following before continuing" },
+      "match": {
+        "kind": "textVisible",
+        "text": "Correct the following before continuing"
+      },
       "classification": "business_outcome",
       "outcomeCode": "VALIDATION_REJECTED"
     },
     {
       "id": "session-expired",
       "description": "Session timed out; flow state is lost and requires sign-on",
-      "match": { "kind": "textVisible", "text": "Your session has timed out" },
+      "match": {
+        "kind": "textVisible",
+        "text": "Your session has timed out"
+      },
       "classification": "fatal"
     },
     {
       "id": "maintenance-interstitial",
       "description": "Dismissable scheduled-maintenance notice",
-      "match": { "kind": "textVisible", "text": "SCHEDULED MAINTENANCE NOTICE" },
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE NOTICE"
+      },
       "classification": "recoverable",
       "recovery": {
         "action": "click",
         "target": {
           "description": "Continue link on the maintenance notice",
           "strategies": [
-            { "kind": "role", "role": "link", "name": "Continue to application" },
-            { "kind": "text", "text": "Continue to application", "exact": true }
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue to application"
+            },
+            {
+              "kind": "text",
+              "text": "Continue to application",
+              "exact": true
+            }
           ]
         }
       }
@@ -41,7 +61,19 @@
     {
       "id": "trancode-failure",
       "description": "Host error page (TRANCODE FAILURE)",
-      "match": { "kind": "textVisible", "text": "TRANCODE FAILURE" },
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANCODE FAILURE"
+      },
+      "classification": "fatal"
+    },
+    {
+      "id": "permission-denied",
+      "description": "Operator security profile does not include this function (SEC-4031)",
+      "match": {
+        "kind": "textVisible",
+        "text": "Operator not authorized for this function"
+      },
       "classification": "fatal"
     }
   ]

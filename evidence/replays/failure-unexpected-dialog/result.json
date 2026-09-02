@@ -1,0 +1,14 @@
+{
+  "status": "failure",
+  "failure": {
+    "stepId": "s2",
+    "intent": "Enter the specified member ID for lookup.",
+    "expected": "actionable \"Enter the specified member ID for lookup.\"",
+    "observed": "unexpected confirm dialog \"Host inquiry sessions are billed per lookup. Continue?\" was dismissed at s1; then Could not uniquely resolve target \"Enter the specified member ID for lookup.\": nameAttr=0, css=0",
+    "screenshot": "evidence/runs/replay-2026-09-02T21-56-27-364Z/009-failed-s2.png"
+  },
+  "escalated": false,
+  "runId": "replay-2026-09-02T21-56-27-364Z",
+  "evidenceDir": "evidence/runs/replay-2026-09-02T21-56-27-364Z",
+  "recoveries": []
+}

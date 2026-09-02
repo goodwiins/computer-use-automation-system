@@ -83,12 +83,17 @@ ${footer}
 </body></html>`;
 }
 
-export function mainMenu(premier = false): string {
+export function mainMenu(premier = false, confirmOnEntry = false): string {
+  // ?sim=confirm: an unexpected native confirm() before navigating, the kind of
+  // thing a legacy app adds in a point release.
+  const confirmAttr = confirmOnEntry
+    ? ` onclick="return confirm('Host inquiry sessions are billed per lookup. Continue?')"`
+    : '';
   // The "Premier" configuration renames the inquiry entry point — same
   // product, different tenant branding/labels (the cross-tenant case).
   const inquiry = premier
-    ? '<a href="/members/search"><b>Account Inquiry</b></a><br><font size="2">Member inquiry, maintenance, sub-accounts</font>'
-    : '<a href="/members/search"><b>Member Inquiry / Maintenance</b></a><br><font size="2">Inquiry, maintenance, sub-accounts</font>';
+    ? `<a href="/members/search"${confirmAttr}><b>Account Inquiry</b></a><br><font size="2">Member inquiry, maintenance, sub-accounts</font>`
+    : `<a href="/members/search"${confirmAttr}><b>Member Inquiry / Maintenance</b></a><br><font size="2">Inquiry, maintenance, sub-accounts</font>`;
   return `<font size="4"><b>Main Menu</b></font><hr>
 <table cellpadding="6"><tr>
   <td bgcolor="#e8e8ff" class="c3">${inquiry}</td>
@@ -222,6 +227,15 @@ export function sessionExpired(): string {
 <font size="3"><b>Your session has timed out</b></font><br>
 <font size="2">For security, inactive sessions are terminated after 15 minutes.</font><br>
 <a href="/main">Return to sign-on</a>
+</td></tr></table>`;
+}
+
+export function permissionDenied(): string {
+  return `<font size="4"><b>Access Denied</b></font><hr>
+<table bgcolor="#fff0f0" border="1" cellpadding="6" class="c4"><tr><td>
+<font size="3"><b>SEC-4031: Operator not authorized for this function</b></font><br>
+<font size="2">Your security profile does not include this panel. Contact your security administrator.</font><br>
+<a href="/main">Return to main menu</a>
 </td></tr></table>`;
 }
 

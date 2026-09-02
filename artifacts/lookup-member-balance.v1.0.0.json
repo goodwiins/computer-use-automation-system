@@ -243,6 +243,15 @@
         "text": "TRANCODE FAILURE"
       },
       "classification": "fatal"
+    },
+    {
+      "id": "permission-denied",
+      "description": "Operator security profile does not include this function (SEC-4031)",
+      "match": {
+        "kind": "textVisible",
+        "text": "Operator not authorized for this function"
+      },
+      "classification": "fatal"
     }
   ],
   "provenance": {

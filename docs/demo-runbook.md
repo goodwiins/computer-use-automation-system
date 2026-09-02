@@ -59,6 +59,11 @@ npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --param
 npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
   --entry-override "http://localhost:4173/?sim=timeout"
 #  status: failure, observed: "session-expired: Session timed out..."
+
+# optional if asked "what about a popup?": dialog is dismissed, never accepted, and named
+npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json --params '{"memberId":"12345"}' \
+  --entry-override "http://localhost:4173/?sim=confirm"
+#  status: failure, observed: "unexpected confirm dialog ... was dismissed at s1; then ..."
 ```
 Say: three outcome classes — business outcome / recovered / failure — the
 caller's agent can branch on them.
@@ -117,6 +122,7 @@ findings closed with regression tests, PR #1. Open items: artifact signing
   transcript-free provenance; replay has no network egress to any model.
 - **"What if the vendor changes the page?"** Beat 5 (escalate + handoff) and
   beat 6 (overlay). Not built: drift telemetry across replays.
+- **"What if the app pops a dialog / denies permission?"** Beat 3 optional command; `?sim=denied` is the fatal-detector case.
 - **"Can a script approve a risky action?"** No — risk approval requires a TTY
   (`operator.ts`); the scripted demo only answers a stuck-step handback.
 - **"Desktop / terminal-style cores?"** `Surface` seam; REPORT.md §4.

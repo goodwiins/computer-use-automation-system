@@ -1,0 +1,10 @@
+{"ts":"2026-09-02T21:56:27.364Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
+{"ts":"2026-09-02T21:56:27.364Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/?sim=confirm","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:56:27.472Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-09-02T21:56:27.506Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main?sim=confirm","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:56:27.544Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-09-02T21:56:27.544Z","seq":5,"event":"dialog.unexpected","stepId":"s1","dialogs":[{"type":"confirm","message":"Host inquiry sessions are billed per lookup. Continue?"}],"dismissed":true}
+{"ts":"2026-09-02T21:56:27.544Z","seq":6,"event":"step.ok","stepId":"s1","action":"click","ms":38,"isRetry":false}
+{"ts":"2026-09-02T21:56:27.544Z","seq":7,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
+{"ts":"2026-09-02T21:56:27.551Z","seq":8,"event":"policy.decision","action":"fill","url":"http://localhost:4173/main?sim=confirm","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-09-02T21:56:37.600Z","seq":9,"event":"replay.failure","stepId":"s2","intent":"Enter the specified member ID for lookup.","expected":"actionable \"Enter the specified member ID for lookup.\"","observed":"unexpected confirm dialog \"Host inquiry sessions are billed per lookup. Continue?\" was dismissed at s1; then Could not uniquely resolve target \"Enter the specified member ID for lookup.\": nameAttr=0, css=0","screenshot":"evidence/runs/replay-2026-09-02T21-56-27-364Z/009-failed-s2.png","escalated":false}
