@@ -41,12 +41,21 @@ export type TargetDescriptor = z.infer<typeof TargetDescriptor>;
 // Known page states that can legitimately appear at any step: error banners,
 // session expiry, interstitials. Each is classified so replay responds
 // deliberately instead of blindly proceeding.
+// urlMatches patterns come from approved artifacts and are compiled with
+// `new RegExp` at replay time; an unattended worker must not hang on one.
+// ponytail: heuristic ReDoS guard (rejects quantified groups + uncompilable
+// patterns); swap for a real complexity checker if patterns get hand-authored.
+const UrlPattern = z.string().refine((p) => {
+  try { new RegExp(p); } catch { return false; }
+  return !/\)[+*{]/.test(p);
+}, 'urlMatches pattern is invalid or has a quantified group (ReDoS risk)');
+
 export const Detector = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   description: z.string(),
   match: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('textVisible'), text: z.string() }),
-    z.object({ kind: z.literal('urlMatches'), pattern: z.string() }),
+    z.object({ kind: z.literal('urlMatches'), pattern: UrlPattern }),
   ]),
   classification: z.enum(['business_outcome', 'recoverable', 'fatal']),
   // business_outcome: a legitimate result the caller needs (e.g. NO_SUCH_MEMBER)
@@ -64,7 +73,7 @@ export const RiskClass = z.enum(['read', 'reversible_write', 'irreversible']);
 export type RiskClass = z.infer<typeof RiskClass>;
 
 export const Assertion = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('urlMatches'), pattern: z.string() }),
+  z.object({ kind: z.literal('urlMatches'), pattern: UrlPattern }),
   z.object({ kind: z.literal('textVisible'), text: z.string(), frame: z.string().optional() }),
 ]);
 export type Assertion = z.infer<typeof Assertion>;

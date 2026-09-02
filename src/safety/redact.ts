@@ -6,7 +6,8 @@
 // Artifacts themselves never contain runtime values (params are stored as
 // {{templates}}), so redaction only has to defend the evidence/log path.
 
-const CREDENTIAL_RE = /\b(?:sk|pk|key|token|secret|bearer)[-_]?[A-Za-z0-9]{16,}\b/gi;
+const CREDENTIAL_RE =
+  /\b(?:(?:sk|pk|key|token|secret|bearer)[-_]?[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[bap]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})\b/gi;
 const MASK = '•••redacted•••';
 
 export class Redactor {
@@ -16,7 +17,11 @@ export class Redactor {
   addSensitiveValues(values: Array<string | number>): void {
     for (const v of values) {
       const s = String(v);
-      if (s.length > 0) this.sensitiveValues.push(s);
+      if (s.length === 0) continue;
+      this.sensitiveValues.push(s);
+      // Values surface URL-encoded in query strings and form bodies too.
+      const enc = encodeURIComponent(s);
+      if (enc !== s) this.sensitiveValues.push(enc);
     }
   }
 

@@ -14,8 +14,10 @@ carry-overs (M2, M3, M4 signing, M5, L1, L3). Plan:
 `docs/plans/2026-09-01-audit-fixes.md`.
 
 Follow-up on 2026-08-22 audit: C1, C3, H1–H4 fixes verified in code.
-Still open from that audit: M2, M3, M4, M5, L1, L3 (details unchanged; not
-repeated here). C2/M4 (artifact signing) remains the largest design gap.
+Aug-22 M2, M3, M5 fixed 2026-09-02 (credential regex + URL-encoded masking;
+urlMatches ReDoS/compile guard in the schema; `--param`/`--sensitive` missing
+value now a clean fatal). Still open from that audit: M4, L1, L3. C2/M4
+(artifact signing) remains the largest design gap.
 
 ## High
 

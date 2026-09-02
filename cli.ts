@@ -31,11 +31,12 @@ function parseArgs(argv: string[]) {
   const sensitive: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    const value = () => argv[++i] ?? fatal(`${a} requires a value`);
     if (a === '--param') {
-      const [k, ...rest] = argv[++i]!.split('=');
+      const [k, ...rest] = value().split('=');
       params[k!] = rest.join('=');
     } else if (a === '--sensitive') {
-      sensitive.push(argv[++i]!);
+      sensitive.push(value());
     } else if (a.startsWith('--')) {
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) flags[a.slice(2)] = true;

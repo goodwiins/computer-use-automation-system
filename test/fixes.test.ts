@@ -3,6 +3,7 @@
 // hand-rolled fixtures throughout — these are unit tests for the guardrails
 // themselves, not end-to-end flows (see e2e.test.ts for that).
 
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -378,5 +379,35 @@ describe('pre-flight start failure', () => {
       expect(result.failure.observed).toContain('browser launch failed');
     }
     expect(existsSync(join(logger.dir, 'result.json'))).toBe(true);
+  });
+});
+
+describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
+  it('A-M2: masks AWS/GitHub/Slack/Google token shapes', () => {
+    const r = new Redactor();
+    const out = r.redactString(
+      'AKIAIOSFODNN7EXAMPLE ghp_' + 'a'.repeat(36) + ' xoxb-1234567890-abc AIza' + 'b'.repeat(35),
+    );
+    expect(out).not.toMatch(/AKIA|ghp_|xoxb|AIza/);
+  });
+
+  it('A-M2: masks the URL-encoded form of a sensitive value', () => {
+    const r = new Redactor();
+    r.addSensitiveValues(['p@ss word']);
+    expect(r.redactString('q=p%40ss%20word&x=p@ss word')).not.toMatch(/p%40ss|p@ss/);
+  });
+
+  it('A-M3: rejects urlMatches patterns with quantified groups or invalid syntax', () => {
+    const det = (pattern: string) =>
+      Detector.safeParse({ id: 'd', description: '', match: { kind: 'urlMatches', pattern }, classification: 'fatal' }).success;
+    expect(det('^(a+)+$')).toBe(false);
+    expect(det('(')).toBe(false);
+    expect(det('/members/{{id}}$')).toBe(true);
+  });
+
+  it('A-M5: --param without a value exits with an error instead of a TypeError', () => {
+    const res = spawnSync('npx', ['tsx', 'cli.ts', 'replay', '--param'], { encoding: 'utf8' });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('--param requires a value');
   });
 });
