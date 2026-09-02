@@ -277,3 +277,58 @@ describe('detector recovery actions are risk-gated', () => {
     expect(clickArgs[0]!.risk).toBe('reversible_write');
   });
 });
+
+describe('mid-step recoverable condition', () => {
+  const NOTICE = 'SCHEDULED NOTICE';
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 1, id: 'recover', name: 'recover', description: 'x', version: '1.0.0', status: 'approved',
+    app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+    parameters: [], outputs: [],
+    steps: [{ id: 's1', intent: 'click', action: 'click', target: { description: 'btn', strategies: [{ kind: 'css', selector: 'b' }] } }],
+    successCondition: { kind: 'urlMatches', pattern: '/done$' },
+    detectors: [{
+      id: 'notice', description: 'interstitial', match: { kind: 'textVisible', text: NOTICE }, classification: 'recoverable',
+      recovery: { action: 'click', target: { description: 'dismiss', strategies: [{ kind: 'css', selector: 'a' }] } },
+    }],
+    provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+  });
+
+  it('retries the failed step once after recovery clears the condition', async () => {
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      currentUrl: () => 'http://localhost:4173/done',
+      frameUrls: () => ['http://localhost:4173/done'],
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        if (stepClicks === 1) { noticeVisible = true; throw new Error('control obscured'); }
+        return { strategyUsed: 0, kind: 'css', matches: 1 };
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.recoveries).toEqual(['s1:notice']);
+    expect(stepClicks).toBe(2);
+    expect(result.status).toBe('success');
+  });
+
+  it('does not loop: a second failure after recovery is a hard failure', async () => {
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        noticeVisible = stepClicks === 1;
+        throw new Error('still broken');
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(stepClicks).toBe(2);
+    expect(result.status).toBe('failure');
+  });
+});

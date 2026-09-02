@@ -223,9 +223,13 @@ export async function runReplay(
     } catch (err) {
       // A step failure is often *explained* by a runtime condition that
       // appeared mid-flight — check before declaring the step itself broken.
+      const recoveriesBefore = recoveries.length;
       const conditionResult = await handleConditions(step.id);
       if (conditionResult === CONTINUE_SENTINEL) return null;
       if (conditionResult) return conditionResult;
+      // A recovery ran and cleared the condition that (most likely) broke this
+      // step — re-run it once. Bounded: the retry's own failure is terminal.
+      if (recoveries.length > recoveriesBefore && !isRetry) return runStep(step, true);
 
       const shot = await logger.screenshot(surface, `failed-${step.id}`);
       const failure: StepFailure = {
