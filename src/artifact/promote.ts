@@ -1,10 +1,12 @@
 // Artifact lifecycle helpers used by the CLI: promotion to approved, and
 // capability-name validation for anything that becomes a filename.
 
+import { CapabilityArtifact } from './schema.js';
+
+/** Approval is a statement about a *valid* artifact — parse before stamping. */
 export function promoteToApproved(artifactJson: string): string {
-  const artifact = JSON.parse(artifactJson) as { status?: string };
-  artifact.status = 'approved';
-  return JSON.stringify(artifact, null, 2);
+  const artifact = CapabilityArtifact.parse(JSON.parse(artifactJson));
+  return JSON.stringify({ ...artifact, status: 'approved' }, null, 2);
 }
 
 const SAFE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
