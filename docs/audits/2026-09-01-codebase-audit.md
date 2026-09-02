@@ -18,8 +18,8 @@ Aug-22 M2, M3, M5 fixed 2026-09-02 (credential regex + URL-encoded masking;
 urlMatches ReDoS/compile guard in the schema; `--param`/`--sensitive` missing
 value now a clean fatal). Sep-01 M2 (risk approval now refuses a non-TTY
 stdin) and M3 (`validate` subcommand re-applies the risk floor; both s3 Search
-steps relabeled `reversible_write`) fixed the same day. Still open: Aug-22 M4,
-L1, L3; Sep-01 L1–L7. C2/M4
+steps relabeled `reversible_write`) fixed the same day. Lows L1–L6 and Aug-22 L1/L3 fixed 2026-09-02
+(f23b183..215f3ef). Still open: Aug-22 M4 (signing), Sep-01 L7 (evidence size). C2/M4
 (artifact signing) remains the largest design gap.
 
 ## High
