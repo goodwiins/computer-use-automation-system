@@ -84,7 +84,7 @@ export class BrowserSurface implements Surface {
     await this.page.goto(url, { waitUntil: 'load' });
   }
 
-  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     // Legacy pages navigate on click; wait for the frame to settle.
     await Promise.all([
@@ -94,13 +94,13 @@ export class BrowserSurface implements Surface {
     return report;
   }
 
-  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.fill(value, { timeout: timeoutMs });
     return report;
   }
 
-  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
       await locator.selectOption(value, { timeout: timeoutMs }); // fall back to value=

@@ -15,16 +15,10 @@ export const BUILTIN_DETECTORS: Detector[] = [
   },
 ];
 
-export interface DetectorHit {
-  detector: Detector;
-}
-
-export async function checkDetectors(
-  surface: Surface,
-  artifact: CapabilityArtifact,
-): Promise<DetectorHit | null> {
+/** First matching detector (artifact-declared first, then built-ins), or null. */
+export async function checkDetectors(surface: Surface, artifact: CapabilityArtifact): Promise<Detector | null> {
   for (const detector of [...artifact.detectors, ...BUILTIN_DETECTORS]) {
-    if (await matchDetector(surface, detector)) return { detector };
+    if (await matchDetector(surface, detector)) return detector;
   }
   return null;
 }

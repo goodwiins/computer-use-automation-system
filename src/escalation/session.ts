@@ -45,8 +45,4 @@ export class ControlSession {
     this.owner = to;
     this.onTransition?.(t);
   }
-
-  history() {
-    return [...this.transitions];
-  }
 }

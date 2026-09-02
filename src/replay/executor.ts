@@ -87,9 +87,8 @@ export async function runReplay(
   async function handleConditions(stepId: string): Promise<ReplayResult | null> {
     for (let round = 0; round < 2; round++) {
       try {
-        const hit = await checkDetectors(surface, artifact);
-        if (!hit) return null;
-        const d = hit.detector;
+        const d = await checkDetectors(surface, artifact);
+        if (!d) return null;
         logger.log('detector.hit', { stepId, detector: d.id, classification: d.classification });
         if (d.classification === 'business_outcome') {
           const shot = await logger.screenshot(surface, `outcome-${d.id}`);

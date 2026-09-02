@@ -7,7 +7,6 @@
 //     becomes the success condition; each step keeps the model's stated
 //     intent so a reviewer can audit what the capability does and why.
 
-import { randomUUID } from 'node:crypto';
 import type { DiscoveryResult } from '../agent/loop.js';
 import { CapabilityArtifact, type Detector, type Parameter, type Step } from './schema.js';
 
@@ -151,8 +150,4 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       goal: templatize(input.goal),
     },
   });
-}
-
-export function newRunId(): string {
-  return randomUUID();
 }

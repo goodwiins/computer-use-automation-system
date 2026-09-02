@@ -145,11 +145,7 @@ export async function runDiscovery(
           if (call.function.name === 'click') {
             const risk = (args.risk as TraceEntry['risk']) ?? 'read';
             entry.risk = risk;
-            // Surface.click's public signature omits risk (only GuardedSurface
-            // consumes it, to gate discovery's risky clicks like replay's).
-            await (surface.click as (t: TargetDescriptor, ms?: number, risk?: string) => Promise<unknown>)(
-              descriptor, undefined, risk,
-            );
+            await surface.click(descriptor, undefined, risk);
             respond(`Clicked "${descriptor.description}". Now at ${surface.currentUrl()}`);
           } else if (call.function.name === 'fill') {
             entry.value = String(args.value);

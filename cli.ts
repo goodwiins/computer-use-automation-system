@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { runDiscovery } from './src/agent/loop.js';
-import { newRunId, recordArtifact } from './src/artifact/recorder.js';
+import { recordArtifact } from './src/artifact/recorder.js';
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
 import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
 import { CapabilityArtifact, Detector } from './src/artifact/schema.js';
