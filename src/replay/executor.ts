@@ -65,7 +65,16 @@ export async function runReplay(
   }
 
   logger.log('replay.start', { capability: artifact.id, version: artifact.version, params });
-  await surface.start(resolveTemplate(artifact.app.entryUrl, params));
+  try {
+    await surface.start(resolveTemplate(artifact.app.entryUrl, params));
+  } catch (err) {
+    return fail({
+      stepId: '(pre-flight)',
+      intent: 'open the capability entry URL',
+      expected: `a live session at ${artifact.app.entryUrl}`,
+      observed: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   function fail(failure: StepFailure, escalated = false): ReplayResult {
     logger.log('replay.failure', { ...failure, escalated });

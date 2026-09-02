@@ -3,6 +3,8 @@
 // hand-rolled fixtures throughout — these are unit tests for the guardrails
 // themselves, not end-to-end flows (see e2e.test.ts for that).
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CapabilityArtifact,
@@ -353,5 +355,28 @@ describe('mid-step recoverable condition', () => {
     expect(stepClicks).toBe(1);
     expect(result.recoveries).toEqual(['s1:notice']);
     expect(result.status).toBe('failure');
+  });
+});
+
+describe('pre-flight start failure', () => {
+  it('returns a structured failure (and writes result.json) when the surface cannot start', async () => {
+    const artifact = CapabilityArtifact.parse({
+      schemaVersion: 1, id: 'start-fail', name: 'start-fail', description: 'x', version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+      parameters: [], outputs: [],
+      steps: [{ id: 's1', intent: 'x', action: 'navigate', url: 'http://localhost:4173/', risk: 'read', timeoutMs: 1000 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+    });
+    const surface = makeStubSurface({ start: async () => { throw new Error('browser launch failed'); } });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status === 'failure') {
+      expect(result.failure.stepId).toBe('(pre-flight)');
+      expect(result.failure.observed).toContain('browser launch failed');
+    }
+    expect(existsSync(join(logger.dir, 'result.json'))).toBe(true);
   });
 });
