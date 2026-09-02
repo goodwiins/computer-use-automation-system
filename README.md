@@ -151,13 +151,22 @@ npm run replay -- --artifact artifacts/lookup-member-balance.v1.0.0.json \
 npm run list
 ```
 
+**10. Re-check saved artifacts against the current risk rules** (runs in the
+test suite, so a tightened risk floor cannot leave an approved artifact behind):
+
+```bash
+npm run validate
+#   -> All artifacts satisfy the current risk floor.   (exit 1 on drift)
+```
+
 ## Running without live services
 
 Replay needs no API key. The test suite (including a full discovery→record→replay
 integration test with a scripted stand-in LLM) runs completely offline:
 
 ```bash
-npm test
+npm test        # the suite alone
+npm run ci      # what the pre-push hook runs: typecheck + the suite, ~22s
 ```
 
 ## Repo map
@@ -174,4 +183,8 @@ src/evidence/     structured run logging
 config/           policy.json + per-app detector profiles + tenant overlays
 artifacts/        recorded capabilities (JSON, reviewable, versioned)
 evidence/         committed demo runs (discovery, replays, escalation)
+test/             vitest suite + hand-written fixtures
+scripts/          scripted end-to-end escalation demo
+docs/             use cases, architecture diagram, demo runbook, audits, plans
+.githooks/        pre-push local CI gate (see Setup)
 ```
