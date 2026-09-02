@@ -7,5 +7,6 @@
     "irreversible": "escalate"
   },
   "maxSteps": 25,
+  "maxDiscoveryMs": 600000,
   "requireApprovedForUnattended": true
 }

@@ -20,6 +20,8 @@ export const Policy = z.object({
     irreversible: z.enum(['allow', 'confirm', 'escalate', 'block']),
   }),
   maxSteps: z.number().int().positive().default(25),
+  // Wall-clock bound on a discovery run (a stuck-but-not-failing model burns money).
+  maxDiscoveryMs: z.number().int().positive().default(10 * 60_000),
   // Unattended replay requires an approved artifact.
   requireApprovedForUnattended: z.boolean().default(true),
 });

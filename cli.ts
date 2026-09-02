@@ -108,6 +108,7 @@ async function discover(argv: string[]) {
     openai,
     model,
     maxSteps: policy.maxSteps,
+    timeoutMs: policy.maxDiscoveryMs,
     escalate: headful
       ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
       : undefined,
