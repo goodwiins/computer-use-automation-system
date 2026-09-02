@@ -20,6 +20,7 @@ import { Redactor } from '../src/safety/redact.js';
 import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { runReplay } from '../src/replay/executor.js';
+import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface, PolicyViolationError } from '../src/surface/guarded.js';
 import type { Observation, ResolutionReport, Surface } from '../src/surface/types.js';
 
@@ -419,6 +420,20 @@ describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
 });
 
 describe('Sep-02 audit LOW findings', () => {
+  it('S-L1: a nameAttr containing a quote still resolves (selector is escaped)', async () => {
+    const surface = new BrowserSurface();
+    await surface.start('data:text/html,' + encodeURIComponent(`<input type="text" name='a"b' value="hit">`));
+    try {
+      const { report } = await surface.readText(
+        { description: 'quoted name', strategies: [{ kind: 'nameAttr', name: 'a"b' }] },
+        3000,
+      );
+      expect(report).toMatchObject({ strategyUsed: 0, kind: 'nameAttr', matches: 1 });
+    } finally {
+      await surface.close();
+    }
+  }, 30_000);
+
   it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {
     const r = new Redactor();
     r.addSensitiveValues([1, 'SECRETPASSWORD']);

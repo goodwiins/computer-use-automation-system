@@ -14,6 +14,9 @@ import {
 
 const DEFAULT_TIMEOUT = 10_000;
 
+/** Escape a value for use inside a double-quoted CSS attribute selector. */
+export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
+
 export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
@@ -194,7 +197,9 @@ export class BrowserSurface implements Surface {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return frame.getByRole(s.role as any, { name: s.name, exact: true });
       case 'nameAttr':
-        return frame.locator(`[name="${s.name}"]`);
+        // A name containing " or \ would otherwise build an invalid selector,
+        // whose count() throws and reads as "no matches" — silent drift.
+        return frame.locator(`[name="${escapeAttrValue(s.name)}"]`);
       case 'text':
         return frame.getByText(s.text, { exact: s.exact });
       case 'css':
