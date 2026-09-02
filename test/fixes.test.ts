@@ -22,6 +22,7 @@ import { Redactor } from '../src/safety/redact.js';
 import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { runReplay } from '../src/replay/executor.js';
+import { runDiscovery } from '../src/agent/loop.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface, PolicyViolationError } from '../src/surface/guarded.js';
 import type { Observation, ResolutionReport, Surface } from '../src/surface/types.js';
@@ -540,5 +541,67 @@ describe('Sep-02 audit LOW findings', () => {
     expect(out).toContain('amount 12'); // ...but not inside a longer number
     expect(out).toContain('step s1'); // ...nor inside an identifier
     expect(out).not.toContain('SECRETPASSWORD'); // long values stay substring-masked
+  });
+});
+
+describe('brief §3.1/§3.3 gaps closed 2026-09-02', () => {
+  const clickArtifact = (detectors: unknown[] = []) =>
+    CapabilityArtifact.parse({
+      schemaVersion: 1, id: 'gap-fixture', name: 'gap-fixture', description: 'test', version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+      parameters: [], outputs: [],
+      steps: [{ id: 's1', intent: 'click it', action: 'click', target: { description: 'x', strategies: [{ kind: 'css', selector: '#x' }] }, risk: 'read', timeoutMs: 500 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors,
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'test' },
+    });
+
+  it('discovery stops on the wall-clock deadline without calling the model', async () => {
+    let modelCalls = 0;
+    const openai = { chat: { completions: { create: async () => { modelCalls++; throw new Error('should not be called'); } } } } as never;
+    const logger = new RunLogger('discovery', new Redactor(), 'evidence/test-runs');
+    const r = await runDiscovery('goal', 'http://localhost:4173/', {}, policy.allowedOrigins, {
+      surface: makeStubSurface(), logger, openai, model: 'stub', maxSteps: 5, timeoutMs: -1,
+    });
+    expect(r.status).toBe('stopped');
+    expect(r.stopReason).toMatch(/timeout/);
+    expect(modelCalls).toBe(0);
+  });
+
+  it('BrowserSurface dismisses a native confirm() and reports it via drainDialogs', async () => {
+    const surface = new BrowserSurface();
+    await surface.start('data:text/html,' + encodeURIComponent(`<a id="go" href="#" onclick="return confirm('Sure?')">go</a>`));
+    try {
+      await surface.click({ description: 'go', strategies: [{ kind: 'css', selector: '#go' }] }, 3000);
+      expect(surface.drainDialogs()).toEqual([{ type: 'confirm', message: 'Sure?' }]);
+      expect(surface.drainDialogs()).toEqual([]);
+    } finally {
+      await surface.close();
+    }
+  });
+
+  it('a dismissed dialog is named in the failure the caller receives', async () => {
+    const surface = makeStubSurface({
+      click: async () => { throw new Error('Could not uniquely resolve target'); },
+      drainDialogs: () => [{ type: 'confirm', message: 'Continue?' }],
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(clickArtifact(), {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status !== 'failure') throw new Error('unreachable');
+    expect(result.failure.observed).toMatch(/unexpected confirm dialog "Continue\?" was dismissed at s1; then Could not/);
+  });
+
+  it('a permission-denied page is a fatal condition, not a resolution failure', async () => {
+    const DENIED = 'Operator not authorized for this function';
+    const surface = makeStubSurface({ isTextVisible: async (t: string) => t === DENIED });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const artifact = clickArtifact([
+      { id: 'permission-denied', description: 'SEC-4031', match: { kind: 'textVisible', text: DENIED }, classification: 'fatal' },
+    ]);
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status !== 'failure') throw new Error('unreachable');
+    expect(result.failure.observed).toMatch(/permission-denied/);
   });
 });

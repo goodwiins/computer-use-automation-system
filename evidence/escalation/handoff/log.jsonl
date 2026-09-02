@@ -1,31 +1,29 @@
-{"ts":"2026-08-14T21:52:41.044Z","seq":0,"event":"replay.start","capability":"drift-lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
-{"ts":"2026-08-14T21:52:41.044Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T21:52:41.160Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"open the member inquiry screen from the main menu","risk":"read"}
-{"ts":"2026-08-14T21:52:41.193Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T21:52:41.219Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
-{"ts":"2026-08-14T21:52:41.219Z","seq":5,"event":"step.ok","stepId":"s1","action":"click","ms":27,"isRetry":false}
-{"ts":"2026-08-14T21:52:41.219Z","seq":6,"event":"step.start","stepId":"s2","action":"fill","intent":"enter the member number in the search field","risk":"reversible_write"}
-{"ts":"2026-08-14T21:52:41.249Z","seq":7,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
-{"ts":"2026-08-14T21:52:41.253Z","seq":8,"event":"step.resolution","stepId":"s2","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
-{"ts":"2026-08-14T21:52:41.253Z","seq":9,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
-{"ts":"2026-08-14T21:52:41.253Z","seq":10,"event":"step.start","stepId":"s3","action":"click","intent":"run the search","risk":"read"}
-{"ts":"2026-08-14T21:52:41.257Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T21:52:45.394Z","seq":12,"event":"escalation.raised","stepId":"s3","reason":"Could not uniquely resolve target \"Search submit button\": role=0"}
-{"ts":"2026-08-14T21:52:45.394Z","seq":13,"event":"control.transfer","from":"automation","to":"human","reason":"run the search: expected actionable \"Search submit button\", observed Could not uniquely resolve target \"Search submit button\": role=0"}
-{"ts":"2026-08-14T21:52:45.394Z","seq":14,"event":"handoff.to_human","request":{"kind":"replay_stuck","capability":"drift-lookup-member-balance@1.0.0","goal":"Drift fixture: same lookup flow, but the Search-button step has only the role-tier locator, so a renamed button (BREAK_MARKUP=1) forces escalation","stepId":"s3","reason":"run the search: expected actionable \"Search submit button\", observed Could not uniquely resolve target \"Search submit button\": role=0","screenshot":"evidence/runs/replay-2026-08-14T21-52-41-043Z/012-failed-s3.png","url":"http://localhost:4173/members/search"}}
-{"ts":"2026-08-14T21:52:45.811Z","seq":15,"event":"human.action","action":{"type":"change","tag":"INPUT","name":"q","valueLength":5}}
-{"ts":"2026-08-14T21:52:45.812Z","seq":16,"event":"human.action","action":{"type":"click","tag":"INPUT","text":""}}
-{"ts":"2026-08-14T21:52:45.816Z","seq":17,"event":"control.transfer","from":"human","to":"automation","reason":"operator chose skip"}
-{"ts":"2026-08-14T21:52:45.816Z","seq":18,"event":"handoff.to_automation","decision":"skip"}
-{"ts":"2026-08-14T21:52:45.816Z","seq":19,"event":"escalation.decision","decision":"skip"}
-{"ts":"2026-08-14T21:52:45.816Z","seq":20,"event":"step.start","stepId":"s4","action":"click","intent":"open the matching member record from the results table","risk":"read"}
-{"ts":"2026-08-14T21:52:45.826Z","seq":21,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=12345","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T21:52:45.842Z","seq":22,"event":"step.resolution","stepId":"s4","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
-{"ts":"2026-08-14T21:52:45.842Z","seq":23,"event":"step.ok","stepId":"s4","action":"click","ms":16,"isRetry":false}
-{"ts":"2026-08-14T21:52:45.842Z","seq":24,"event":"step.start","stepId":"s5","action":"assert","intent":"confirm the member profile screen is showing","risk":"read"}
-{"ts":"2026-08-14T21:52:45.853Z","seq":25,"event":"step.ok","stepId":"s5","action":"assert","ms":1,"isRetry":false}
-{"ts":"2026-08-14T21:52:45.853Z","seq":26,"event":"step.start","stepId":"s6","action":"extract","intent":"read the savings balance from the accounts table","risk":"read"}
-{"ts":"2026-08-14T21:52:45.858Z","seq":27,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/12345","risk":"read","verdict":"allow"}
-{"ts":"2026-08-14T21:52:45.860Z","seq":28,"event":"step.extracted","stepId":"s6","output":"savingsBalance","value":"4,250.13","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
-{"ts":"2026-08-14T21:52:45.860Z","seq":29,"event":"step.ok","stepId":"s6","action":"extract","ms":2,"isRetry":false}
-{"ts":"2026-08-14T21:52:45.873Z","seq":30,"event":"replay.success","outputs":{"savingsBalance":"4,250.13"},"screenshot":"evidence/runs/replay-2026-08-14T21-52-41-043Z/030-success.png"}
+{"ts":"2026-09-02T21:55:30.659Z","seq":0,"event":"replay.start","capability":"drift-lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
+{"ts":"2026-09-02T21:55:30.659Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:55:30.768Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-09-02T21:55:30.800Z","seq":3,"event":"policy.decision","action":"click","url":"http://localhost:4173/main","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:55:30.826Z","seq":4,"event":"step.resolution","stepId":"s1","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-09-02T21:55:30.826Z","seq":5,"event":"step.ok","stepId":"s1","action":"click","ms":26,"isRetry":false}
+{"ts":"2026-09-02T21:55:30.826Z","seq":6,"event":"step.start","stepId":"s2","action":"fill","intent":"Enter the specified member ID for lookup.","risk":"reversible_write"}
+{"ts":"2026-09-02T21:55:30.847Z","seq":7,"event":"policy.decision","action":"fill","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-09-02T21:55:30.850Z","seq":8,"event":"step.resolution","stepId":"s2","resolution":{"strategyUsed":0,"kind":"nameAttr","matches":1}}
+{"ts":"2026-09-02T21:55:30.851Z","seq":9,"event":"step.ok","stepId":"s2","action":"fill","ms":4,"isRetry":false}
+{"ts":"2026-09-02T21:55:30.851Z","seq":10,"event":"step.start","stepId":"s3","action":"click","intent":"Submit the member inquiry for member {{memberId}}.","risk":"reversible_write"}
+{"ts":"2026-09-02T21:55:30.858Z","seq":11,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search","risk":"reversible_write","verdict":"allow"}
+{"ts":"2026-09-02T21:55:41.126Z","seq":12,"event":"escalation.raised","stepId":"s3","reason":"Could not uniquely resolve target \"Submit the member inquiry for member {{memberId}}.\": role=0"}
+{"ts":"2026-09-02T21:55:41.127Z","seq":13,"event":"control.transfer","from":"automation","to":"human","reason":"Submit the member inquiry for member {{memberId}}.: expected actionable \"Submit the member inquiry for member {{memberId}}.\", observed Could not uniquely resolve target \"Submit the member inquiry for member {{memberId}}.\": role=0"}
+{"ts":"2026-09-02T21:55:41.127Z","seq":14,"event":"handoff.to_human","request":{"kind":"replay_stuck","capability":"drift-lookup-member-balance@1.0.0","goal":"Escalation-demo copy of lookup-member-balance@1.0.0: step s3 keeps only the role tier so BREAK_MARKUP=1 (button renamed) forces a hard failure.","stepId":"s3","reason":"Submit the member inquiry for member {{memberId}}.: expected actionable \"Submit the member inquiry for member {{memberId}}.\", observed Could not uniquely resolve target \"Submit the member inquiry for member {{memberId}}.\": role=0","screenshot":"evidence/runs/replay-2026-09-02T21-55-30-658Z/012-failed-s3.png","url":"http://localhost:4173/members/search"}}
+{"ts":"2026-09-02T21:55:41.535Z","seq":15,"event":"human.action","action":{"type":"change","tag":"INPUT","name":"q","valueLength":5}}
+{"ts":"2026-09-02T21:55:41.536Z","seq":16,"event":"human.action","action":{"type":"click","tag":"INPUT","text":""}}
+{"ts":"2026-09-02T21:55:41.540Z","seq":17,"event":"control.transfer","from":"human","to":"automation","reason":"operator chose skip"}
+{"ts":"2026-09-02T21:55:41.540Z","seq":18,"event":"handoff.to_automation","decision":"skip"}
+{"ts":"2026-09-02T21:55:41.540Z","seq":19,"event":"escalation.decision","decision":"skip"}
+{"ts":"2026-09-02T21:55:41.540Z","seq":20,"event":"step.start","stepId":"s4","action":"click","intent":"Open the matching member record to view account balances.","risk":"read"}
+{"ts":"2026-09-02T21:55:41.554Z","seq":21,"event":"policy.decision","action":"click","url":"http://localhost:4173/members/search?q=12345","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:55:41.566Z","seq":22,"event":"step.resolution","stepId":"s4","resolution":{"strategyUsed":0,"kind":"role","matches":1}}
+{"ts":"2026-09-02T21:55:41.566Z","seq":23,"event":"step.ok","stepId":"s4","action":"click","ms":13,"isRetry":false}
+{"ts":"2026-09-02T21:55:41.566Z","seq":24,"event":"step.start","stepId":"s5","action":"extract","intent":"Read the current balance from the SAVINGS account row for member {{memberId}}.","risk":"read"}
+{"ts":"2026-09-02T21:55:41.579Z","seq":25,"event":"policy.decision","action":"extract","url":"http://localhost:4173/members/12345","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:55:41.582Z","seq":26,"event":"step.extracted","stepId":"s5","output":"savings_balance","value":"4,250.13","resolution":{"strategyUsed":0,"kind":"css","matches":1}}
+{"ts":"2026-09-02T21:55:41.582Z","seq":27,"event":"step.ok","stepId":"s5","action":"extract","ms":3,"isRetry":false}
+{"ts":"2026-09-02T21:55:41.596Z","seq":28,"event":"replay.success","outputs":{"savings_balance":"4,250.13"},"screenshot":"evidence/runs/replay-2026-09-02T21-55-30-658Z/028-success.png"}

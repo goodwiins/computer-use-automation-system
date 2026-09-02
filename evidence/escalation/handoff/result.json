@@ -1,9 +1,9 @@
 {
   "status": "success",
   "outputs": {
-    "savingsBalance": "4,250.13"
+    "savings_balance": "4,250.13"
   },
-  "runId": "replay-2026-08-14T21-52-41-043Z",
-  "evidenceDir": "evidence/runs/replay-2026-08-14T21-52-41-043Z",
+  "runId": "replay-2026-09-02T21-55-30-658Z",
+  "evidenceDir": "evidence/runs/replay-2026-09-02T21-55-30-658Z",
   "recoveries": []
 }
