@@ -4,8 +4,9 @@
 // themselves, not end-to-end flows (see e2e.test.ts for that).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CapabilityArtifact,
@@ -433,6 +434,54 @@ describe('Sep-02 audit LOW findings', () => {
       await surface.close();
     }
   }, 30_000);
+
+  const TSX = resolve('node_modules/.bin/tsx');
+  const CLI = resolve('cli.ts');
+
+  it('S-L5: `list` reports a malformed artifact inline and still lists the good ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cu-list-'));
+    mkdirSync(join(dir, 'artifacts'));
+    cpSync('artifacts/lookup-member-balance.v1.0.0.json', join(dir, 'artifacts/good.json'));
+    writeFileSync(join(dir, 'artifacts/broken.json'), '{ not json');
+    const res = spawnSync(TSX, [CLI, 'list'], { cwd: dir, encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('broken.json: unreadable');
+    expect(res.stdout).toContain('lookup-member-balance@1.0.0');
+  }, 60_000);
+
+  it('S-L3/S-L4: replay redacts stdout, including a sensitive param whose value is 0', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cu-replay-'));
+    // Port 9 (discard) is never served, so the run fails in pre-flight and the
+    // entry URL — carrying both sensitive values — lands in failure.observed.
+    const origin = 'http://localhost:9';
+    writeFileSync(join(dir, 'policy.json'), JSON.stringify({
+      allowedOrigins: [origin],
+      allowedActions: ['navigate'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
+    }));
+    writeFileSync(join(dir, 'artifact.json'), JSON.stringify({
+      schemaVersion: 1, id: 'redact-stdout', name: 'redact-stdout', description: 'x',
+      version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: `${origin}/?token=ZZSECRETZZ&n=0`, allowedOrigins: [origin] },
+      parameters: [
+        { name: 'token', type: 'string', description: 'x', required: true, sensitive: true },
+        { name: 'n', type: 'number', description: 'x', required: true, sensitive: true },
+      ],
+      outputs: [],
+      steps: [{ id: 's1', intent: 'x', action: 'navigate', url: `${origin}/`, risk: 'read', timeoutMs: 1000 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+    }));
+    const res = spawnSync(
+      TSX,
+      [CLI, 'replay', '--artifact', join(dir, 'artifact.json'), '--params', '{"token":"ZZSECRETZZ","n":0}'],
+      { cwd: dir, encoding: 'utf8', env: { ...process.env, POLICY_PATH: join(dir, 'policy.json') } },
+    );
+    expect(res.stdout).toContain('failure');
+    expect(res.stdout).not.toContain('ZZSECRETZZ'); // S-L4
+    expect(res.stdout).not.toContain('n=0'); // S-L3: a 0-valued sensitive param is still registered
+  }, 60_000);
 
   it('A-L1: an out-of-range CU_CDP_PORT is rejected before chromium launches', async () => {
     const prev = process.env.CU_CDP_PORT;

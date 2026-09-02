@@ -188,7 +188,11 @@ async function replay(argv: string[]) {
   }
   const redactor = new Redactor();
   redactor.addSensitiveValues(
-    artifact.parameters.filter((p) => p.sensitive).map((p) => params[p.name] ?? '').filter(Boolean),
+    artifact.parameters
+      .filter((p) => p.sensitive)
+      // Falsy-but-real values (a numeric 0) must still be registered.
+      .map((p) => params[p.name])
+      .filter((v): v is string | number => v !== undefined && v !== ''),
   );
   const logger = new RunLogger('replay', redactor);
   console.log(`replay run ${logger.runId} → ${logger.dir}`);
@@ -227,7 +231,8 @@ async function replay(argv: string[]) {
   });
 
   console.log('\nresult:');
-  console.log(JSON.stringify(result, null, 2));
+  // stdout is evidence too: failure.observed can echo raw page/Playwright text.
+  console.log(JSON.stringify(redactor.redact(result), null, 2));
   if (result.status === 'failure') process.exitCode = 1;
   await surface.close();
 }
@@ -242,7 +247,14 @@ function list() {
   if (files.length === 0) return void console.log('No capabilities recorded yet.');
   console.log('Capability catalog:\n');
   for (const f of files) {
-    const a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    let a;
+    try {
+      a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    } catch (e) {
+      // One bad file must not hide the rest of the catalog.
+      console.log(`  ${f}: unreadable — ${(e as Error).message.split('\n')[0]}\n`);
+      continue;
+    }
     const params = a.parameters.map((p) => `${p.name}: ${p.type}${p.sensitive ? ' (sensitive)' : ''}`).join(', ');
     const outputs = a.outputs.map((o) => `${o.name}: ${o.type}`).join(', ');
     console.log(`  ${a.id}@${a.version} [${a.status}]`);
