@@ -39,6 +39,22 @@ describe('policy.checkAction', () => {
   it('denies backslash-relative URLs that browsers treat as authority', () => {
     expect(originAllowed(policy.allowedOrigins, '\\\\evil.example.com/x')).toBe(false);
   });
+  it('denies backslash-spelled authority forms (WHATWG treats \\ as / for http)', () => {
+    for (const u of ['/\\evil.example.com/x', '\\/evil.example.com/x', '/\\\\evil.example.com/x', '\\\\evil.example.com/x']) {
+      expect(originAllowed(policy.allowedOrigins, u), u).toBe(false);
+      expect(checkAction(policy, 'navigate', u, 'read').verdict, u).toBe('deny');
+    }
+  });
+
+  it('still allows genuinely relative paths and query-only URLs', () => {
+    expect(originAllowed(policy.allowedOrigins, '/members/search')).toBe(true);
+    expect(originAllowed(policy.allowedOrigins, '?sim=maintenance')).toBe(true);
+  });
+
+  it('denies non-http schemes that parse but have a null origin', () => {
+    expect(originAllowed(policy.allowedOrigins, 'javascript:alert(1)')).toBe(false);
+    expect(originAllowed(policy.allowedOrigins, 'about:blank')).toBe(false);
+  });
 });
 
 describe('Redactor', () => {
