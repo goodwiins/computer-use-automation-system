@@ -7,8 +7,7 @@ output shown. Total live time ≈ 8 minutes if you skip live discovery.
 
 ```bash
 cd ~/development/interface.ai
-npm run test           # 99/99 — proves the build is healthy, 20s
-npx tsx cli.ts validate
+npm run ci             # typecheck + 99/99 suite — proves the build is healthy, ~22s
 ```
 
 Open three terminals, big font. Close other browser windows (the escalation
