@@ -14,9 +14,16 @@ import {
 
 const DEFAULT_TIMEOUT = 10_000;
 
+/** Time left before `deadline`, floored so a retry always gets a real attempt. */
+export const remainingMs = (deadline: number, floor = 500) => Math.max(floor, deadline - Date.now());
+
+/** Escape a value for use inside a double-quoted CSS attribute selector. */
+export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
+
 export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
+  private dialogs: Array<{ type: string; message: string }> = [];
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
@@ -40,10 +47,34 @@ export class BrowserSurface implements Surface {
     // This is the handoff seam: a human operator's console (here, a demo
     // script; in production, a remote co-browsing bridge) attaches to the
     // SAME browser session the automation is driving.
-    const args = process.env.CU_CDP_PORT ? [`--remote-debugging-port=${process.env.CU_CDP_PORT}`] : [];
+    //
+    // ponytail: the seam is an UNAUTHENTICATED localhost control channel —
+    // anything that can reach the port drives the session. Validating the
+    // port only keeps arbitrary flags out of chromium's argv; a real
+    // deployment fronts CDP with an authenticated co-browsing bridge.
+    const port = process.env.CU_CDP_PORT;
+    const args: string[] = [];
+    if (port) {
+      const n = Number(port);
+      if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+        throw new Error(`CU_CDP_PORT must be an integer between 1024 and 65535 (got "${port}")`);
+      }
+      args.push(`--remote-debugging-port=${n}`);
+    }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
+    // An unexpected native dialog is never answered "yes" by automation:
+    // dismiss (the conservative branch), remember it, and let the executor
+    // explain the step that failed because of it.
+    this.page.on('dialog', (d) => {
+      this.dialogs.push({ type: d.type(), message: d.message() });
+      d.dismiss().catch(() => {});
+    });
     await this.page.goto(entryUrl, { waitUntil: 'load' });
+  }
+
+  drainDialogs(): Array<{ type: string; message: string }> {
+    return this.dialogs.splice(0);
   }
 
   currentUrl(): string {
@@ -84,7 +115,7 @@ export class BrowserSurface implements Surface {
     await this.page.goto(url, { waitUntil: 'load' });
   }
 
-  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     // Legacy pages navigate on click; wait for the frame to settle.
     await Promise.all([
@@ -94,16 +125,19 @@ export class BrowserSurface implements Surface {
     return report;
   }
 
-  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async fill(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.fill(value, { timeout: timeoutMs });
     return report;
   }
 
-  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: string): Promise<ResolutionReport> {
+  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+    const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
-      await locator.selectOption(value, { timeout: timeoutMs }); // fall back to value=
+      // Fall back to value= on whatever budget is left, so a label miss costs
+      // one timeout, not two.
+      await locator.selectOption(value, { timeout: remainingMs(deadline) });
     });
     return report;
   }
@@ -194,7 +228,9 @@ export class BrowserSurface implements Surface {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return frame.getByRole(s.role as any, { name: s.name, exact: true });
       case 'nameAttr':
-        return frame.locator(`[name="${s.name}"]`);
+        // A name containing " or \ would otherwise build an invalid selector,
+        // whose count() throws and reads as "no matches" — silent drift.
+        return frame.locator(`[name="${escapeAttrValue(s.name)}"]`);
       case 'text':
         return frame.getByText(s.text, { exact: s.exact });
       case 'css':

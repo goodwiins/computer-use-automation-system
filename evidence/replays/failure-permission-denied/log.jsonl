@@ -1,0 +1,5 @@
+{"ts":"2026-09-02T21:56:26.547Z","seq":0,"event":"replay.start","capability":"lookup-member-balance","version":"1.0.0","params":{"memberId":"12345"}}
+{"ts":"2026-09-02T21:56:26.548Z","seq":1,"event":"policy.decision","action":"navigate","url":"http://localhost:4173/?sim=denied","risk":"read","verdict":"allow"}
+{"ts":"2026-09-02T21:56:26.822Z","seq":2,"event":"step.start","stepId":"s1","action":"click","intent":"Open member inquiry to look up member {{memberId}}.","risk":"read"}
+{"ts":"2026-09-02T21:56:26.849Z","seq":3,"event":"detector.hit","stepId":"s1","detector":"permission-denied","classification":"fatal"}
+{"ts":"2026-09-02T21:56:26.863Z","seq":4,"event":"replay.failure","stepId":"s1","intent":"pass runtime-condition checks","expected":"no fatal condition","observed":"permission-denied: Operator security profile does not include this function (SEC-4031)","screenshot":"evidence/runs/replay-2026-09-02T21-56-26-547Z/004-fatal-permission-denied.png","escalated":false}

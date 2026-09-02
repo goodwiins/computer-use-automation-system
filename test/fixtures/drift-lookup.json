@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "drift-lookup-member-balance",
   "name": "drift-lookup-member-balance",
-  "description": "Drift fixture: same lookup flow, but the Search-button step has only the role-tier locator, so a renamed button (BREAK_MARKUP=1) forces escalation",
+  "description": "Escalation-demo copy of lookup-member-balance@1.0.0: step s3 keeps only the role tier so BREAK_MARKUP=1 (button renamed) forces a hard failure.",
   "version": "1.0.0",
   "status": "approved",
   "app": {
@@ -16,25 +16,25 @@
     {
       "name": "memberId",
       "type": "string",
-      "description": "Member number to look up",
+      "description": "Invocation parameter \"memberId\"",
       "required": true,
       "sensitive": false
     }
   ],
   "outputs": [
     {
-      "name": "savingsBalance",
+      "name": "savings_balance",
       "type": "string",
-      "description": "Current savings balance as displayed"
+      "description": "Extracted during the flow at step s5"
     }
   ],
   "steps": [
     {
       "id": "s1",
-      "intent": "open the member inquiry screen from the main menu",
+      "intent": "Open member inquiry to look up member {{memberId}}.",
       "action": "click",
       "target": {
-        "description": "Member Inquiry / Maintenance tile on the main menu",
+        "description": "Open member inquiry to look up member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
           {
@@ -46,18 +46,27 @@
             "kind": "text",
             "text": "Member Inquiry / Maintenance",
             "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(1) > a:nth-of-type(1)"
           }
-        ]
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Member Inquiry / Maintenance"
+        }
       },
       "risk": "read",
       "timeoutMs": 10000
     },
     {
       "id": "s2",
-      "intent": "enter the member number in the search field",
+      "intent": "Enter the specified member ID for lookup.",
       "action": "fill",
       "target": {
-        "description": "member number / last name search input",
+        "description": "Enter the specified member ID for lookup.",
         "frame": "workarea",
         "strategies": [
           {
@@ -66,9 +75,13 @@
           },
           {
             "kind": "css",
-            "selector": "form input[type=text]"
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
           }
-        ]
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
       },
       "value": "{{memberId}}",
       "risk": "reversible_write",
@@ -76,10 +89,10 @@
     },
     {
       "id": "s3",
-      "intent": "run the search",
+      "intent": "Submit the member inquiry for member {{memberId}}.",
       "action": "click",
       "target": {
-        "description": "Search submit button",
+        "description": "Submit the member inquiry for member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
           {
@@ -87,17 +100,22 @@
             "role": "button",
             "name": "Search"
           }
-        ]
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Search"
+        }
       },
-      "risk": "read",
-      "timeoutMs": 4000
+      "risk": "reversible_write",
+      "timeoutMs": 10000
     },
     {
       "id": "s4",
-      "intent": "open the matching member record from the results table",
+      "intent": "Open the matching member record to view account balances.",
       "action": "click",
       "target": {
-        "description": "result row link bearing the member number",
+        "description": "Open the matching member record to view account balances.",
         "frame": "workarea",
         "strategies": [
           {
@@ -109,40 +127,44 @@
             "kind": "text",
             "text": "{{memberId}}",
             "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > a:nth-of-type(1)"
           }
-        ]
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "{{memberId}}"
+        }
       },
       "risk": "read",
       "timeoutMs": 10000
     },
     {
       "id": "s5",
-      "intent": "confirm the member profile screen is showing",
-      "action": "assert",
-      "assert": {
-        "kind": "textVisible",
-        "text": "Member Profile",
-        "frame": "workarea"
-      },
-      "risk": "read",
-      "timeoutMs": 10000
-    },
-    {
-      "id": "s6",
-      "intent": "read the savings balance from the accounts table",
+      "intent": "Read the current balance from the SAVINGS account row for member {{memberId}}.",
       "action": "extract",
       "target": {
-        "description": "current-balance cell of the SAVINGS row",
+        "description": "Read the current balance from the SAVINGS account row for member {{memberId}}.",
         "frame": "workarea",
         "strategies": [
           {
             "kind": "css",
             "selector": "tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)"
+          },
+          {
+            "kind": "css",
+            "selector": "td:nth-of-type(1) > table:nth-of-type(2) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(4)"
           }
-        ]
+        ],
+        "snapshot": {
+          "tag": "td"
+        }
       },
       "extract": {
-        "output": "savingsBalance"
+        "output": "savings_balance"
       },
       "risk": "read",
       "timeoutMs": 10000
@@ -150,7 +172,7 @@
   ],
   "successCondition": {
     "kind": "urlMatches",
-    "pattern": "/members/{{memberId}}(\\?.*)?$"
+    "pattern": "/members/{{memberId}}$"
   },
   "detectors": [
     {
@@ -162,6 +184,16 @@
       },
       "classification": "business_outcome",
       "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "validation-rejected",
+      "description": "Form submission rejected with field validation errors",
+      "match": {
+        "kind": "textVisible",
+        "text": "Correct the following before continuing"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
     },
     {
       "id": "session-expired",
@@ -198,12 +230,30 @@
           ]
         }
       }
+    },
+    {
+      "id": "trancode-failure",
+      "description": "Host error page (TRANCODE FAILURE)",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANCODE FAILURE"
+      },
+      "classification": "fatal"
+    },
+    {
+      "id": "permission-denied",
+      "description": "Operator security profile does not include this function (SEC-4031)",
+      "match": {
+        "kind": "textVisible",
+        "text": "Operator not authorized for this function"
+      },
+      "classification": "fatal"
     }
   ],
   "provenance": {
-    "discoveredAt": "2026-08-13T00:00:00.000Z",
-    "model": "(hand-written fixture)",
-    "discoveryRunId": "hand-authored",
-    "goal": "Look up a member and read their current savings balance"
+    "discoveredAt": "2026-08-14T21:52:06.288Z",
+    "model": "gpt-5.6-luna (fixture derived from lookup-member-balance@1.0.0; s3 narrowed to the role tier)",
+    "discoveryRunId": "discovery-2026-08-14T21-51-39-003Z",
+    "goal": "Look up member {{memberId}} and read their current savings balance"
   }
 }

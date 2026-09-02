@@ -111,7 +111,7 @@
           "text": "Search"
         }
       },
-      "risk": "read",
+      "risk": "reversible_write",
       "timeoutMs": 10000
     },
     {
@@ -241,6 +241,15 @@
       "match": {
         "kind": "textVisible",
         "text": "TRANCODE FAILURE"
+      },
+      "classification": "fatal"
+    },
+    {
+      "id": "permission-denied",
+      "description": "Operator security profile does not include this function (SEC-4031)",
+      "match": {
+        "kind": "textVisible",
+        "text": "Operator not authorized for this function"
       },
       "classification": "fatal"
     }

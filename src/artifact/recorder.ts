@@ -7,13 +7,12 @@
 //     becomes the success condition; each step keeps the model's stated
 //     intent so a reviewer can audit what the capability does and why.
 
-import { randomUUID } from 'node:crypto';
 import type { DiscoveryResult } from '../agent/loop.js';
 import { CapabilityArtifact, type Detector, type Parameter, type Step } from './schema.js';
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const RISK_RANK: Record<Step['risk'], number> = { read: 0, reversible_write: 1, irreversible: 2 };
+export const RISK_RANK: Record<Step['risk'], number> = { read: 0, reversible_write: 1, irreversible: 2 };
 
 // Commit-shaped control text implies a risk floor regardless of what the
 // model claimed — a downlabeled irreversible click would sail through the
@@ -151,8 +150,4 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       goal: templatize(input.goal),
     },
   });
-}
-
-export function newRunId(): string {
-  return randomUUID();
 }

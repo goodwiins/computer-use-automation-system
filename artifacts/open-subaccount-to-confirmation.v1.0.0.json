@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "open-subaccount-to-confirmation",
   "name": "open-subaccount-to-confirmation",
-  "description": "For member {{memberId}}, start opening a new sub-account of type Secondary Savings with nickname {{nickname}} and initial deposit {{deposit}}. Stop at the confirmation review screen — do NOT click Open Account — and read the confirmed nickname and deposit from the review table.",
+  "description": "For member {{memberId}}, start opening a new sub-account of type Secondary Savings with nickname {{nickname}} and initial deposit {{deposit}}. Stop at the confirmation review screen \u2014 do NOT click Open Account \u2014 and read the confirmed nickname and deposit from the review table.",
   "version": "1.0.0",
   "status": "approved",
   "app": {
@@ -130,7 +130,7 @@
           "text": "Search"
         }
       },
-      "risk": "read",
+      "risk": "reversible_write",
       "timeoutMs": 10000
     },
     {
@@ -418,12 +418,21 @@
         "text": "TRANCODE FAILURE"
       },
       "classification": "fatal"
+    },
+    {
+      "id": "permission-denied",
+      "description": "Operator security profile does not include this function (SEC-4031)",
+      "match": {
+        "kind": "textVisible",
+        "text": "Operator not authorized for this function"
+      },
+      "classification": "fatal"
     }
   ],
   "provenance": {
     "discoveredAt": "2026-08-14T22:57:07.327Z",
     "model": "gpt-5.6-luna",
     "discoveryRunId": "discovery-2026-08-14T22-55-51-790Z",
-    "goal": "For member {{memberId}}, start opening a new sub-account of type Secondary Savings with nickname {{nickname}} and initial deposit {{deposit}}. Stop at the confirmation review screen — do NOT click Open Account — and read the confirmed nickname and deposit from the review table."
+    "goal": "For member {{memberId}}, start opening a new sub-account of type Secondary Savings with nickname {{nickname}} and initial deposit {{deposit}}. Stop at the confirmation review screen \u2014 do NOT click Open Account \u2014 and read the confirmed nickname and deposit from the review table."
   }
 }

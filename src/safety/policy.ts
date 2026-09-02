@@ -20,6 +20,8 @@ export const Policy = z.object({
     irreversible: z.enum(['allow', 'confirm', 'escalate', 'block']),
   }),
   maxSteps: z.number().int().positive().default(25),
+  // Wall-clock bound on a discovery run (a stuck-but-not-failing model burns money).
+  maxDiscoveryMs: z.number().int().positive().default(10 * 60_000),
   // Unattended replay requires an approved artifact.
   requireApprovedForUnattended: z.boolean().default(true),
 });
@@ -55,17 +57,16 @@ export function checkAction(
 }
 
 export function originAllowed(allowed: string[], url: string): boolean {
-  // Scheme-less "authority" forms (protocol-relative `//host/path`, and the
-  // backslash variant some browsers normalize) are NOT relative paths: a
-  // browser resolves them against a full origin and escapes the allowlist.
-  if (url.startsWith('//') || url.startsWith('\\\\')) return false;
+  // Never classify "relative" by string prefix: WHATWG URL parsing treats
+  // `\` as `/` for http(s), so `/\host`, `\/host`, `//host` all resolve to a
+  // foreign origin. Resolve against a known-good base and compare origins —
+  // a relative URL resolves to an allowed origin, an authority form does not.
+  const base = allowed[0];
+  if (!base) return false;
   try {
-    const origin = new URL(url).origin;
-    return allowed.includes(origin);
+    return allowed.includes(new URL(url, base).origin);
   } catch {
-    // Relative URLs stay on the current origin, which was already checked
-    // when we navigated there.
-    return url.startsWith('/') || url.startsWith('?');
+    return false;
   }
 }
 

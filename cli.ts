@@ -2,12 +2,13 @@
 //   discover --goal "..." --name <capability> [--param k=v ...] [--sensitive k] [--entry URL] [--headful]
 //   replay   --artifact <path> [--overlay <tenant overlay>] [--params '{"k":"v"}'] [--entry-override URL] [--attended] [--approve]
 //   list     — catalog of saved capabilities (name, params, outputs)
+//   validate — re-apply the current risk floor to every saved artifact; exit 1 on drift
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { runDiscovery } from './src/agent/loop.js';
-import { newRunId, recordArtifact } from './src/artifact/recorder.js';
+import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder.js';
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
 import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
 import { CapabilityArtifact, Detector } from './src/artifact/schema.js';
@@ -31,11 +32,12 @@ function parseArgs(argv: string[]) {
   const sensitive: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    const value = () => argv[++i] ?? fatal(`${a} requires a value`);
     if (a === '--param') {
-      const [k, ...rest] = argv[++i]!.split('=');
+      const [k, ...rest] = value().split('=');
       params[k!] = rest.join('=');
     } else if (a === '--sensitive') {
-      sensitive.push(argv[++i]!);
+      sensitive.push(value());
     } else if (a.startsWith('--')) {
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) flags[a.slice(2)] = true;
@@ -106,6 +108,7 @@ async function discover(argv: string[]) {
     openai,
     model,
     maxSteps: policy.maxSteps,
+    timeoutMs: policy.maxDiscoveryMs,
     escalate: headful
       ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
       : undefined,
@@ -186,7 +189,11 @@ async function replay(argv: string[]) {
   }
   const redactor = new Redactor();
   redactor.addSensitiveValues(
-    artifact.parameters.filter((p) => p.sensitive).map((p) => params[p.name] ?? '').filter(Boolean),
+    artifact.parameters
+      .filter((p) => p.sensitive)
+      // Falsy-but-real values (a numeric 0) must still be registered.
+      .map((p) => params[p.name])
+      .filter((v): v is string | number => v !== undefined && v !== ''),
   );
   const logger = new RunLogger('replay', redactor);
   console.log(`replay run ${logger.runId} → ${logger.dir}`);
@@ -225,7 +232,8 @@ async function replay(argv: string[]) {
   });
 
   console.log('\nresult:');
-  console.log(JSON.stringify(result, null, 2));
+  // stdout is evidence too: failure.observed can echo raw page/Playwright text.
+  console.log(JSON.stringify(redactor.redact(result), null, 2));
   if (result.status === 'failure') process.exitCode = 1;
   await surface.close();
 }
@@ -240,7 +248,14 @@ function list() {
   if (files.length === 0) return void console.log('No capabilities recorded yet.');
   console.log('Capability catalog:\n');
   for (const f of files) {
-    const a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    let a;
+    try {
+      a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    } catch (e) {
+      // One bad file must not hide the rest of the catalog.
+      console.log(`  ${f}: unreadable — ${(e as Error).message.split('\n')[0]}\n`);
+      continue;
+    }
     const params = a.parameters.map((p) => `${p.name}: ${p.type}${p.sensitive ? ' (sensitive)' : ''}`).join(', ');
     const outputs = a.outputs.map((o) => `${o.name}: ${o.type}`).join(', ');
     console.log(`  ${a.id}@${a.version} [${a.status}]`);
@@ -251,11 +266,33 @@ function list() {
   }
 }
 
+/**
+ * Approved artifacts on disk are not re-checked when the recorder's risk
+ * rules tighten. Re-apply the current floor to every step and fail on drift,
+ * so CI catches a step that is now labeled below what its element implies.
+ */
+function validate() {
+  let drift = 0;
+  for (const f of readdirSync(ARTIFACT_DIR).filter((f) => f.endsWith('.json'))) {
+    const a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    for (const s of a.steps) {
+      const floor = s.target && riskFloorFor(s.target);
+      if (floor && RISK_RANK[s.risk] < RISK_RANK[floor]) {
+        console.log(`${f}: step ${s.id} is labeled ${s.risk}; current floor is ${floor}`);
+        drift++;
+      }
+    }
+  }
+  console.log(drift ? `${drift} step(s) below the current risk floor` : 'All artifacts satisfy the current risk floor.');
+  if (drift) process.exit(1);
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === 'discover') await discover(rest);
 else if (cmd === 'replay') await replay(rest);
 else if (cmd === 'list') list();
+else if (cmd === 'validate') validate();
 else {
-  console.log('usage: cli.ts <discover|replay|list> [flags]');
+  console.log('usage: cli.ts <discover|replay|list|validate> [flags]');
   process.exit(1);
 }

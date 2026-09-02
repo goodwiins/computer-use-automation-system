@@ -39,6 +39,7 @@ export interface DiscoveryDeps {
   openai: OpenAI;
   model: string;
   maxSteps: number;
+  timeoutMs?: number; // wall-clock bound; default 10 min
   escalate?: (req: InterventionRequest) => Promise<InterventionDecision>;
 }
 
@@ -64,8 +65,10 @@ export async function runDiscovery(
   ];
 
   let consecutiveFailures = 0;
+  const deadline = Date.now() + (deps.timeoutMs ?? 10 * 60_000);
 
   for (let turn = 1; turn <= deps.maxSteps; turn++) {
+    if (Date.now() > deadline) return finish('stopped', `timeout: discovery exceeded ${deps.timeoutMs ?? 600_000}ms`);
     const obs = await surface.observe();
     const shot = await logger.screenshot(surface, `turn${turn}`);
     const obsText =
@@ -145,11 +148,7 @@ export async function runDiscovery(
           if (call.function.name === 'click') {
             const risk = (args.risk as TraceEntry['risk']) ?? 'read';
             entry.risk = risk;
-            // Surface.click's public signature omits risk (only GuardedSurface
-            // consumes it, to gate discovery's risky clicks like replay's).
-            await (surface.click as (t: TargetDescriptor, ms?: number, risk?: string) => Promise<unknown>)(
-              descriptor, undefined, risk,
-            );
+            await surface.click(descriptor, undefined, risk);
             respond(`Clicked "${descriptor.description}". Now at ${surface.currentUrl()}`);
           } else if (call.function.name === 'fill') {
             entry.value = String(args.value);

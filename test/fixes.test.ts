@@ -3,6 +3,10 @@
 // hand-rolled fixtures throughout — these are unit tests for the guardrails
 // themselves, not end-to-end flows (see e2e.test.ts for that).
 
+import { spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CapabilityArtifact,
@@ -12,11 +16,14 @@ import {
   resolveTemplateForRegex,
   validateParams,
 } from '../src/artifact/schema.js';
-import type { InterventionDecision } from '../src/escalation/session.js';
+import { OperatorConsole } from '../src/escalation/operator.js';
+import { ControlSession, type InterventionDecision } from '../src/escalation/session.js';
 import { Redactor } from '../src/safety/redact.js';
 import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { runReplay } from '../src/replay/executor.js';
+import { runDiscovery } from '../src/agent/loop.js';
+import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface, PolicyViolationError } from '../src/surface/guarded.js';
 import type { Observation, ResolutionReport, Surface } from '../src/surface/types.js';
 
@@ -275,5 +282,326 @@ describe('detector recovery actions are risk-gated', () => {
     expect(clickArgs).toHaveLength(1);
     expect(clickArgs[0]!.targetDescription).toBe('Continue to application');
     expect(clickArgs[0]!.risk).toBe('reversible_write');
+  });
+});
+
+describe('mid-step recoverable condition', () => {
+  const NOTICE = 'SCHEDULED NOTICE';
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 1, id: 'recover', name: 'recover', description: 'x', version: '1.0.0', status: 'approved',
+    app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+    parameters: [], outputs: [],
+    steps: [{ id: 's1', intent: 'click', action: 'click', target: { description: 'btn', strategies: [{ kind: 'css', selector: 'b' }] } }],
+    successCondition: { kind: 'urlMatches', pattern: '/done$' },
+    detectors: [{
+      id: 'notice', description: 'interstitial', match: { kind: 'textVisible', text: NOTICE }, classification: 'recoverable',
+      recovery: { action: 'click', target: { description: 'dismiss', strategies: [{ kind: 'css', selector: 'a' }] } },
+    }],
+    provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+  });
+
+  it('retries the failed step once after recovery clears the condition', async () => {
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      currentUrl: () => 'http://localhost:4173/done',
+      frameUrls: () => ['http://localhost:4173/done'],
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        if (stepClicks === 1) { noticeVisible = true; throw new Error('control obscured'); }
+        return { strategyUsed: 0, kind: 'css', matches: 1 };
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.recoveries).toEqual(['s1:notice']);
+    expect(stepClicks).toBe(2);
+    expect(result.status).toBe('success');
+  });
+
+  it('does not loop: a second failure after recovery is a hard failure', async () => {
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        noticeVisible = stepClicks === 1;
+        throw new Error('still broken');
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(stepClicks).toBe(2);
+    expect(result.status).toBe('failure');
+  });
+
+  it('never auto-retries an irreversible step, even after recovery', async () => {
+    const irreversible = { ...artifact, steps: [{ ...artifact.steps[0]!, risk: 'irreversible' as const }] };
+    const allowIrreversible = Policy.parse({ ...policy, riskHandling: { ...policy.riskHandling, irreversible: 'allow' } });
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      currentUrl: () => 'http://localhost:4173/done',
+      frameUrls: () => ['http://localhost:4173/done'],
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        if (stepClicks === 1) { noticeVisible = true; throw new Error('control obscured'); }
+        return { strategyUsed: 0, kind: 'css', matches: 1 };
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(irreversible, {}, { surface, logger, policy: allowIrreversible });
+    expect(stepClicks).toBe(1);
+    expect(result.recoveries).toEqual(['s1:notice']);
+    expect(result.status).toBe('failure');
+  });
+});
+
+describe('pre-flight start failure', () => {
+  it('returns a structured failure (and writes result.json) when the surface cannot start', async () => {
+    const artifact = CapabilityArtifact.parse({
+      schemaVersion: 1, id: 'start-fail', name: 'start-fail', description: 'x', version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+      parameters: [], outputs: [],
+      steps: [{ id: 's1', intent: 'x', action: 'navigate', url: 'http://localhost:4173/', risk: 'read', timeoutMs: 1000 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+    });
+    const surface = makeStubSurface({ start: async () => { throw new Error('browser launch failed'); } });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status === 'failure') {
+      expect(result.failure.stepId).toBe('(pre-flight)');
+      expect(result.failure.observed).toContain('browser launch failed');
+    }
+    expect(existsSync(join(logger.dir, 'result.json'))).toBe(true);
+  });
+});
+
+describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
+  it('A-M2: masks AWS/GitHub/Slack/Google token shapes', () => {
+    const r = new Redactor();
+    const out = r.redactString(
+      'AKIAIOSFODNN7EXAMPLE ghp_' + 'a'.repeat(36) + ' xoxb-1234567890-abc AIza' + 'b'.repeat(35),
+    );
+    expect(out).not.toMatch(/AKIA|ghp_|xoxb|AIza/);
+  });
+
+  it('A-M2: masks the URL-encoded form of a sensitive value', () => {
+    const r = new Redactor();
+    r.addSensitiveValues(['p@ss word']);
+    expect(r.redactString('q=p%40ss%20word&x=p@ss word')).not.toMatch(/p%40ss|p@ss/);
+  });
+
+  it('A-M3: rejects urlMatches patterns with quantified groups or invalid syntax', () => {
+    const det = (pattern: string) =>
+      Detector.safeParse({ id: 'd', description: '', match: { kind: 'urlMatches', pattern }, classification: 'fatal' }).success;
+    expect(det('^(a+)+$')).toBe(false);
+    expect(det('(')).toBe(false);
+    expect(det('/members/{{id}}$')).toBe(true);
+  });
+
+  it('A-M5: --param without a value exits with an error instead of a TypeError', () => {
+    const res = spawnSync('npx', ['tsx', 'cli.ts', 'replay', '--param'], { encoding: 'utf8' });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('--param requires a value');
+  });
+
+  it('S-M3: `validate` passes over the committed artifacts (risk labels meet the current floor)', () => {
+    const res = spawnSync('npx', ['tsx', 'cli.ts', 'validate'], { encoding: 'utf8' });
+    expect(res.stdout).toContain('All artifacts satisfy');
+    expect(res.status).toBe(0);
+  });
+});
+
+describe('Sep-02 audit LOW findings', () => {
+  it('S-L1: a nameAttr containing a quote still resolves (selector is escaped)', async () => {
+    const surface = new BrowserSurface();
+    await surface.start('data:text/html,' + encodeURIComponent(`<input type="text" name='a"b' value="hit">`));
+    try {
+      const { report } = await surface.readText(
+        { description: 'quoted name', strategies: [{ kind: 'nameAttr', name: 'a"b' }] },
+        3000,
+      );
+      expect(report).toMatchObject({ strategyUsed: 0, kind: 'nameAttr', matches: 1 });
+    } finally {
+      await surface.close();
+    }
+  }, 30_000);
+
+  const TSX = resolve('node_modules/.bin/tsx');
+  const CLI = resolve('cli.ts');
+
+  it('S-L5: `list` reports a malformed artifact inline and still lists the good ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cu-list-'));
+    mkdirSync(join(dir, 'artifacts'));
+    cpSync('artifacts/lookup-member-balance.v1.0.0.json', join(dir, 'artifacts/good.json'));
+    writeFileSync(join(dir, 'artifacts/broken.json'), '{ not json');
+    const res = spawnSync(TSX, [CLI, 'list'], { cwd: dir, encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('broken.json: unreadable');
+    expect(res.stdout).toContain('lookup-member-balance@1.0.0');
+  }, 60_000);
+
+  it('S-L3/S-L4: replay redacts stdout, including a sensitive param whose value is 0', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cu-replay-'));
+    // Port 9 (discard) is never served, so the run fails in pre-flight and the
+    // entry URL — carrying both sensitive values — lands in failure.observed.
+    const origin = 'http://localhost:9';
+    writeFileSync(join(dir, 'policy.json'), JSON.stringify({
+      allowedOrigins: [origin],
+      allowedActions: ['navigate'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
+    }));
+    writeFileSync(join(dir, 'artifact.json'), JSON.stringify({
+      schemaVersion: 1, id: 'redact-stdout', name: 'redact-stdout', description: 'x',
+      version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: `${origin}/?token=ZZSECRETZZ&n=0`, allowedOrigins: [origin] },
+      parameters: [
+        { name: 'token', type: 'string', description: 'x', required: true, sensitive: true },
+        { name: 'n', type: 'number', description: 'x', required: true, sensitive: true },
+      ],
+      outputs: [],
+      steps: [{ id: 's1', intent: 'x', action: 'navigate', url: `${origin}/`, risk: 'read', timeoutMs: 1000 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+    }));
+    const res = spawnSync(
+      TSX,
+      [CLI, 'replay', '--artifact', join(dir, 'artifact.json'), '--params', '{"token":"ZZSECRETZZ","n":0}'],
+      { cwd: dir, encoding: 'utf8', env: { ...process.env, POLICY_PATH: join(dir, 'policy.json') } },
+    );
+    expect(res.stdout).toContain('failure');
+    expect(res.stdout).not.toContain('ZZSECRETZZ'); // S-L4
+    expect(res.stdout).not.toContain('n=0'); // S-L3: a 0-valued sensitive param is still registered
+  }, 60_000);
+
+  it('A-L1: an out-of-range CU_CDP_PORT is rejected before chromium launches', async () => {
+    const prev = process.env.CU_CDP_PORT;
+    process.env.CU_CDP_PORT = '80; rm -rf /';
+    try {
+      await expect(new BrowserSurface().start('about:blank')).rejects.toThrow(/CU_CDP_PORT/);
+    } finally {
+      if (prev === undefined) delete process.env.CU_CDP_PORT;
+      else process.env.CU_CDP_PORT = prev;
+    }
+  });
+
+  it('A-L3: the select value= fallback shares the budget instead of doubling it', async () => {
+    const surface = new BrowserSurface();
+    await surface.start(
+      'data:text/html,' + encodeURIComponent('<select name="s"><option value="v">Label</option></select>'),
+    );
+    const started = Date.now();
+    try {
+      // Neither the label nor the value matches, so both attempts time out.
+      await expect(
+        surface.select({ description: 'sel', strategies: [{ kind: 'nameAttr', name: 's' }] }, 'nope', 2000),
+      ).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(3200); // 2x2000 before the fix
+    } finally {
+      await surface.close();
+    }
+  }, 30_000);
+
+  it('S-L6: the page-callable human-action binding stops logging at the cap', async () => {
+    let report!: (source: unknown, action: unknown) => void;
+    const page = {
+      exposeBinding: async (_n: string, fn: (s: unknown, a: unknown) => void) => void (report = fn),
+      frames: () => [],
+      on: () => {},
+      off: () => {},
+    };
+    const events: string[] = [];
+    const session = new ControlSession();
+    session.transfer('human', 'test');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const op = new OperatorConsole(page as any, { log: (e: string) => events.push(e) } as any, session);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (op as any).recordHumanActions();
+    for (let i = 0; i < 250; i++) report(null, { type: 'click' }); // hostile page floods the binding
+    expect(events.filter((e) => e === 'human.action')).toHaveLength(200);
+    expect(events.filter((e) => e === 'human.action.capped')).toHaveLength(1);
+  });
+
+  it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {
+    const r = new Redactor();
+    r.addSensitiveValues([1, 'SECRETPASSWORD']);
+    const out = r.redactString('id=1 amount 12 at step s1 — xSECRETPASSWORDy');
+    expect(out.startsWith('id=•')).toBe(true); // the standalone value is masked
+    expect(out).toContain('amount 12'); // ...but not inside a longer number
+    expect(out).toContain('step s1'); // ...nor inside an identifier
+    expect(out).not.toContain('SECRETPASSWORD'); // long values stay substring-masked
+  });
+});
+
+describe('brief §3.1/§3.3 gaps closed 2026-09-02', () => {
+  const clickArtifact = (detectors: unknown[] = []) =>
+    CapabilityArtifact.parse({
+      schemaVersion: 1, id: 'gap-fixture', name: 'gap-fixture', description: 'test', version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+      parameters: [], outputs: [],
+      steps: [{ id: 's1', intent: 'click it', action: 'click', target: { description: 'x', strategies: [{ kind: 'css', selector: '#x' }] }, risk: 'read', timeoutMs: 500 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors,
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'test' },
+    });
+
+  it('discovery stops on the wall-clock deadline without calling the model', async () => {
+    let modelCalls = 0;
+    const openai = { chat: { completions: { create: async () => { modelCalls++; throw new Error('should not be called'); } } } } as never;
+    const logger = new RunLogger('discovery', new Redactor(), 'evidence/test-runs');
+    const r = await runDiscovery('goal', 'http://localhost:4173/', {}, policy.allowedOrigins, {
+      surface: makeStubSurface(), logger, openai, model: 'stub', maxSteps: 5, timeoutMs: -1,
+    });
+    expect(r.status).toBe('stopped');
+    expect(r.stopReason).toMatch(/timeout/);
+    expect(modelCalls).toBe(0);
+  });
+
+  it('BrowserSurface dismisses a native confirm() and reports it via drainDialogs', async () => {
+    const surface = new BrowserSurface();
+    await surface.start('data:text/html,' + encodeURIComponent(`<a id="go" href="#" onclick="return confirm('Sure?')">go</a>`));
+    try {
+      await surface.click({ description: 'go', strategies: [{ kind: 'css', selector: '#go' }] }, 3000);
+      expect(surface.drainDialogs()).toEqual([{ type: 'confirm', message: 'Sure?' }]);
+      expect(surface.drainDialogs()).toEqual([]);
+    } finally {
+      await surface.close();
+    }
+  });
+
+  it('a dismissed dialog is named in the failure the caller receives', async () => {
+    const surface = makeStubSurface({
+      click: async () => { throw new Error('Could not uniquely resolve target'); },
+      drainDialogs: () => [{ type: 'confirm', message: 'Continue?' }],
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(clickArtifact(), {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status !== 'failure') throw new Error('unreachable');
+    expect(result.failure.observed).toMatch(/unexpected confirm dialog "Continue\?" was dismissed at s1; then Could not/);
+  });
+
+  it('a permission-denied page is a fatal condition, not a resolution failure', async () => {
+    const DENIED = 'Operator not authorized for this function';
+    const surface = makeStubSurface({ isTextVisible: async (t: string) => t === DENIED });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const artifact = clickArtifact([
+      { id: 'permission-denied', description: 'SEC-4031', match: { kind: 'textVisible', text: DENIED }, classification: 'fatal' },
+    ]);
+    const result = await runReplay(artifact, {}, { surface, logger, policy });
+    expect(result.status).toBe('failure');
+    if (result.status !== 'failure') throw new Error('unreachable');
+    expect(result.failure.observed).toMatch(/permission-denied/);
   });
 });

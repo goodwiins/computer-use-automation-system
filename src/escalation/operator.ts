@@ -27,6 +27,17 @@ export class OperatorConsole {
 
     const isRiskApproval = req.kind === 'risk_approval';
 
+    // "Attended" only means "a human" when the decision comes from a
+    // terminal. A piped stdin is an automated caller, which must not be able
+    // to approve a risky action (it may still fix stuck steps and hand back).
+    if (isRiskApproval && !process.stdin.isTTY) {
+      console.log('risk approval requires an interactive terminal (stdin is not a TTY); aborting');
+      await detach();
+      this.session.transfer('automation', 'risk approval refused: stdin is not a TTY');
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'stdin_not_tty' });
+      return 'abort';
+    }
+
     console.log('\n┌──────────────── HUMAN INTERVENTION REQUIRED ────────────────');
     console.log(`│ capability : ${req.capability}`);
     console.log(`│ goal       : ${req.goal}`);
@@ -88,13 +99,28 @@ export class OperatorConsole {
    */
   private async recordHumanActions(): Promise<() => Promise<void>> {
     const binding = '__cuReportHumanAction';
+    // The binding is callable by any script on the page, so a hostile page can
+    // fire it in a loop and bury the evidence trail. Cap what one binding will
+    // record.
+    // ponytail: a cap, not a defence — the real fix is attributing each report
+    // to a trusted event (isTrusted + a per-frame nonce). The cap is per page
+    // binding, which survives handbacks, so it bounds the damage per run.
+    const MAX_HUMAN_ACTIONS = 200;
+    let recorded = 0;
     try {
       // The in-page listeners survive the handback (they cannot be removed
       // reliably across legacy navigations), so gate on ownership here:
       // only actions taken while a human controls the session are attributed
       // to the human.
       await this.page.exposeBinding(binding, (_source, action: unknown) => {
-        if (this.session.currentOwner === 'human') this.logger.log('human.action', { action });
+        if (this.session.currentOwner !== 'human') return;
+        if (recorded >= MAX_HUMAN_ACTIONS) {
+          if (recorded === MAX_HUMAN_ACTIONS) this.logger.log('human.action.capped', { max: MAX_HUMAN_ACTIONS });
+          recorded++;
+          return;
+        }
+        recorded++;
+        this.logger.log('human.action', { action });
       });
     } catch {
       /* already exposed from a previous intervention */

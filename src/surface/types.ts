@@ -61,4 +61,10 @@ export interface Surface {
 
   screenshot(path: string, opts?: { maskValues?: string[] }): Promise<void>;
   close(): Promise<void>;
+
+  /**
+   * Native dialogs (alert/confirm/prompt/beforeunload) the surface dismissed
+   * since the last call. Optional: surfaces without a dialog concept omit it.
+   */
+  drainDialogs?(): Array<{ type: string; message: string }>;
 }

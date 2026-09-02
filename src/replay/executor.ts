@@ -65,7 +65,16 @@ export async function runReplay(
   }
 
   logger.log('replay.start', { capability: artifact.id, version: artifact.version, params });
-  await surface.start(resolveTemplate(artifact.app.entryUrl, params));
+  try {
+    await surface.start(resolveTemplate(artifact.app.entryUrl, params));
+  } catch (err) {
+    return fail({
+      stepId: '(pre-flight)',
+      intent: 'open the capability entry URL',
+      expected: `a live session at ${artifact.app.entryUrl}`,
+      observed: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   function fail(failure: StepFailure, escalated = false): ReplayResult {
     logger.log('replay.failure', { ...failure, escalated });
@@ -78,9 +87,8 @@ export async function runReplay(
   async function handleConditions(stepId: string): Promise<ReplayResult | null> {
     for (let round = 0; round < 2; round++) {
       try {
-        const hit = await checkDetectors(surface, artifact);
-        if (!hit) return null;
-        const d = hit.detector;
+        const d = await checkDetectors(surface, artifact);
+        if (!d) return null;
         logger.log('detector.hit', { stepId, detector: d.id, classification: d.classification });
         if (d.classification === 'business_outcome') {
           const shot = await logger.screenshot(surface, `outcome-${d.id}`);
@@ -166,6 +174,15 @@ export async function runReplay(
   const CONTINUE_SENTINEL = Symbol('continue') as unknown as ReplayResult;
   const stepsById = new Map(artifact.steps.map((s) => [s.id, s]));
 
+  // Native dialogs the surface dismissed, with the step they fired on.
+  const dialogsSeen: Array<{ stepId: string; type: string; message: string }> = [];
+  function noteDialogs(stepId: string) {
+    const dialogs = surface.drainDialogs?.() ?? [];
+    if (!dialogs.length) return;
+    logger.log('dialog.unexpected', { stepId, dialogs, dismissed: true });
+    dialogsSeen.push(...dialogs.map((d) => ({ stepId, ...d })));
+  }
+
   async function verifyAssertion(a: Assertion, timeoutMs = 5000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     do {
@@ -218,21 +235,34 @@ export async function runReplay(
           break;
         }
       }
+      noteDialogs(step.id);
       logger.log('step.ok', { stepId: step.id, action: step.action, ms: Date.now() - started, isRetry });
       return null;
     } catch (err) {
+      noteDialogs(step.id);
+      // The dialog that explains this failure often fired on an EARLIER step
+      // that "succeeded" (the click happened; the navigation it should have
+      // caused was cancelled). Name the most recent one.
+      const dialog = dialogsSeen.at(-1);
       // A step failure is often *explained* by a runtime condition that
       // appeared mid-flight — check before declaring the step itself broken.
+      const recoveriesBefore = recoveries.length;
       const conditionResult = await handleConditions(step.id);
       if (conditionResult === CONTINUE_SENTINEL) return null;
       if (conditionResult) return conditionResult;
+      // A recovery ran and cleared the condition that (most likely) broke this
+      // step — re-run it once. Bounded: the retry's own failure is terminal.
+      // Never auto-retry an irreversible step: its first attempt may have landed.
+      if (recoveries.length > recoveriesBefore && !isRetry && step.risk !== 'irreversible') return runStep(step, true);
 
       const shot = await logger.screenshot(surface, `failed-${step.id}`);
       const failure: StepFailure = {
         stepId: step.id,
         intent: step.intent,
         expected: describeExpectation(step),
-        observed: err instanceof Error ? err.message : String(err),
+        observed:
+          (dialog ? `unexpected ${dialog.type} dialog "${dialog.message}" was dismissed at ${dialog.stepId}; then ` : '') +
+          (err instanceof Error ? err.message : String(err)),
         screenshot: shot,
       };
       if (isRetry || err instanceof PolicyViolationError) return fail(failure, isRetry);
