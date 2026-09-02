@@ -410,4 +410,10 @@ describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
     expect(res.status).toBe(1);
     expect(res.stderr).toContain('--param requires a value');
   });
+
+  it('S-M3: `validate` passes over the committed artifacts (risk labels meet the current floor)', () => {
+    const res = spawnSync('npx', ['tsx', 'cli.ts', 'validate'], { encoding: 'utf8' });
+    expect(res.stdout).toContain('All artifacts satisfy');
+    expect(res.status).toBe(0);
+  });
 });

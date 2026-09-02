@@ -12,7 +12,7 @@ import { CapabilityArtifact, type Detector, type Parameter, type Step } from './
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const RISK_RANK: Record<Step['risk'], number> = { read: 0, reversible_write: 1, irreversible: 2 };
+export const RISK_RANK: Record<Step['risk'], number> = { read: 0, reversible_write: 1, irreversible: 2 };
 
 // Commit-shaped control text implies a risk floor regardless of what the
 // model claimed — a downlabeled irreversible click would sail through the

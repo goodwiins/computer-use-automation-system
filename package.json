@@ -9,6 +9,7 @@
     "discover": "tsx cli.ts discover",
     "replay": "tsx cli.ts replay",
     "list": "tsx cli.ts list",
+    "validate": "tsx cli.ts validate",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

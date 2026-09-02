@@ -111,7 +111,7 @@
           "text": "Search"
         }
       },
-      "risk": "read",
+      "risk": "reversible_write",
       "timeoutMs": 10000
     },
     {

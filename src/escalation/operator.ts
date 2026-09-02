@@ -27,6 +27,17 @@ export class OperatorConsole {
 
     const isRiskApproval = req.kind === 'risk_approval';
 
+    // "Attended" only means "a human" when the decision comes from a
+    // terminal. A piped stdin is an automated caller, which must not be able
+    // to approve a risky action (it may still fix stuck steps and hand back).
+    if (isRiskApproval && !process.stdin.isTTY) {
+      console.log('risk approval requires an interactive terminal (stdin is not a TTY); aborting');
+      await detach();
+      this.session.transfer('automation', 'risk approval refused: stdin is not a TTY');
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'stdin_not_tty' });
+      return 'abort';
+    }
+
     console.log('\n┌──────────────── HUMAN INTERVENTION REQUIRED ────────────────');
     console.log(`│ capability : ${req.capability}`);
     console.log(`│ goal       : ${req.goal}`);
