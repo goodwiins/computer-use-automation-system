@@ -22,6 +22,10 @@ Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs
 npm install
 npx playwright install chromium
 
+# Local CI: run `npm run ci` (typecheck + full suite, ~22s) by hand, or wire it
+# to run automatically before every push:
+git config core.hooksPath .githooks
+
 # Discovery credentials — either plain OpenAI:
 export OPENAI_API_KEY=sk-...
 # optional: export OPENAI_MODEL=gpt-5.6-luna   (default)

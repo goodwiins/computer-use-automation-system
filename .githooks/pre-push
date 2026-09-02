@@ -1,0 +1,6 @@
+#!/bin/sh
+# Local CI gate. Runs the same checks a reviewer would: types, then the full
+# suite (which also spawns `cli.ts validate`). ~22s. Enable once with:
+#   git config core.hooksPath .githooks
+# Bypass for a genuine emergency with `git push --no-verify`.
+exec npm run ci
