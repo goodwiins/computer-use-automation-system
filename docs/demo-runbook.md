@@ -1,13 +1,13 @@
 # Leadership demo runbook
 
-Dry-run verified 2026-09-02 at commit 0b35a2e: every command below produced the
+Dry-run verified 2026-09-02 at commit 349c432: every command below produced the
 output shown. Total live time ≈ 8 minutes if you skip live discovery.
 
 ## Before the room
 
 ```bash
 cd ~/development/interface.ai
-npm run test           # 95/95 — proves the build is healthy, 20s
+npm run test           # 99/99 — proves the build is healthy, 20s
 npx tsx cli.ts validate
 ```
 
@@ -113,8 +113,11 @@ Show `config/overlays/premier.json` — it is 13 lines.
 
 ### 7. Safety close (30s, no commands)
 Open `docs/audits/2026-09-01-codebase-audit.md` header: two audit rounds, 22
-findings closed with regression tests, PR #1. Open items: artifact signing
-(design decision), evidence trimming.
+findings closed with regression tests, PR #1. All seven runtime conditions the
+brief lists (validation, not-found, permission denial, unexpected dialog,
+session timeout, slow load, app error) have a detector or handler and a
+committed evidence run. Open items: artifact signing (named as a limit in
+REPORT §6), evidence trimming.
 
 ## Likely questions
 
