@@ -14,6 +14,9 @@ import {
 
 const DEFAULT_TIMEOUT = 10_000;
 
+/** Time left before `deadline`, floored so a retry always gets a real attempt. */
+export const remainingMs = (deadline: number, floor = 500) => Math.max(floor, deadline - Date.now());
+
 /** Escape a value for use inside a double-quoted CSS attribute selector. */
 export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
@@ -43,7 +46,20 @@ export class BrowserSurface implements Surface {
     // This is the handoff seam: a human operator's console (here, a demo
     // script; in production, a remote co-browsing bridge) attaches to the
     // SAME browser session the automation is driving.
-    const args = process.env.CU_CDP_PORT ? [`--remote-debugging-port=${process.env.CU_CDP_PORT}`] : [];
+    //
+    // ponytail: the seam is an UNAUTHENTICATED localhost control channel —
+    // anything that can reach the port drives the session. Validating the
+    // port only keeps arbitrary flags out of chromium's argv; a real
+    // deployment fronts CDP with an authenticated co-browsing bridge.
+    const port = process.env.CU_CDP_PORT;
+    const args: string[] = [];
+    if (port) {
+      const n = Number(port);
+      if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+        throw new Error(`CU_CDP_PORT must be an integer between 1024 and 65535 (got "${port}")`);
+      }
+      args.push(`--remote-debugging-port=${n}`);
+    }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
     await this.page.goto(entryUrl, { waitUntil: 'load' });
@@ -104,9 +120,12 @@ export class BrowserSurface implements Surface {
   }
 
   async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+    const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
-      await locator.selectOption(value, { timeout: timeoutMs }); // fall back to value=
+      // Fall back to value= on whatever budget is left, so a label miss costs
+      // one timeout, not two.
+      await locator.selectOption(value, { timeout: remainingMs(deadline) });
     });
     return report;
   }

@@ -434,6 +434,34 @@ describe('Sep-02 audit LOW findings', () => {
     }
   }, 30_000);
 
+  it('A-L1: an out-of-range CU_CDP_PORT is rejected before chromium launches', async () => {
+    const prev = process.env.CU_CDP_PORT;
+    process.env.CU_CDP_PORT = '80; rm -rf /';
+    try {
+      await expect(new BrowserSurface().start('about:blank')).rejects.toThrow(/CU_CDP_PORT/);
+    } finally {
+      if (prev === undefined) delete process.env.CU_CDP_PORT;
+      else process.env.CU_CDP_PORT = prev;
+    }
+  });
+
+  it('A-L3: the select value= fallback shares the budget instead of doubling it', async () => {
+    const surface = new BrowserSurface();
+    await surface.start(
+      'data:text/html,' + encodeURIComponent('<select name="s"><option value="v">Label</option></select>'),
+    );
+    const started = Date.now();
+    try {
+      // Neither the label nor the value matches, so both attempts time out.
+      await expect(
+        surface.select({ description: 'sel', strategies: [{ kind: 'nameAttr', name: 's' }] }, 'nope', 2000),
+      ).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(3200); // 2x2000 before the fix
+    } finally {
+      await surface.close();
+    }
+  }, 30_000);
+
   it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {
     const r = new Redactor();
     r.addSensitiveValues([1, 'SECRETPASSWORD']);
