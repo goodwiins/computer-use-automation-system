@@ -331,4 +331,27 @@ describe('mid-step recoverable condition', () => {
     expect(stepClicks).toBe(2);
     expect(result.status).toBe('failure');
   });
+
+  it('never auto-retries an irreversible step, even after recovery', async () => {
+    const irreversible = { ...artifact, steps: [{ ...artifact.steps[0]!, risk: 'irreversible' as const }] };
+    const allowIrreversible = Policy.parse({ ...policy, riskHandling: { ...policy.riskHandling, irreversible: 'allow' } });
+    let noticeVisible = false;
+    let stepClicks = 0;
+    const surface = makeStubSurface({
+      currentUrl: () => 'http://localhost:4173/done',
+      frameUrls: () => ['http://localhost:4173/done'],
+      click: async (t) => {
+        if (t.description === 'dismiss') { noticeVisible = false; return { strategyUsed: 0, kind: 'css', matches: 1 }; }
+        stepClicks++;
+        if (stepClicks === 1) { noticeVisible = true; throw new Error('control obscured'); }
+        return { strategyUsed: 0, kind: 'css', matches: 1 };
+      },
+      isTextVisible: async (text) => text === NOTICE && noticeVisible,
+    });
+    const logger = new RunLogger('replay', new Redactor(), 'evidence/test-runs');
+    const result = await runReplay(irreversible, {}, { surface, logger, policy: allowIrreversible });
+    expect(stepClicks).toBe(1);
+    expect(result.recoveries).toEqual(['s1:notice']);
+    expect(result.status).toBe('failure');
+  });
 });

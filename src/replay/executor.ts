@@ -229,7 +229,8 @@ export async function runReplay(
       if (conditionResult) return conditionResult;
       // A recovery ran and cleared the condition that (most likely) broke this
       // step — re-run it once. Bounded: the retry's own failure is terminal.
-      if (recoveries.length > recoveriesBefore && !isRetry) return runStep(step, true);
+      // Never auto-retry an irreversible step: its first attempt may have landed.
+      if (recoveries.length > recoveriesBefore && !isRetry && step.risk !== 'irreversible') return runStep(step, true);
 
       const shot = await logger.screenshot(surface, `failed-${step.id}`);
       const failure: StepFailure = {
