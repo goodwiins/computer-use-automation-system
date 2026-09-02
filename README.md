@@ -9,6 +9,7 @@ takes over the live session.
 > The model discovers. The artifact becomes a reusable capability.
 > Deterministic replay is how an AI agent invokes it in production.
 
+What it is for, in concrete terms: **[docs/use-cases.md](docs/use-cases.md)**.
 Design rationale, trade-offs, and cut lines: **[REPORT.md](REPORT.md)**.
 Evidence from real runs: **[evidence/](evidence/)**.
 
