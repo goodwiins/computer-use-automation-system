@@ -11,6 +11,7 @@
     "list": "tsx cli.ts list",
     "validate": "tsx cli.ts validate",
     "test": "vitest run",
+    "ci": "npm run typecheck && npm test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

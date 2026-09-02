@@ -9,6 +9,7 @@ takes over the live session.
 > The model discovers. The artifact becomes a reusable capability.
 > Deterministic replay is how an AI agent invokes it in production.
 
+What it is for, in concrete terms: **[docs/use-cases.md](docs/use-cases.md)**.
 Design rationale, trade-offs, and cut lines: **[REPORT.md](REPORT.md)**.
 Evidence from real runs: **[evidence/](evidence/)**.
 
@@ -21,6 +22,10 @@ Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs
 ```bash
 npm install
 npx playwright install chromium
+
+# Local CI: run `npm run ci` (typecheck + full suite, ~22s) by hand, or wire it
+# to run automatically before every push:
+git config core.hooksPath .githooks
 
 # Discovery credentials — either plain OpenAI:
 export OPENAI_API_KEY=sk-...
