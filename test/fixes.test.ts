@@ -16,7 +16,8 @@ import {
   resolveTemplateForRegex,
   validateParams,
 } from '../src/artifact/schema.js';
-import type { InterventionDecision } from '../src/escalation/session.js';
+import { OperatorConsole } from '../src/escalation/operator.js';
+import { ControlSession, type InterventionDecision } from '../src/escalation/session.js';
 import { Redactor } from '../src/safety/redact.js';
 import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
@@ -510,6 +511,26 @@ describe('Sep-02 audit LOW findings', () => {
       await surface.close();
     }
   }, 30_000);
+
+  it('S-L6: the page-callable human-action binding stops logging at the cap', async () => {
+    let report!: (source: unknown, action: unknown) => void;
+    const page = {
+      exposeBinding: async (_n: string, fn: (s: unknown, a: unknown) => void) => void (report = fn),
+      frames: () => [],
+      on: () => {},
+      off: () => {},
+    };
+    const events: string[] = [];
+    const session = new ControlSession();
+    session.transfer('human', 'test');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const op = new OperatorConsole(page as any, { log: (e: string) => events.push(e) } as any, session);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (op as any).recordHumanActions();
+    for (let i = 0; i < 250; i++) report(null, { type: 'click' }); // hostile page floods the binding
+    expect(events.filter((e) => e === 'human.action')).toHaveLength(200);
+    expect(events.filter((e) => e === 'human.action.capped')).toHaveLength(1);
+  });
 
   it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {
     const r = new Redactor();
