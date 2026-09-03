@@ -674,6 +674,30 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
     expect(sel).toContain('{{memberId}}');
   });
 
+  // ...but not at any cost: a short value collides with selector syntax, and a
+  // {{param}} substituted into nth-of-type() re-aims the selector at a different
+  // cell on the next replay — a silently wrong extracted value.
+  it('G2: a param too short to distinguish from selector syntax is left literal', () => {
+    const artifact = recordArtifact(
+      {
+        name: 'css-short', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
+        params: { col: '4' }, sensitiveParams: [],
+        appId: 'test', allowedOrigins: ['http://localhost:4173'], appDetectors: [],
+        model: 'test', discoveryRunId: 'r1',
+      },
+      {
+        status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/1',
+        trace: [{
+          action: 'extract', reason: 'read the balance', outputName: 'balance', extractedText: '1.00',
+          urlAfter: 'http://localhost:4173/members/1',
+          descriptor: { description: 'balance cell', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)" }] },
+        }],
+      },
+    );
+    const strategy = artifact.steps[0]!.target!.strategies[0]!;
+    expect(strategy.kind === 'css' && strategy.selector).toBe("tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)");
+  });
+
   it('G3: an overlay is only as approved as itself, and its entryUrl is bounds-checked', () => {
     expect(applyOverlay(BASE, overlay()).status).toBe('draft');                         // default: unreviewed
     expect(applyOverlay(BASE, overlay({ status: 'approved' })).status).toBe('approved');

@@ -64,11 +64,25 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   const paramEntries = Object.entries(input.params).sort(
     (a, b) => String(b[1]).length - String(a[1]).length,
   );
-  const templatize = (s: string): string => {
+  const substitute = (s: string, entries: typeof paramEntries): string => {
     let out = s;
-    for (const [name, value] of paramEntries) out = out.split(String(value)).join(`{{${name}}}`);
+    for (const [name, value] of entries) out = out.split(String(value)).join(`{{${name}}}`);
     return out;
   };
+  const templatize = (s: string): string => substitute(s, paramEntries);
+
+  // CSS selectors are the one place a param value collides with *syntax*: the
+  // discovery prompt asks for `td:nth-of-type(4)`-style anchors, so a 1-3 char
+  // param ("4", "12") templatizes a structural literal and silently re-aims the
+  // selector at another cell on the next replay. Same threshold the redactor
+  // uses for the same reason (redact.ts MIN_SUBSTRING_LEN), opposite handling:
+  // there a short value is matched as a whole token, here there is no token
+  // boundary to lean on — `(4)` looks like one — so short values are left
+  // literal. That trades a silent wrong-cell read for a loud resolution
+  // failure, and values this short carry nothing worth hiding.
+  const MIN_CSS_PARAM_LEN = 4;
+  const templatizeCss = (s: string): string =>
+    substitute(s, paramEntries.filter(([, v]) => String(v).length >= MIN_CSS_PARAM_LEN));
 
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
     name,
@@ -108,7 +122,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
         // (tools.ts), so a param value can end up inside the selector. Replay
         // already resolves templates in css (schema.resolveTarget) — without
         // this the runtime value would be persisted into the artifact.
-        if (s.kind === 'css') return { ...s, selector: templatize(s.selector) };
+        if (s.kind === 'css') return { ...s, selector: templatizeCss(s.selector) };
         return s;
       }),
       snapshot: step.target.snapshot && {
