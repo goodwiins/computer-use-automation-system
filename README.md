@@ -169,6 +169,11 @@ npm test        # the suite alone
 npm run ci      # what the pre-push hook runs: typecheck + the suite, ~22s
 ```
 
+[GitHub Actions](.github/workflows/ci.yml) runs the same `npm run ci` gate on
+every pull request and pushes to `master` or `dev`, using Node 22 and Chromium
+on Ubuntu. It also supports manual runs from the Actions tab. No API keys or
+repository secrets are required.
+
 ## Repo map
 
 ```
