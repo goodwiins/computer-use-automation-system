@@ -52,7 +52,10 @@ export class GuardedSurface implements Surface {
   frameUrls(): string[] { return this.inner.frameUrls(); }
   isTextVisible(text: string, frame?: string) { return this.inner.isTextVisible(text, frame); }
   describeTarget(hint: TargetDescriptor) { return this.inner.describeTarget(hint); }
-  screenshot(path: string) { return this.inner.screenshot(path); }
+  // Forward the masking options: the logger hands sensitive values down for
+  // the shot, and dropping them here would render them in the clear in every
+  // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
+  screenshot(path: string, opts?: { maskValues?: string[] }) { return this.inner.screenshot(path, opts); }
   close() { return this.inner.close(); }
   drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 

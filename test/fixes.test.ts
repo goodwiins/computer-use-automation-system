@@ -230,6 +230,24 @@ describe('screenshot evidence passes sensitive values to the surface for masking
     await logger.screenshot(surface, 'plain-shot');
     expect(seen[0]).toEqual({});
   });
+
+  // The logger is always handed the *guarded* surface (cli.ts wires it that
+  // way for both discover and replay), so a decorator that drops the options
+  // silently unmasks every evidence screenshot in every real run.
+  it('survives the GuardedSurface decorator', async () => {
+    const seen: Array<unknown> = [];
+    const inner = makeStubSurface({
+      screenshot: async (_path: string, opts?: { maskValues?: string[] }) => {
+        seen.push(opts);
+      },
+    });
+    const guarded = new GuardedSurface(inner, policy, async () => false);
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(['SECRETPASSWORD']);
+    const logger = new RunLogger('replay', redactor, 'evidence/test-runs');
+    await logger.screenshot(guarded, 'masked-shot-through-guard');
+    expect(seen[0]).toEqual({ maskValues: ['SECRETPASSWORD'] });
+  });
 });
 
 describe('detector recovery actions are risk-gated', () => {
