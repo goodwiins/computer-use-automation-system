@@ -187,12 +187,16 @@ async function replay(argv: string[]) {
     }
     artifact.app.entryUrl = override;
   }
+  // Overlay paramDefaults fill in under the caller's params — runReplay merges
+  // them the same way. A sensitive value arriving from a default must reach the
+  // redactor too, or it lands unmasked in the log, the result and screenshots.
+  const effectiveParams = { ...artifact.paramDefaults, ...params };
   const redactor = new Redactor();
   redactor.addSensitiveValues(
     artifact.parameters
       .filter((p) => p.sensitive)
       // Falsy-but-real values (a numeric 0) must still be registered.
-      .map((p) => params[p.name])
+      .map((p) => effectiveParams[p.name])
       .filter((v): v is string | number => v !== undefined && v !== ''),
   );
   const logger = new RunLogger('replay', redactor);

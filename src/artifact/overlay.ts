@@ -12,6 +12,7 @@
 // it is reviewable as a distinct thing from its base.
 
 import { z } from 'zod';
+import { originAllowed } from '../safety/policy.js';
 import { CapabilityArtifact, TargetStrategy, type CapabilityArtifact as Artifact } from './schema.js';
 
 export const TenantOverlay = z.object({
@@ -22,6 +23,10 @@ export const TenantOverlay = z.object({
   appId: z.string().min(1),
   // Which base artifact (id + exact version) this delta was written against.
   base: z.object({ id: z.string().min(1), version: z.string() }),
+  // An overlay is reviewed in its own right: it can re-aim a step's locator at
+  // a different control, so inheriting the base's approval would let an
+  // unreviewed delta replay unattended. Defaults to draft.
+  status: z.enum(['draft', 'approved']).default('draft'),
   // This tenant's entry point (e.g. carries a tenant routing/brand param).
   entryUrl: z.string().optional(),
   // Defaults for declared parameters; caller-supplied params win.
@@ -53,6 +58,12 @@ export function applyOverlay(base: Artifact, overlay: TenantOverlay): Artifact {
     throw new Error(`Overlay appId "${overlay.appId}" does not match base artifact appId "${base.app.appId}"`);
   }
 
+  if (overlay.entryUrl && !originAllowed(base.app.allowedOrigins, overlay.entryUrl)) {
+    throw new Error(
+      `Overlay entryUrl "${overlay.entryUrl}" is outside the base artifact's allowed origins [${base.app.allowedOrigins.join(', ')}]`,
+    );
+  }
+
   const overridden = new Map(overlay.stepOverrides.map((o) => [o.stepId, o.prepend]));
   for (const stepId of overridden.keys()) {
     if (!base.steps.some((s) => s.id === stepId)) {
@@ -74,6 +85,8 @@ export function applyOverlay(base: Artifact, overlay: TenantOverlay): Artifact {
     steps,
     app: overlay.entryUrl ? { ...base.app, entryUrl: overlay.entryUrl } : base.app,
     paramDefaults: overlay.paramDefaults,
+    // The composed artifact is only as approved as the overlay itself.
+    status: overlay.status === 'approved' ? base.status : 'draft',
     overlay: { tenant: overlay.tenant, source: `${base.id}@${base.version}` },
   };
   return CapabilityArtifact.parse(composed);

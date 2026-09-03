@@ -104,6 +104,11 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       strategies: step.target.strategies.map((s) => {
         if (s.kind === 'text') return { ...s, text: templatize(s.text) };
         if (s.kind === 'role') return { ...s, name: templatize(s.name) };
+        // css too: the model is told to anchor table selectors on a row label
+        // (tools.ts), so a param value can end up inside the selector. Replay
+        // already resolves templates in css (schema.resolveTarget) — without
+        // this the runtime value would be persisted into the artifact.
+        if (s.kind === 'css') return { ...s, selector: templatize(s.selector) };
         return s;
       }),
       snapshot: step.target.snapshot && {
