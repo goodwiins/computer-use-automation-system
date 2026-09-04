@@ -4,9 +4,9 @@
 
 **Goal:** Complete and demonstrate all seven MERIDIAN capabilities through the existing discovery, replay, API, chat, and operator approval workflow.
 
-**Architecture:** Reuse the implementation in PR #34 and safety evaluation in PR #35. One Express process owns one active browser run, guarded actions, approvals, and the durable filesystem journal. Complete the missing live recordings and validation; do not rebuild those subsystems.
+**Architecture:** Reuse the implementation in PR #34 and safety evaluation in PR #35. For this demo, one Express process owns one active browser run, guarded actions, approvals, and the durable filesystem journal. Complete the missing live recordings and validation; do not rebuild those subsystems.
 
-**Tech Stack:** Node 22, TypeScript, Express, Playwright, Zod, OpenAI/Azure, Vitest, static HTML/CSS/JavaScript; no new dependency.
+**Tech Stack:** Node 22, TypeScript, Express, Playwright, Zod, OpenAI/Azure, Vitest, and the current static HTML/CSS/JavaScript runtime/dashboard; no new dependency during capability work. The user-selected [assistant-ui](https://www.assistant-ui.com/) chat is a deferred final-phase exception.
 
 **Spec:** [MERIDIAN CORE adaptation — replacement plan](2026-09-03-meridian-adaptation.md). Read it alongside this document. Its requirements remain authoritative; this document replaces its outdated implementation sequence and production-branch starting point.
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - “All seven required functions must work, including approved posting.”
-- “One server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript frontend.”
+- Current demo decision: one server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript runtime/dashboard, with a concurrency ceiling. This keeps the demo low complexity; it is not a general concurrency requirement.
 - “Three working days is the target, including integration and rehearsal.” This was the original estimate, not three additional days or a promise of completion despite target failures.
 - “No automatic privilege upgrade or mid-flow login recovery.”
 - “Use validated decimal strings for money and integer cents for comparisons.”
@@ -27,9 +27,13 @@
 - “Evidence protection is required before live recording.”
 - “An unfinished function or failed safety gate remains explicitly incomplete; it is not replaced by a mock and counted as delivered.”
 - User branch rule: all new PRs target `dev`. `master` is the actual production branch in this repository; the user calls it main. Do not rewrite or deploy production.
-- User delivery rule: each major task gets its own PR against `dev`, including its relevant tests and documentation. Do not combine the remaining implementation into one delivery PR; use the boundaries below.
+- User delivery decision: each major task gets its own PR against `dev`, including its relevant tests and documentation. This favors reviewability and adds integration overhead; it is not a PDF requirement.
 - Preserve the dirty primary checkout. Use an isolated worktree and a `codex/` branch from `origin/dev`.
 - Each posting requires a separate human decision on current live facts. Artifact promotion is not transaction approval. Do not synthesize approvals in a terminal or dashboard.
+
+### Assignment requirements versus plan decisions
+
+The assignment requires all seven functions, approved posting, the existing safety boundaries and honest live evidence. The one-process/run/journal shape above is a low-complexity plan decision with a concurrency ceiling. The six canonical transfer columns are the existing validator design, not a mandated physical DOM shape: adapt the contract and extractor minimally to the observed layout while preserving input/result binding and provenance. Separate PR boundaries follow the user's review preference for reviewability, with the integration cost stated above.
 
 ---
 
@@ -96,7 +100,7 @@ This is a completion plan for one demo, with separately reviewable deliverables.
 | 8 | Account-hold artifact, its capability-specific contract/guard/completion checks and evidence | 7; supervisor operator |
 | 9 | `test/meridian.test.ts`, `docs/meridian/{live-evidence,runbook,report,evaluation}.md`, sanitized evidence, `README.md`, `docs/README.md` — acceptance and delivery | 5–8 |
 
-Profile and contract corrections reuse `config/app-profiles/meridian.json`, `src/runtime/contracts.ts` and the existing shared execution paths identified in Task 5, with focused regressions in existing tests. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone. Permission to consider assistant-ui is not part of this transfer repair's scope.
+Profile and contract corrections reuse `config/app-profiles/meridian.json`, `src/runtime/contracts.ts` and the existing shared execution paths identified in Task 5, with focused regressions in existing tests. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone. Keep the current static dashboard during capability work; the selected assistant-ui chat is a final-phase exception described below, not part of this transfer repair.
 
 ### Required PR boundaries
 
@@ -110,6 +114,7 @@ These are planned deliverables, not existing GitHub PR numbers. Keep PR #37 scop
 | Member-update capability | 7 | Its artifact, required scoped runtime fixes/tests and verified persistence evidence |
 | Account-hold capability | 8 | Its artifact, required scoped runtime fixes/tests, teller-denial and supervisor-success evidence |
 | Remaining integrated acceptance and delivery | Remaining 9 | Missing exception/integration regressions, rehearsal evidence and final runbook/report/setup updates; reuse accepted capability evidence |
+| Final chat UI | After capability/runtime/API acceptance | Ask the user for direction before assistant-ui work; preserve auth/operator controls and reuse accepted evidence/request identity |
 
 Use a separate isolated `codex/` branch from updated `origin/dev` for each PR. Include only that deliverable's changes. Keep the current draft and pending transfer catalog-test entry in the artifact work, outside the runtime PR; preserve them without weakening the approved-status gate. The runtime PR must pass its own complete checks from its isolated checkout. A blocked artifact may stay in a draft PR with the failed/incomplete gate stated explicitly; it is not ready to merge.
 
@@ -389,7 +394,7 @@ Before recording open share or account hold, make an explicit observed decision 
 
 ### Transfer result extraction feasibility gate
 
-Before another transfer posting is requested, inspect the frozen draft, retained/read-only evidence and any available unsubmitted or previously captured result structure. `Surface.readTable` extracts each declared column from descendants of each selected row; it does not join labels or values across rows. The six canonical transaction columns therefore require an actually observed single-row shape (or an explicitly reviewed extractor/contract change supported by observed evidence), including confirmation relationship and header handling.
+Before another transfer posting is requested, inspect the frozen draft, retained/read-only evidence and any available unsubmitted or previously captured result structure. `Surface.readTable` extracts each declared column from descendants of each selected row; it does not join labels or values across rows. The six canonical transaction columns are the validator's output design, not a physical DOM mandate: use an observed single-row shape or an explicitly reviewed minimal extractor/contract change supported by evidence, including confirmation relationship and header handling.
 
 - [ ] Record whether retained/read-only observations establish that one supported `readTable` target can produce exactly one row with `member`, `sourceShare`, `destinationShare`, `amount`, `memo` and `confirmation`. Do not guess selectors or infer the layout from the contract.
 - [ ] If the physical result is unsupported or the feasibility evidence is absent, stop the artifact sequence before posting and make only a reviewed minimal contract/extractor adjustment from actual evidence, with its focused regression; otherwise leave the artifact blocked. Never ask an operator to post solely to inspect the result, backfill a selector or provenance, or promise that a selected operation will produce a valid artifact. If the operator separately chooses and approves a write while this gate is unresolved, label that limitation up front and treat any resulting observation as unaccepted until the gate is reviewed.
@@ -478,7 +483,7 @@ Expected: promotion changes artifact approval status without posting; the unchan
 
 ### Task 5d: Separately approved replay and transfer acceptance
 
-- [ ] Stop CLI discovery before starting the existing server. Through real caller chat→API→operator dashboard, request an explicitly selected new transfer with current member/share/balance facts and its saved replay key. Require a separate human decision on the exact review facts, then verify that run's output correspondence and fresh resulting-state deltas. Do not reuse the discovery's balance change as replay evidence.
+- [ ] Stop CLI discovery before starting the existing server. Through the existing caller API/operator controls (the final assistant-ui chat remains deferred), request an explicitly selected new transfer with current member/share/balance facts and its saved replay key. Require a separate human decision on the exact review facts, then verify that run's output correspondence and fresh resulting-state deltas. Do not reuse the discovery's balance change as replay evidence.
 - [ ] Repeat only the same API invocation/key to confirm the original replay run ID returns without another browser or mutation. Preserve any unknown outcome and investigate with a read; changing the key is a new operation, not a repair.
 - [ ] Evaluate the actual replay and whichever discovery produced the accepted artifact. Update the sanitized ledger with source SHA, artifact version/hash, original/superseding discovery distinction, replay ID, separate approvals, all four findings' closure evidence and resulting-state verification. Omit concrete member/share/contact/amount/balance/token/session values from tracked documentation.
 - [ ] Only then count funds transfer as accepted (`4/7` if the three reads remain valid). Deliver Tasks 5c–5d through the separate funds-transfer artifact/acceptance PR against `dev`, with its catalog, local and exact-head hosted checks. Tasks 6–8 each get their own PR in order; preserve their independent approvals and capability-specific result checks.
@@ -624,7 +629,7 @@ For the status column, record discovery and replay separately (`D` and `R` below
 
 `business_outcome` is valid only for a detector or target rejection observed before durable dispatch intent. The existing executor skips detectors after intent and maps unverified completion to `POST_OUTCOME_UNKNOWN`, even when the response text resembles a business rejection. After intent, do not retry, skip, run detector recovery or repair in the same browser. Same-browser repair is limited to an observed, profile-approved pre-intent recoverable condition such as maintenance; session expiry, permission and server failure do not permit repair or role change. Any allowed repair must revalidate the checkpoint before a new approval or dispatch.
 
-- [ ] After Task 5c promotion, use Task 5d's separately authorized transfer replay as the real chat→API→dashboard write rehearsal; retain the existing successful balance-read evidence. Do not post another transfer solely to duplicate this checkbox. Repeat that same replay request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
+- [ ] After Task 5c promotion, use Task 5d's separately authorized transfer replay through the existing API/operator controls as the integrated write rehearsal; retain the existing successful balance-read evidence. The final assistant-ui chat rehearsal is deferred to the final UI phase, where it reuses the accepted request identity/evidence. Do not post another transfer solely to duplicate either checkbox. Repeat the same replay request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
 - [x] Reauthenticate after reload and verify caller/operator visibility, read-only keyboard usability, status/result presentation, evidence view, elapsed time and historical `sensitiveValuesUnavailable` behavior after restart through the scoped Task 9c read and Task 9d local display check. Approval/handoff controls were not clicked; their keyboard operation, same-browser repair and integrated write rehearsal remain open.
 - [ ] Update the evidence ledger with capability/version, discovery ID, replay ID, source SHA, approval, actual verified state, safety evaluation, evidence path and any limitation. If one of those facts is absent, mark the gate incomplete. Remove outdated completion claims, not adverse evidence. Update the 1–2 page report and exact setup/discovery/replay/demo commands.
 - [ ] Run final repository gates and inspect hosted CI on the same final PR head:
@@ -638,6 +643,12 @@ gh pr checks --required
 
 If no required checks are configured, inspect `gh pr view --json headRefOid,statusCheckRollup` and the producer jobs explicitly. A missing workflow is not a pass. Open the separate remaining-acceptance PR against `dev`; the capability PRs must already have delivered their own work. After merge, verify the resulting dev SHA and its CI separately. No production deployment is included.
 
+### Final UI phase and labeled demo contingency
+
+After Tasks 5–8 and non-UI Task 9 API/operator work are accepted, ask the user for direction before implementing [assistant-ui](https://www.assistant-ui.com/) in a final chat-only phase. Preserve the existing auth/operator gate and static dashboard; do not infer a dashboard rewrite. Reuse accepted evidence and request identity for the final end-to-end chat rehearsal; a genuine new post still needs its own human approval and no post exists solely for a UI checkbox.
+
+Full completion remains seven live capabilities. When live acceptance is blocked, the runbook's **live**, **offline fixture**, and **recorded evidence** modes are demo contingencies; neither fallback mode increases the `3/7` live count. A model outage may use the existing API/operator path to replay an already approved artifact while chat/discovery is unavailable. A hosted/browser outage may show sanitized evidence and run the offline fixture only if a browser is available; with no browser, show evidence only. Never switch modes during a live write or rewrite an unknown result/key.
+
 ## Coverage and completion boundary
 
 | Replacement design section | Execution coverage |
@@ -649,7 +660,7 @@ If no required checks are configured, inspect `gh pr view --json headRefOid,stat
 | Three-day scope, live evidence, delivery | Task 9; report elapsed work and incomplete gates honestly |
 | Issues and deferrals | Preserve the replacement design's issue map; no automatic issue closures |
 
-Done means seven reviewed artifacts with real discovery and separately approved replay evidence, all required exceptional paths, working dashboard/chat rehearsal, sanitized backup, runbook/report, and passing final local/hosted gates. Passing offline checks alone is not done. A target outage or unknown posting leaves the corresponding task incomplete with evidence and a concrete next read-only investigation.
+Done means seven reviewed artifacts with real discovery and separately approved replay evidence, all required exceptional paths, working dashboard/chat rehearsal, sanitized backup, runbook/report, and passing final local/hosted gates. Passing offline checks or recorded evidence alone is not done. A target outage or unknown posting leaves the corresponding task incomplete with evidence and a concrete next read-only investigation.
 
 ## Plan self-review
 

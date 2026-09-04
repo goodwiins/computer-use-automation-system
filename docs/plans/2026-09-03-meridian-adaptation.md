@@ -6,7 +6,7 @@ Status: design reference. The [Superpowers execution plan](2026-09-04-meridian-s
 
 Deliver a local demonstration of the existing discovery → recorded capability → deterministic replay engine against hosted MERIDIAN CORE. All seven required functions must work, including approved posting. Provide a callable API, an LLM chatbot, a dashboard with human approvals and evidence, a runbook, and a 1–2 page write-up.
 
-Use the existing TypeScript, Express, Playwright, Zod, OpenAI/Azure, and Vitest stack. One server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript frontend. The model interprets requests and discovers flows; it never decides replay steps or authorizes a transaction.
+Use the existing TypeScript, Express, Playwright, Zod, OpenAI/Azure, and Vitest stack. The current runtime/dashboard uses one server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript frontend. The user selected [assistant-ui](https://www.assistant-ui.com/) for a final chat-only phase after capability, runtime and API work; ask for direction before that phase. The model interprets requests and discovers flows; it never decides replay steps or authorizes a transaction.
 
 **Three working days is the target, including integration and rehearsal.** It is not a guarantee that unverified live behavior will fit. Reduce visual polish and optional conveniences first. An unfinished function or failed safety gate remains explicitly incomplete; it is not replaced by a mock and counted as delivered. No separate “Day 0.”
 
@@ -110,7 +110,7 @@ For nonmutation failures, retain bounded retry and human repair with explicit ch
 
 ## 4. Dashboard, evidence, and exception behavior
 
-The dashboard and chat share one small static frontend. Show the catalog, discovery/replay history, active step, recovery events, pending intervention, result, timing, and evidence. Poll while runs are active. Discovery remains CLI-driven; its saved evidence also appears in history. Dashboard approval and handoff are the live demonstration path.
+The dashboard remains one small static frontend for catalog, discovery/replay history, active step, recovery events, pending intervention, result, timing, and evidence. Poll while runs are active. Discovery remains CLI-driven; its saved evidence also appears in history. Dashboard approval and handoff are the live demonstration path. The selected assistant-ui chat is deferred until the final UI phase and does not imply a dashboard rewrite.
 
 Keep terminal results `success`, `business_outcome`, and `failure`, with stable failure codes including `POST_OUTCOME_UNKNOWN`. Track running, recovering, and awaiting-human separately as lifecycle states. Chat reports those states in plain language and asks for missing inputs rather than inventing them.
 
