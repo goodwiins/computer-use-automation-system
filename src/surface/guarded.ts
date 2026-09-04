@@ -63,6 +63,10 @@ export class PolicyViolationError extends Error {
   }
 }
 
+export class RunAbortedError extends PolicyViolationError {
+  constructor(action: string) { super({ verdict: 'deny', reason: 'Submission aborted by operator' }, action); }
+}
+
 /** Called when an action needs a human (confirm/escalate). Return true to proceed. */
 export type HumanGate = (action: string, risk: RiskClass, reason: string, context?: ActionContext) => Promise<boolean>;
 
@@ -280,7 +284,7 @@ export class GuardedSurface implements Surface {
       const approved = await this.humanGate(action, risk, v.reason);
       this.emit('approval.result', { approved, effectiveRisk: risk });
       if (approved) return;
-      throw new PolicyViolationError({ verdict: 'deny', reason: `Human declined: ${v.reason}` }, action);
+      throw new RunAbortedError(action);
     }
     throw new PolicyViolationError(v, action);
   }
@@ -394,7 +398,7 @@ export class GuardedSurface implements Surface {
           remaining();
           const approved = await outsideBudget(() => this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context));
           this.emit('approval.result', { approved, effectiveRisk: 'irreversible' });
-          if (!approved) throw new Error('Submission aborted');
+          if (!approved) throw new RunAbortedError('click');
           this.assertAutomation();
           if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
           const refreshed = await prepared.inspect(remaining());

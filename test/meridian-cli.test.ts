@@ -10,7 +10,7 @@ import { Redactor } from '../src/safety/redact.js';
 const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
 const JOURNAL_KEY = 'hmac-test-key-with-at-least-32-characters';
 const PRIVATE_FAILURE = 'PRIVATE_UNREGISTERED';
-type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close';
+type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close' | 'aborted';
 
 const boundary: {
   mode: BoundaryMode;
@@ -30,7 +30,7 @@ interface BoundaryRun {
   closeCalls: number;
 }
 
-async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = []): Promise<BoundaryRun> {
+async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = [], command: 'replay' | 'discover' = 'replay'): Promise<BoundaryRun> {
   const previousExitCode = process.exitCode;
   const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
@@ -95,6 +95,13 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
       },
     };
   });
+  vi.doMock('../src/agent/loop.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js');
+    return {
+      ...actual,
+      runDiscovery: async () => ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' }),
+    };
+  });
 
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -102,7 +109,9 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   let failure: unknown;
   try {
     const { runCli } = await import('../cli.js');
-    await runCli(['replay', '--artifact', ARTIFACT, '--profile', 'meridian', '--idempotency-key', key, ...extraArgs]);
+    await runCli(command === 'replay'
+      ? ['replay', '--artifact', ARTIFACT, '--profile', 'meridian', '--idempotency-key', key, ...extraArgs]
+      : ['discover', '--name', 'meridian-sign-on', '--goal', 'Sign on', '--profile', 'meridian', '--idempotency-key', key]);
   } catch (caught) {
     failed = true;
     failure = caught;
@@ -126,6 +135,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   };
   vi.doUnmock('../src/runtime/run.js');
   vi.doUnmock('../src/replay/executor.js');
+  vi.doUnmock('../src/agent/loop.js');
   vi.restoreAllMocks();
   vi.resetModules();
   for (const name of envKeys) {
@@ -143,6 +153,17 @@ it('rejects invalid request keys before acquiring a journal', () => {
     expect(() => validateIdempotencyKey(key)).toThrow();
   }
   expect(() => validateIdempotencyKey('meridian-new-operation-1')).not.toThrow();
+});
+
+it('persists the fixed discovery cancellation code', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-boundary-'));
+  try {
+    const run = await runReplayBoundary('aborted', dir, 'boundary-key-aborted', 'teller-test', [], 'discover');
+    expect(run.exitCode).not.toBe(0);
+    expect(run.states).toEqual(['failure']);
+    expect(run.result).toContain('"code": "RUN_ABORTED"');
+    expect(run.result).not.toContain('stopReason');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 it.each([

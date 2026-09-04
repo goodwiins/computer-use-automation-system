@@ -45,15 +45,25 @@ export function createRuntime(options: {
       transfer: transfer ? { expected: transfer, memberTable: meridianTransferMemberTable } : undefined,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
     } : undefined, (event, data) => logger.log(event, data));
-  const timer = setTimeout(() => { options.onClose?.(); void surface.close(); }, 600_000);
+  let timer: ReturnType<typeof setTimeout>;
+  const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
+    close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };
+  timer = setTimeout(() => { void closeRuntime(runtime); }, 600_000);
   timer.unref();
-  return { surface, browser, logger, session, redactor, promptRedactor, deadline,
-    close: async () => { clearTimeout(timer); options.onClose?.(); await surface.close(); } };
+  return runtime;
 }
 
 export async function executeReplay(artifact: CapabilityArtifact, params: Record<string, string | number>,
   runtime: ReturnType<typeof createRuntime>, policy: Policy,
   escalate?: (request: InterventionRequest) => Promise<InterventionDecision>) {
   try { return await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy, escalate }); }
-  finally { await runtime.close(); }
+  finally { await closeRuntime(runtime); }
+}
+
+export async function closeRuntime(runtime: ReturnType<typeof createRuntime>) {
+  try { await runtime.close(); }
+  catch {
+    // Cleanup and its diagnostics must not replace a verified result or the original error.
+    try { runtime.logger.log('evidence.warning', { code: 'RUNTIME_CLEANUP_FAILED' }); } catch { /* evidence unavailable */ }
+  }
 }

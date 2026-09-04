@@ -9,7 +9,7 @@ import { applyMeridianContract } from '../runtime/contracts.js';
 import { Approval } from '../runtime/approval.js';
 import { Journal, RequestError } from '../runtime/journal.js';
 import { type AppProfile } from '../runtime/profile.js';
-import { createRuntime, executeReplay, operatorContext } from '../runtime/run.js';
+import { closeRuntime, createRuntime, executeReplay, operatorContext } from '../runtime/run.js';
 import { Redactor } from '../safety/redact.js';
 import type { Policy } from '../safety/policy.js';
 
@@ -63,42 +63,54 @@ export class InvocationService {
     }, Date.now() + 600_000);
     const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
     this.live.set(record.runId, state);
-    const runtime = createRuntime({ kind: 'replay', artifact: id, version: artifact.version, policy: this.policy,
-      profile: this.profile, params, sensitive: artifact.parameters.filter(p => p.sensitive).map(p => p.name), operator: context,
-      headful: true, runId: record.runId, evidenceDir: this.evidenceDir, session,
-      gate: async (action, risk, reason, actionContext) => {
-        const pending = approval.wait({ kind: 'risk_approval', capability: id, goal: artifact.description, reason, url: runtime.surface.currentUrl() }, actionContext);
-        runtime.logger.log('intervention.pending', { kind: 'risk_approval', approvalId: approval.pending?.id, expiresAt: approval.pending?.expiresAt });
-        const decision = await pending;
-        runtime.logger.log('intervention.decided', { decision });
-        return decision === 'approve';
-      },
-      beforeDispatch: () => this.journal.update(record.runId, 'dispatching'), onClose: () => approval.cancel(),
-      onEvent: (event) => {
-        if (event === 'step.start') state.step = runtime.surface.currentStep;
-        if (event === 'action.start') state.step = runtime.surface.currentStep;
-        if (event === 'detector.recovering') state.state = 'recovering';
-        if (event === 'step.ok') state.state = 'running';
-      },
-    });
-    state.close = runtime.close;
-    this.journal.update(record.runId, 'running');
-    this.completion = executeReplay(artifact, params, runtime, this.policy, async req => {
-      const detach = await new OperatorConsole(runtime.browser.page, runtime.logger, session).recordHumanActions();
-      try {
-        const decision = await approval.wait(req);
-        return decision === 'retry' ? 'retry' : 'abort';
-      } finally { await detach(); }
-    }).then(result => {
-      const secrets = new Redactor();
-      if (context) secrets.addSensitiveValues([context.password]);
-      state.result = secrets.redact(result);
-      state.state = result.status === 'failure' && runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : result.status;
-      this.journal.update(record.runId, state.state as 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN');
-    }).catch(() => {
-      state.state = runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure';
-      this.journal.update(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
-    }).finally(() => { state.finished = Date.now(); this.active = undefined; });
+    const finish = () => { state.finished = Date.now(); this.active = undefined; };
+    try {
+      const runtime = createRuntime({ kind: 'replay', artifact: id, version: artifact.version, policy: this.policy,
+        profile: this.profile, params, sensitive: artifact.parameters.filter(p => p.sensitive).map(p => p.name), operator: context,
+        headful: true, runId: record.runId, evidenceDir: this.evidenceDir, session,
+        gate: async (action, risk, reason, actionContext) => {
+          const pending = approval.wait({ kind: 'risk_approval', capability: id, goal: artifact.description, reason, url: runtime.surface.currentUrl() }, actionContext);
+          runtime.logger.log('intervention.pending', { kind: 'risk_approval', approvalId: approval.pending?.id, expiresAt: approval.pending?.expiresAt });
+          const decision = await pending;
+          runtime.logger.log('intervention.decided', { decision });
+          return decision === 'approve';
+        },
+        beforeDispatch: () => this.journal.update(record.runId, 'dispatching'), onClose: () => approval.cancel(),
+        onEvent: (event) => {
+          if (event === 'step.start') state.step = runtime.surface.currentStep;
+          if (event === 'action.start') state.step = runtime.surface.currentStep;
+          if (event === 'detector.recovering') state.state = 'recovering';
+          if (event === 'step.ok') state.state = 'running';
+        },
+      });
+      state.close = () => closeRuntime(runtime);
+      this.journal.update(record.runId, 'running');
+      this.completion = executeReplay(artifact, params, runtime, this.policy, async req => {
+        const detach = await new OperatorConsole(runtime.browser.page, runtime.logger, session).recordHumanActions();
+        try {
+          const decision = await approval.wait(req);
+          return decision === 'retry' ? 'retry' : 'abort';
+        } finally { await detach(); }
+      }).then(result => {
+        const secrets = new Redactor();
+        if (context) secrets.addSensitiveValues([context.password]);
+        state.result = secrets.redact(result);
+        state.state = result.status === 'failure' && runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : result.status;
+        this.journal.update(record.runId, state.state as 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN');
+      }).catch(() => {
+        state.state = runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure';
+        this.journal.update(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
+      }).finally(finish);
+    } catch (error) {
+      approval.cancel();
+      state.state = 'failure';
+      try { this.journal.update(record.runId, 'failure'); }
+      finally {
+        if (state.close) this.completion = state.close().finally(finish);
+        else finish();
+      }
+      throw error;
+    }
     return { runId: record.runId };
   }
   get(principal: Principal, runId: string) {
