@@ -239,7 +239,15 @@ export async function runReplay(
           }
           const { text, report } = await surface.readText(target!, step.timeoutMs);
           const value = extractText(text, step.extract!.pattern);
-          outputs[step.extract!.output] = artifact.outputs.find(o => o.name === step.extract!.output)?.type === 'number' ? Number(value) : value;
+          const output = artifact.outputs.find(o => o.name === step.extract!.output);
+          if (output?.type === 'number') {
+            if (!value.trim()) throw new Error('Numeric extraction requires nonempty text');
+            const number = Number(value);
+            if (!Number.isFinite(number)) throw new Error('Numeric extraction requires a finite number');
+            outputs[step.extract!.output] = number;
+          } else {
+            outputs[step.extract!.output] = value;
+          }
           logger.log('step.extracted', { stepId: step.id, output: step.extract!.output, value, resolution: report });
           break;
         }

@@ -15,6 +15,10 @@ export const meridianContracts = {
 export function applyMeridianContract(artifact: CapabilityArtifact): CapabilityArtifact {
   if (!Object.hasOwn(meridianContracts, artifact.id)) throw new Error('Unknown MERIDIAN capability contract');
   const contract = meridianContracts[artifact.id as keyof typeof meridianContracts];
+  const outputNames = artifact.outputs.map(o => o.name);
+  if (new Set(outputNames).size !== outputNames.length || outputNames.length !== contract.outputs.length || contract.outputs.some(name => !outputNames.includes(name))) {
+    throw new Error(`Recording outputs must exactly match the ${artifact.id} contract`);
+  }
   for (const name of contract.outputs) {
     if (!artifact.steps.some(s => s.action === 'extract' && s.extract?.output === name)) throw new Error(`Discovery must record output ${name}`);
   }

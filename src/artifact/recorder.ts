@@ -72,6 +72,29 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   };
   const templatize = (s: string): string => substitute(s, paramEntries);
 
+  // Regex syntax can encode a value without containing its literal spelling.
+  // Keep the accepted escape set small: generic captures retain useful `\s`
+  // and `\S` patterns, while encoded or unknown escapes fail closed.
+  // ponytail: regex escape allowlist; reject unsupported forms instead of building a parser, extend only for a reviewed pattern.
+  const safeRegexPattern = (pattern: string): string => {
+    for (const match of pattern.matchAll(/\\([A-Za-z0-9])/g)) {
+      if (!'dDsSwWbBfFnrtv'.includes(match[1]!)) {
+        throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
+      }
+    }
+    const decodedLiterals = pattern
+      .replace(/\[([A-Za-z0-9])\]/g, '$1')
+      .replace(/\\([\\^$.*+?()[\]{}|\/-])/g, '$1')
+      .replace(/\\([nrtfv])/g, (_, escape: string) => ({ n: '\n', r: '\r', t: '\t', f: '\f', v: '\v' })[escape]!);
+    for (const [name, value] of paramEntries) {
+      const v = String(value);
+      if (v && decodedLiterals.includes(v) && !pattern.includes(v)) {
+        throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
+      }
+    }
+    return templatize(pattern);
+  };
+
   // Never splice runtime data into CSS syntax. Keep only invariant strategies.
   const safeCss = (selector: string): boolean => {
     const decoded = selector.replace(/\\(?:\r\n|[\n\r\f])/g, '').replace(/\\([0-9a-f]{1,6})\s?|\\([^\n\r\f])/gi,
@@ -108,7 +131,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     const id = `s${i + 1}`;
     switch (entry.action) {
       case 'assert':
-        return { id, intent: templatize(entry.reason), action: 'assert', assert: entry.assert!.kind === 'textVisible' ? { ...entry.assert!, text: templatize(entry.assert!.text) } : { ...entry.assert!, pattern: templatize(entry.assert!.pattern) }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'assert', assert: entry.assert!.kind === 'textVisible' ? { ...entry.assert!, text: templatize(entry.assert!.text) } : { ...entry.assert!, pattern: safeRegexPattern(entry.assert!.pattern) }, risk: 'read', timeoutMs: 10_000 };
       case 'navigate':
         return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
@@ -118,14 +141,13 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       case 'select':
         return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: valueTemplate(entry), selectBy: entry.selectBy, risk: 'reversible_write', timeoutMs: 10_000 };
       case 'extract':
-        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: input.appId === 'meridian' ? entry.columns?.map(c => ({ ...c, sensitive: true })) : entry.columns, pattern: entry.pattern, rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: input.appId === 'meridian' ? entry.columns?.map(c => ({ ...c, sensitive: true })) : entry.columns, pattern: entry.pattern === undefined ? undefined : safeRegexPattern(entry.pattern), rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
     }
   });
 
   // Click targets whose text was a parameter value (e.g. a search-result link
   // showing the member number) also need templating.
   for (const step of steps) {
-    if (step.extract?.pattern && !safeCss(step.extract.pattern)) throw new Error('Cannot record parameter-dependent extraction patterns');
     if (step.extract && ((step.extract.rowSelector && !safeCss(step.extract.rowSelector)) || step.extract.columns?.some(c => !safeCss(c.selector)))) throw new Error('Cannot record parameter-dependent table selectors');
     if (!step.target) continue;
     step.target = {

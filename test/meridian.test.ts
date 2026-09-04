@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
-import { meridianContracts } from '../src/runtime/contracts.js';
+import { applyMeridianContract, meridianContracts } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams } from '../src/artifact/schema.js';
@@ -22,6 +22,7 @@ import { loadProfile, type LiveControl } from '../src/runtime/profile.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { Redactor } from '../src/safety/redact.js';
 import { runReplay } from '../src/replay/executor.js';
+import { promoteToApproved } from '../src/artifact/promote.js';
 import type { Surface } from '../src/surface/types.js';
 import { createApp } from '../src/server/http.js';
 import { InvocationService } from '../src/server/service.js';
@@ -129,6 +130,91 @@ it('validates decimal money and output types without exposing server inputs', ()
   const memberContract = { ...a, parameters: meridianContracts['meridian-member-record'].parameters };
   expect(validateParams(memberContract, { member: '100234?inject=server' }).ok).toBe(false);
   expect(validateParams(memberContract, { member: '100234' }).ok).toBe(true);
+});
+
+function memberRecordArtifact(outputs: Array<Record<string, unknown>>) {
+  return CapabilityArtifact.parse({
+    schemaVersion: 2,
+    id: 'meridian-member-record',
+    name: 'meridian-member-record',
+    description: 'Read member shares',
+    version: '1.0.0',
+    status: 'draft',
+    app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
+    parameters: [],
+    outputs,
+    steps: [
+      { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
+      { id: 'password', intent: 'password', action: 'fill', value: '{{password}}', risk: 'reversible_write' },
+      { id: 'branch', intent: 'branch', action: 'fill', value: '{{branch}}', risk: 'reversible_write' },
+      { id: 'checkpoint', intent: 'checkpoint', action: 'assert', assert: { kind: 'textVisible', text: 'Member Profile' }, risk: 'read' },
+      { id: 'shares', intent: 'shares', action: 'extract', target: { description: 'shares', strategies: [{ kind: 'css', selector: '#shares' }] }, extract: { output: 'shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] }, risk: 'read' },
+    ],
+    successCondition: { kind: 'urlMatches', pattern: '/members/{{member}}$' },
+    detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+}
+
+describe('MERIDIAN output contracts', () => {
+  const shares = { name: 'shares', type: 'table', description: 'Shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] };
+
+  it.each([
+    ['missing', []],
+    ['duplicate', [shares, shares]],
+    ['wrong', [{ name: 'members', type: 'string', description: 'Wrong output' }]],
+  ])('rejects %s output declarations before direct application', (_kind, outputs) => {
+    expect(() => applyMeridianContract(memberRecordArtifact(outputs))).toThrow(/output/i);
+  });
+
+  it('requires the exact output declaration when promoting to approved', () => {
+    expect(() => promoteToApproved(JSON.stringify(memberRecordArtifact([])))).toThrow(/output/i);
+    const approved = JSON.parse(promoteToApproved(JSON.stringify(memberRecordArtifact([shares]))));
+    expect(approved.status).toBe('approved');
+    expect(approved.outputs).toEqual([{ ...shares, minRows: 1 }]);
+  });
+});
+
+describe('numeric replay extraction', () => {
+  async function replayWithText(text: string) {
+    const artifact = JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8'));
+    artifact.schemaVersion = 2;
+    artifact.app.entryUrl = `${origin}/`;
+    artifact.app.allowedOrigins = [origin];
+    artifact.outputs[0].type = 'number';
+    const urls = [`${origin}/`, `${origin}/members`, `${origin}/members`, `${origin}/members/12345`];
+    let click = 0;
+    const surface: Surface = {
+      start: async () => {},
+      observe: async () => ({ url: urls.at(-1)!, title: '', frames: [] }),
+      currentUrl: () => urls[Math.min(click, urls.length - 1)]!,
+      frameUrls: () => [urls[Math.min(click, urls.length - 1)]!],
+      navigate: async () => {},
+      click: async () => ({ strategyUsed: 0, kind: 'role', matches: 1 }),
+      fill: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+      select: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+      readText: async () => ({ text, report: { strategyUsed: 0, kind: 'css', matches: 1 } }),
+      isTextVisible: async visibleText => visibleText === 'Member Profile',
+      describeTarget: async target => target,
+      screenshot: async () => {},
+      close: async () => {},
+    };
+    surface.click = async () => {
+      click++;
+      return { strategyUsed: 0, kind: 'role', matches: 1 };
+    };
+    return runReplay(CapabilityArtifact.parse(artifact), { memberId: '12345' }, { surface, logger: new RunLogger('replay', new Redactor(), temp()), policy: Policy.parse({ ...policy, allowedOrigins: [origin] }) });
+  }
+
+  it('rejects blank numeric text and preserves a real zero', async () => {
+    const blank = await replayWithText(' \t ');
+    expect(blank.status).toBe('failure');
+    expect(blank.status === 'failure' && blank.failure.stepId).toBe('s6');
+
+    const zero = await replayWithText('0');
+    expect(zero.status).toBe('success');
+    expect(zero.status === 'success' && zero.outputs.savingsBalance).toBe(0);
+  });
 });
 
 it.each(["abc'\\def", '123', '4', '{{member}}', '\\31 23'])('drops unsafe CSS %s without echoing data', selector => {
