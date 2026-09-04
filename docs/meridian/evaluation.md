@@ -1,11 +1,13 @@
 # Local safety evaluation
 
-The MERIDIAN runtime lives on `codex/meridian-adaptation` (PR #34). The earlier
+The MERIDIAN runtime is integrated in `dev` at
+`4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the current deterministic
+acceptance head is `541d776f85d94097bc1e63fa7966de69da5947de`. The earlier
 LangSmith second opinion examined `master`, which lacked that implementation.
-MERIDIAN already has an authenticated durable journal, request deduplication,
-live form classification and a conservative `POST_OUTCOME_UNKNOWN` state.
-The journal remains authoritative; evidence and optional observers cannot
-approve a transaction or change its outcome.
+MERIDIAN has an authenticated durable journal, request deduplication, live form
+classification and a conservative `POST_OUTCOME_UNKNOWN` state. The journal
+remains authoritative; evidence and optional observers cannot approve a
+transaction or change its outcome.
 
 Run the deterministic evaluator against a completed local run:
 
@@ -22,6 +24,8 @@ business rejection or safely aborted run is not task success. Missing evidence
 is unknown, not evidence that no unsafe action happened. Legacy logs lacking
 action attempts do not pass. The JSONL must be complete, local evidence for the
 same run; the journal is authenticated, the JSONL itself is not tamper-evident.
+
+The current read ledger has evaluator `pass` for `ad12819b-f07a-41ff-9710-bedff1afe1a5`, `b60ef7b1-a76f-4321-b825-540f8c7ff7d6`, `e4850bd4-6c63-42c9-8719-aaefef1c74e4` and `ff5fda32-db07-443f-930d-db2d65461dc0`, each with 0 mutation intents and no violations or incomplete checks. The last run is a caller chat/API/runtime read on `541d776`; it is not dashboard UI or write acceptance. The historical `222ebecd-ca02-4960-a875-c2f2f76e0927` remains `POST_OUTCOME_UNKNOWN` and therefore does not pass.
 
 Each guarded action has a per-run numeric `attempt` and ordered `seq` events.
 Retries and detector recovery clicks get their own attempts in both discovery

@@ -49,6 +49,11 @@ Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe
 - Task 1 — complete: reviewed PR #34 repairs were integrated into `dev` at `4252cb7`; both the reviewed PR head and the resulting dev SHA passed their respective hosted CI checks above.
 - Task 2 — complete: CLI journal/resource and terminal-outcome repairs landed through `9a3e24d` after the scoped review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
 - Task 3 — complete: click-budget and trusted-step-reporting repairs landed through `47537d2` after the final deadline review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
+- Task 4 — complete for the read baseline: the three approved artifact checks and fresh sign-on, member-inquiry and member-record reads passed their recorded evaluator checks; the separate unsubmitted-form inspection recorded native POST destinations, controls and hidden-token presence. Chosen write review transitions and final posting facts remain open.
+- Task 9a — complete for deterministic/offline acceptance at `541d776f85d94097bc1e63fa7966de69da5947de`: the reviewed dispatch, browser-closure, authority, identity, evidence and typed-output checks passed. This does not establish live target, posting, dashboard or hosted final-head acceptance.
+- Task 9b — in progress on the current acceptance branch: refresh the four MERIDIAN docs, add the sanitized read metadata backup, and keep the current `3/7` boundary and adverse evidence explicit. No runtime, test, artifact, live target or production change is part of this documentation scope.
+- Tasks 5–8 and the live portions of Task 9 remain pending: new write discoveries/replays, separate approvals, result verification, operation-specific unhappy paths, successful dashboard/chat rehearsal, reload/keyboard checks and final delivery gates are not inferred from the read or offline evidence.
+- Controller ordering ruling: Task 9a and Task 9b may proceed while Tasks 5–8 await fresh live choices and approvals; a read or artifact promotion does not authorize a write, and the historical `222ebecd-ca02-4960-a875-c2f2f76e0927` operation remains `POST_OUTCOME_UNKNOWN`.
 
 Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/34), [PR #35](https://github.com/goodwiins/computer-use-automation-system/pull/35), and their `docs/meridian/live-evidence.md`. Existing evidence reports:
 
@@ -56,7 +61,7 @@ Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/3
 - Four write artifacts and approved replays remain incomplete.
 - Open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` is terminal `POST_OUTCOME_UNKNOWN`. A model completion message did not establish success; compilation failed after dispatch. Never repeat this request, delete its journal record, or reconstruct its missing provenance.
 - Six injected-error probes are read-only probes; they do not prove complete write replay or successful recovery.
-- Dashboard/chat invoked a read but ended in `SESSION_EXPIRED`. Successful integrated rehearsal remains open.
+- Dashboard/chat previously invoked a read but ended in `SESSION_EXPIRED`; a later caller chat/API/runtime read at `541d776f85d94097bc1e63fa7966de69da5947de` (`ff5fda32-db07-443f-930d-db2d65461dc0`) returned `202` and success with evaluator pass, and an exact-key duplicate returned the same run ID. The dashboard UI and successful integrated rehearsal remain open.
 - PR #35's evaluator checks local event ordering and journal consistency. It is not a business-result verifier, and older incomplete event logs must not be relabelled as passing.
 
 ## Task map and file ownership
@@ -420,13 +425,15 @@ npx vitest run test/meridian-artifacts.test.ts -t meridian-place-hold
 
 **Interfaces:** Existing HTTP endpoints and auth remain unchanged. `GET /runs/:id` exposes lifecycle/result; operator `/decision` resolves one intervention. `npm run eval` consumes local evidence and authenticated journal records without mutating them.
 
-- [ ] Run existing offline coverage first:
+- [x] Run existing offline coverage first for Task 9a:
 
 ```sh
 npx vitest run test/meridian.test.ts test/evidence-eval.test.ts test/meridian-artifacts.test.ts test/screenshot-mask.test.ts
 ```
 
-- [ ] For each missing case in this matrix, add one focused regression using the existing local form/guarded/journal fixtures, run it red, fix only the shared failing path, and rerun. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
+This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947de`; the earlier 198-test run at `4ec9b93` is historical and not a current-head full-suite claim.
+
+- [x] Task 9a's reviewed deterministic matrix is covered by focused local regressions at `541d776f85d94097bc1e63fa7966de69da5947de`; its scope remains offline and does not satisfy the live operation rows below. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
 
 | Boundary | Required observable check |
 | --- | --- |

@@ -1,6 +1,6 @@
 # MERIDIAN demonstration runbook
 
-Status: implementation in progress. Three live LLM-discovered read artifacts are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads and the separate unknown posting; never retry that posting.
+Status: acceptance in progress. Three of seven live LLM-discovered capabilities are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads, the current caller chat/API read and the separate unknown posting; never retry that posting. The current documentation/test head is `541d776f85d94097bc1e63fa7966de69da5947de`; all new PRs target `dev`, while `master` remains production and untouched.
 
 ## Setup
 
@@ -25,7 +25,7 @@ The default MERIDIAN entry point is `https://web-sample.interface-hiring.com/sig
 
 Stop the API before CLI discovery/replay: the filesystem journal permits one process. Each CLI invocation below needs a fresh `--idempotency-key` for a genuinely new request; reuse the same key after a transport retry. The key identifies discovery as well as replay. Never use a new key to retry an uncertain posting.
 
-First select current synthetic data manually from the hosted app. Set the following shell variables to those explicit choices (do not assume seed balances or select the first ambiguous result): `MEMBER`, `LAST_NAME`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, `ADDRESS`. The source and destination must be suitable current shares; the target has accumulated state and some shares are on hold.
+First select current synthetic data manually from the hosted app. Set the following shell variables to those explicit choices (do not assume seed balances or select the first ambiguous result): `MEMBER`, `LAST_NAME`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, `ADDRESS`. The source and destination must be suitable current shares; the target has accumulated state and some shares are on hold. These values are chosen operation facts and require a separate human decision before any posting.
 
 The commands below are recording instructions, not a claim that these recordings have run:
 
@@ -81,7 +81,7 @@ Promote each reviewed artifact separately. Keep one pinned version per ID in `AR
 
 ```sh
 cu replay --profile meridian --artifact artifacts/meridian-member-record.v1.0.0.json \
-  --params '{"member":"REPLACE_WITH_MEMBER"}' --idempotency-key lookup-1
+  --params "{\"member\":\"${MEMBER}\"}" --idempotency-key lookup-1
 cu serve --profile meridian
 ```
 
@@ -89,7 +89,7 @@ Open `http://127.0.0.1:4180` exactly (the Host check rejects other aliases). Ent
 
 The runtime verifies the operator role on the signed-on menu and binds it to the current target session identity. Posting rechecks that identity, profile detectors, review facts, and the current token. The outgoing native URL-encoded POST must exactly match the inspected form data; JavaScript changes during submission are refused. Unsupported form encodings or field types fail closed. Token values and session identifiers remain private in memory.
 
-The dashboard displays progress, recovery, results, safe evidence, and pending interventions. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum.
+The dashboard displays progress, recovery, results, safe evidence, and pending interventions. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum. The current caller chat/API read succeeded, but it did not exercise the dashboard UI or a posting.
 
 ## API
 
@@ -112,12 +112,12 @@ Test-only CLI fault injection applies once to the actual operation request, not 
 
 ```sh
 cu replay --profile meridian --artifact artifacts/meridian-funds-transfer.v1.0.0.json \
-  --params '{"member":"REPLACE_WITH_MEMBER","sourceShare":"REPLACE_SOURCE","destinationShare":"REPLACE_DESTINATION","amount":"0.01","memo":"Demo"}' \
-  --inject maintenance --fault-route /members/REPLACE_WITH_MEMBER/transfer \
+  --params "{\"member\":\"${MEMBER}\",\"sourceShare\":\"${SOURCE_SHARE}\",\"destinationShare\":\"${DESTINATION_SHARE}\",\"amount\":\"0.01\",\"memo\":\"Demo\"}" \
+  --inject maintenance --fault-route "/members/${MEMBER}/transfer" \
   --attended --idempotency-key maintenance-test-1
 ```
 
-Repeat with fresh test requests for `validation`, `notfound`, `permission`, `timeout`, and `server`. These flags are absent from chat and ordinary API invocation schemas. Maintenance's observed Continue link returns to the menu; clearing the notice alone does not prove the interrupted capability can finish. It may require bounded human repair. Session expiry and permission errors stop; they do not upgrade roles or log in again.
+Run that command once per scenario by changing `--inject` and the request key to fresh values for `validation`, `notfound`, `permission`, `timeout`, and `server`; inspect each target response and run classification before starting another. These flags are absent from chat and ordinary API invocation schemas. Maintenance's observed Continue link returns to the menu; clearing the notice alone does not prove the interrupted capability can finish. It may require bounded human repair. Session expiry and permission errors stop; they do not upgrade roles or log in again. Never use a new key to retry an uncertain or `POST_OUTCOME_UNKNOWN` operation.
 
 The journal lives at `EVIDENCE_DIR/journal` with signed records, exclusive creation, atomic replacement and file/directory synchronization. On restart, incomplete undispatched runs become interrupted; dispatching runs become `POST_OUTCOME_UNKNOWN`. No browser action resumes. The same key still identifies that run. A separate read-only inquiry can help investigate; it does not rewrite the original outcome. This is request deduplication, not exactly-once execution at a UI-only target.
 
@@ -132,5 +132,7 @@ git diff --check
 ```
 
 `test/meridian.test.ts` contains small offline fixtures for request identity, approvals, live-control checks, private credential resolution, structured extraction, masking and HTTP auth. Existing mock fixtures remain under `test/fixtures/` and can be exercised with `npm test`. They are not a second MERIDIAN app or proof of live coverage.
+
+The current Task 9a matrix at `541d776f85d94097bc1e63fa7966de69da5947de` passed the focused four-file run with 66 tests, typecheck, validation and diff-check. The earlier full 198-test run belongs to `4ec9b933c9e39fcf471c52f7f5b2bcf7479f1457` and is historical. The last hosted checkpoint was `5be82a9c53b64fa1e8bbfa6b2e7fa91bc42d49f9` (workflow `33850329935`, producer `100951419518`); hosted checks for the current head remain pending.
 
 Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors (including last-name ambiguity and teller/supervisor holds), check token rejection, rehearse chat/API/dashboard together, and inspect hosted CI on the final SHA. None of those gates may be inferred from the offline suite alone.
