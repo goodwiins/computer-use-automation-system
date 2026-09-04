@@ -1,5 +1,5 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
-import { classify, type AppProfile } from '../runtime/profile.js';
+import { classify, type AppProfile, type FrameContext, type LiveControl } from '../runtime/profile.js';
 import { assertTransferEligibility, assertTransferFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
@@ -54,6 +54,8 @@ type TransferBinding = {
   expected: TransferFacts;
   memberTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
 };
+type TransferStage = 'member' | 'transfer' | 'review';
+type TransferEligibility = { member: string; shares: TransferShare[]; frame: FrameContext; stage: TransferStage };
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -71,7 +73,7 @@ export class GuardedSurface implements Surface {
   private attempt = 0;
   private started = false;
   private signOnSubmitted = false;
-  private transferEligibility?: { member: string; shares: TransferShare[] };
+  private transferEligibility?: TransferEligibility;
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -129,30 +131,74 @@ export class GuardedSurface implements Surface {
     return TRANSFER_ROUTE.exec(this.path(url));
   }
 
+  private transferStage(url: string): { member: string; stage: TransferStage } | undefined {
+    const member = MEMBER_ROUTE.exec(this.path(url));
+    if (member) return { member: member[1]!, stage: 'member' };
+    const transfer = this.transferRoute(url);
+    if (!transfer || transfer[2] === 'post') return undefined;
+    return { member: transfer[1]!, stage: transfer[2] === 'review' ? 'review' : 'transfer' };
+  }
+
+  private sameFrame(left: FrameContext | undefined, right: FrameContext | undefined): boolean {
+    return !!left && !!right && left.id === right.id && left.name === right.name;
+  }
+
+  private sameFrameRevision(left: FrameContext | undefined, right: FrameContext | undefined): boolean {
+    return this.sameFrame(left, right) && left!.navigation === right!.navigation && left!.url === right!.url;
+  }
+
+  private currentTransferFrame(): FrameContext {
+    const frame = this.inner.currentFrame?.();
+    if (!frame) throw new Error('Transfer frame identity is unavailable');
+    return frame;
+  }
+
+  private transferFrameFailed(): never {
+    this.transferEligibility = undefined;
+    throw new Error('Transfer frame is no longer bound to this run');
+  }
+
   private requireTransferRoute(url: string): void {
-    const match = this.transferRoute(url);
-    if (!match || this.runtime?.profile.appId !== 'meridian') return;
+    const route = this.transferStage(url);
+    if (!route || this.runtime?.profile.appId !== 'meridian') return;
     const binding = this.runtime.transfer;
     if (!binding) throw new Error('Transfer parameters are not bound');
-    if (match[1] !== binding.expected.member) {
-      this.transferEligibility = undefined;
-      throw new Error('Transfer member does not match the bound request');
-    }
+    if (route.member !== binding.expected.member) return this.transferFrameFailed();
     if (this.mutationDispatched) {
       this.transferEligibility = undefined;
       return;
     }
-    if (!this.transferEligibility || this.transferEligibility.member !== binding.expected.member) throw new Error('Transfer eligibility has not been verified for this run');
+    const state = this.transferEligibility;
+    if (!state || state.member !== binding.expected.member || state.stage !== route.stage) throw new Error('Transfer eligibility has not been verified for this run');
+    const current = this.currentTransferFrame();
+    if (!this.sameFrameRevision(current, state.frame) || this.path(current.url) !== this.path(url)) return this.transferFrameFailed();
   }
 
   private preserveTransferState(url: string): void {
-    const match = this.transferRoute(url);
-    if (match) {
-      this.requireTransferRoute(url);
+    if (this.runtime?.profile.appId !== 'meridian' || !this.runtime.transfer) return;
+    const route = this.transferStage(url);
+    if (!route || route.member !== this.runtime.transfer.expected.member) {
+      this.transferEligibility = undefined;
       return;
     }
-    const member = MEMBER_ROUTE.exec(this.path(url));
-    if (!member || member[1] !== this.runtime?.transfer?.expected.member) this.transferEligibility = undefined;
+    if (!this.transferEligibility && route.stage === 'member') return;
+    this.requireTransferRoute(url);
+  }
+
+  private advanceTransferState(url: string): void {
+    const binding = this.runtime?.transfer;
+    const route = this.transferStage(url);
+    if (!binding || !route || route.member !== binding.expected.member) return this.transferFrameFailed();
+    const state = this.transferEligibility;
+    if (!state) return this.transferFrameFailed();
+    const current = this.currentTransferFrame();
+    if (this.path(current.url) !== this.path(url) || !this.sameFrame(current, state.frame)) return this.transferFrameFailed();
+    const validTransition = state.stage === route.stage
+      || (state.stage === 'member' && route.stage === 'transfer')
+      || (state.stage === 'transfer' && route.stage === 'review');
+    if (!validTransition || (state.stage !== route.stage && current.navigation === state.frame.navigation)) return this.transferFrameFailed();
+    state.frame = current;
+    state.stage = route.stage;
   }
 
   private async captureTransferEligibility(memberPath: string, timeoutMs: number): Promise<void> {
@@ -160,19 +206,40 @@ export class GuardedSurface implements Surface {
     const member = MEMBER_ROUTE.exec(this.path(memberPath));
     if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Transfer member selection is not eligible');
     if (!this.inner.readTable) throw new Error('Member eligibility table is unavailable');
-    const rows = await this.readTable(binding.memberTable.target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    const before = this.currentTransferFrame();
+    if (this.path(before.url) !== this.path(memberPath)) return this.transferFrameFailed();
+    const target = { ...binding.memberTable.target, frame: before.name };
+    const rows = await this.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    const resolved = this.inner.lastResolvedFrame?.();
+    const after = this.currentTransferFrame();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.transferFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw new Error('Member eligibility table is incomplete');
       return { share: row.shareId, status: row.status, balance: row.balance };
     });
     assertTransferEligibility(binding.expected, member[1]!, shares);
-    this.transferEligibility = { member: member[1]!, shares };
+    this.transferEligibility = { member: member[1]!, shares, frame: resolved, stage: 'member' };
   }
 
-  private assertTransferReview(live: import('../runtime/profile.js').LiveControl): void {
+  private assertTransferControl(live: LiveControl): void {
+    const binding = this.runtime?.transfer;
+    const route = this.transferStage(live.url);
+    if (!binding || !route || route.member !== binding.expected.member || !live.frame) return this.transferFrameFailed();
+    const current = this.currentTransferFrame();
+    if (!this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url) || this.path(current.url) !== this.path(live.url)) return this.transferFrameFailed();
+    const state = this.transferEligibility;
+    if (!state) {
+      if (route.stage === 'member') return;
+      return this.transferFrameFailed();
+    }
+    if (state.stage !== route.stage || !this.sameFrameRevision(state.frame, live.frame)) return this.transferFrameFailed();
+  }
+
+  private assertTransferReview(live: LiveControl): void {
     const binding = this.runtime?.transfer;
     const member = TRANSFER_ROUTE.exec(this.path(live.destination))?.[1];
-    if (!binding || !member || member !== binding.expected.member) throw new Error('Transfer review is not bound to the requested member');
+    if (!binding || !member || member !== binding.expected.member || TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] !== 'post' || this.transferStage(live.url)?.stage !== 'review') throw new Error('Transfer review is not bound to the requested member');
+    this.assertTransferControl(live);
     const fact = (name: string) => {
       const value = live.facts[name];
       if (typeof value !== 'string') throw new Error('Transfer review facts are missing or ambiguous');
@@ -220,6 +287,8 @@ export class GuardedSurface implements Surface {
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
   currentUrl(): string { return this.inner.currentUrl(); }
+  currentFrame(): FrameContext | undefined { return this.inner.currentFrame?.(); }
+  lastResolvedFrame(): FrameContext | undefined { return this.inner.lastResolvedFrame?.(); }
   frameUrls(): string[] { return this.inner.frameUrls(); }
   isTextVisible(text: string, frame?: string) { return this.inner.isTextVisible(text, frame); }
   describeTarget(hint: TargetDescriptor, timeoutMs?: number) { return this.inner.describeTarget(hint, timeoutMs); }
@@ -254,6 +323,7 @@ export class GuardedSurface implements Surface {
       await this.gate('navigate', 'read', url);
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
+      if (this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
       this.preserveTransferState(this.inner.currentUrl());
     });
   }
@@ -287,7 +357,7 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
-        this.preserveTransferState(live.destination);
+        if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
@@ -310,13 +380,12 @@ export class GuardedSurface implements Surface {
           this.emit('approval.result', { approved, effectiveRisk: 'irreversible' });
           if (!approved) throw new Error('Submission aborted');
           this.assertAutomation();
+          if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
           if (transferPost) {
-            this.requireTransferRoute(refreshed.destination);
             this.assertTransferReview(refreshed);
-            this.requireTransferRoute(this.inner.currentUrl());
           }
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
@@ -333,6 +402,7 @@ export class GuardedSurface implements Surface {
         this.assertStillInBounds('click');
         if (this.mutationDispatched) this.transferEligibility = undefined;
         else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
+        else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl());
         this.preserveTransferState(this.inner.currentUrl());
         return report;
       }
