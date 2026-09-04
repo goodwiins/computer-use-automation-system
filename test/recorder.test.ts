@@ -156,7 +156,7 @@ describe('recordArtifact regex parameterization', () => {
       : [{ action, reason: 'read value', descriptor: { description: 'value', strategies: [{ kind: 'nameAttr', name: 'value' }] }, outputName: 'value', pattern, extractedText: 'captured', urlAfter: 'http://localhost:4173/members/123' }],
   });
 
-  it.each(['\\x31\\x32\\x33', '[1][2][3]'])('rejects encoded sensitive values in %s before recording assertions or extracts', pattern => {
+  it.each(['\\x31\\x32\\x33', '[1][2][3]', '[1-1][2-2][3-3]', '(?:1)(?:2)(?:3)', '1{1}2{1}3{1}'])('rejects encoded sensitive values in %s before recording assertions or extracts', pattern => {
     expect(() => recordArtifact(sensitiveInput, traceForPattern('assert', pattern))).toThrow(/pattern/);
     expect(() => recordArtifact(sensitiveInput, traceForPattern('extract', pattern))).toThrow(/pattern/);
   });

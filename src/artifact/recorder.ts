@@ -73,26 +73,151 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   const templatize = (s: string): string => substitute(s, paramEntries);
 
   // Regex syntax can encode a value without containing its literal spelling.
-  // Keep the accepted escape set small: generic captures retain useful `\s`
-  // and `\S` patterns, while encoded or unknown escapes fail closed.
-  // ponytail: regex escape allowlist; reject unsupported forms instead of building a parser, extend only for a reviewed pattern.
+  // Keep a small grammar: generic escapes/classes stay opaque, deterministic
+  // literals can be templated, and unsupported encodings fail closed.
+  // ponytail: regex projection is intentionally bounded; extend the grammar only for a reviewed pattern.
   const safeRegexPattern = (pattern: string): string => {
+    const genericEscapes = 'dDsSwWbB';
+    const literalEscapes = '\\^$.*+?()[\]{}|\/-';
+    const controlEscapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', f: '\f', v: '\v' };
+    type Projection = { char: string; start: number; end: number } | null;
+    const projection: Projection[] = [];
+    const protectedSpans: Array<{ start: number; end: number }> = [];
+    const protect = (start: number, end: number) => protectedSpans.push({ start, end });
+    const classEnd = (start: number): number => {
+      for (let i = start + 1; i < pattern.length; i++) {
+        if (pattern[i] === '\\') i++;
+        else if (pattern[i] === ']') return i;
+      }
+      throw new Error('Cannot record parameter-dependent regex patterns with an unterminated class');
+    };
+    const exactClass = (body: string): string | undefined => {
+      if (/^[A-Za-z0-9]$/.test(body)) return body;
+      const range = /^([A-Za-z0-9])-\1$/.exec(body);
+      return range?.[1];
+    };
+    // A class with more than one possible character is generic for this
+    // boundary. Singleton classes and equal-character ranges are handled by
+    // `exactClass` above because they can encode a parameter one character at
+    // a time; preserving every other class keeps existing captures such as
+    // `[^|]` and `[?#]` usable without trying to interpret class semantics.
+    const genericClass = (body: string): boolean => !exactClass(body);
+
     for (const match of pattern.matchAll(/\\([A-Za-z0-9])/g)) {
-      if (!'dDsSwWbBfFnrtv'.includes(match[1]!)) {
+      if (!genericEscapes.includes(match[1]!) && !Object.hasOwn(controlEscapes, match[1]!)) {
         throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
       }
     }
-    const decodedLiterals = pattern
-      .replace(/\[([A-Za-z0-9])\]/g, '$1')
-      .replace(/\\([\\^$.*+?()[\]{}|\/-])/g, '$1')
-      .replace(/\\([nrtfv])/g, (_, escape: string) => ({ n: '\n', r: '\r', t: '\t', f: '\f', v: '\v' })[escape]!);
+
+    for (let i = 0; i < pattern.length;) {
+      const placeholder = /^\{\{\w+\}\}/.exec(pattern.slice(i));
+      if (placeholder) {
+        protect(i, i + placeholder[0].length);
+        projection.push(null);
+        i += placeholder[0].length;
+        continue;
+      }
+      const char = pattern[i]!;
+      if (char === '\\') {
+        const next = pattern[i + 1];
+        if (!next) throw new Error('Cannot record parameter-dependent regex patterns with a trailing escape');
+        if (genericEscapes.includes(next)) projection.push(null);
+        else if (Object.hasOwn(controlEscapes, next)) projection.push({ char: controlEscapes[next]!, start: i, end: i + 2 });
+        else if (literalEscapes.includes(next)) projection.push({ char: next, start: i, end: i + 2 });
+        else throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
+        protect(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (char === '[') {
+        const end = classEnd(i);
+        const body = pattern.slice(i + 1, end);
+        const literal = exactClass(body);
+        if (literal) projection.push({ char: literal, start: i, end: end + 1 });
+        else if (genericClass(body)) projection.push(null);
+        else throw new Error('Cannot record parameter-dependent regex patterns with unsupported classes');
+        protect(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      if (char === '(') {
+        i++;
+        if (pattern[i] === '?') {
+          if (![':', '=', '!', '>'].includes(pattern[i + 1] ?? '')) throw new Error('Cannot record parameter-dependent regex patterns with unsupported groups');
+          i += 2;
+        }
+        continue;
+      }
+      if (char === ')' || char === '^' || char === '$') {
+        i++;
+        continue;
+      }
+      if (char === '|') {
+        projection.push(null);
+        i++;
+        continue;
+      }
+      if (char === '{') {
+        const end = pattern.indexOf('}', i + 1);
+        if (end < 0) throw new Error('Cannot record parameter-dependent regex patterns with an unterminated quantifier');
+        const quantifier = pattern.slice(i + 1, end);
+        const previous = projection.at(-1);
+        if (/^\d+$/.test(quantifier) && previous && Number(quantifier) > 1 && Number(quantifier) <= 32) {
+          for (let repeat = 1; repeat < Number(quantifier); repeat++) projection.push({ ...previous });
+        } else if (!/^\d+$/.test(quantifier)) {
+          projection.push(null);
+        }
+        protect(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      if ('*+?.'.includes(char)) {
+        projection.push(null);
+        i++;
+        continue;
+      }
+      projection.push({ char, start: i, end: i + 1 });
+      i++;
+    }
+
     for (const [name, value] of paramEntries) {
       const v = String(value);
-      if (v && decodedLiterals.includes(v) && !pattern.includes(v)) {
+      if (!v) continue;
+      const hasSafeRawOccurrence = (startAt: number): boolean => {
+        for (let start = pattern.indexOf(v, startAt); start >= 0; start = pattern.indexOf(v, start + 1)) {
+          const end = start + v.length;
+          if (!protectedSpans.some(span => start < span.end && end > span.start)) return true;
+        }
+        return false;
+      };
+      const hasSafeLiteralOccurrence = hasSafeRawOccurrence(0);
+      for (let start = 0; start <= projection.length - v.length; start++) {
+        const run = projection.slice(start, start + v.length);
+        if (run.length !== v.length || run.some((part) => !part) || run.map((part) => (part as Exclude<Projection, null>).char).join('') !== v) continue;
+        const rawStart = (run[0] as Exclude<Projection, null>).start;
+        const rawEnd = (run.at(-1) as Exclude<Projection, null>).end;
+        if (pattern.slice(rawStart, rawEnd) !== v) {
+          throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
+        }
+      }
+      // If a value's characters occur in separate literal tokens, the
+      // pattern may still encode the value through groups, alternation, or
+      // other regex structure that this small grammar does not interpret.
+      // Keep direct raw occurrences usable, but fail closed on any such
+      // fragment rather than allowing a partial secret to remain in the
+      // artifact.
+      if (!hasSafeLiteralOccurrence && projection.some(part => part !== null && v.includes(part.char))) {
         throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
       }
     }
-    return templatize(pattern);
+
+    let templated = '';
+    let cursor = 0;
+    for (const span of protectedSpans.sort((a, b) => a.start - b.start)) {
+      templated += templatize(pattern.slice(cursor, span.start)) + pattern.slice(span.start, span.end);
+      cursor = span.end;
+    }
+    return templated + templatize(pattern.slice(cursor));
   };
 
   // Never splice runtime data into CSS syntax. Keep only invariant strategies.

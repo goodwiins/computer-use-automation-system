@@ -217,6 +217,38 @@ describe('numeric replay extraction', () => {
   });
 });
 
+it('resolves parameterized extraction patterns with regex escaping during replay', async () => {
+  const artifact = recordArtifact({
+    name: 'parameterized-extract', description: '', goal: 'Read a value', entryUrl: `${origin}/`,
+    params: { needle: 'a.b+' }, sensitiveParams: [], allowedOrigins: [origin], appId: 'test', appDetectors: [], model: 'test', discoveryRunId: 'test',
+  }, {
+    status: 'success', outputs: { result: 'a.b+' }, finalUrl: `${origin}/done`, trace: [{
+      action: 'extract', reason: 'read value', outputName: 'result', pattern: 'value=(a.b+)', extractedText: 'a.b+', urlAfter: `${origin}/done`,
+      descriptor: { description: 'result', strategies: [{ kind: 'nameAttr', name: 'result' }] },
+    }],
+  });
+  artifact.status = 'approved';
+  expect(artifact.steps[0]!.extract?.pattern).toBe('value=({{needle}})');
+  const surface: Surface = {
+    start: async () => {},
+    observe: async () => ({ url: `${origin}/done`, title: '', frames: [] }),
+    currentUrl: () => `${origin}/done`,
+    frameUrls: () => [`${origin}/done`],
+    navigate: async () => {},
+    click: async () => ({ strategyUsed: 0, kind: 'role', matches: 1 }),
+    fill: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+    select: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+    readText: async () => ({ text: 'value=a.b+', report: { strategyUsed: 0, kind: 'nameAttr', matches: 1 } }),
+    isTextVisible: async () => false,
+    describeTarget: async target => target,
+    screenshot: async () => {},
+    close: async () => {},
+  };
+  const result = await runReplay(artifact, { needle: 'a.b+' }, { surface, logger: new RunLogger('replay', new Redactor(), temp()), policy });
+  expect(result.status).toBe('success');
+  expect(result.status === 'success' && result.outputs.result).toBe('a.b+');
+});
+
 it.each(["abc'\\def", '123', '4', '{{member}}', '\\31 23'])('drops unsafe CSS %s without echoing data', selector => {
   const a = recordArtifact({ name: 'safe', description: '', goal: '', entryUrl: origin, params: { member: selector === '\\31 23' ? '123' : selector }, sensitiveParams: ['member'], allowedOrigins: [origin], appId: 'test', appDetectors: [], model: 'test', discoveryRunId: 'test' }, { status: 'success', outputs: { invented: 'never extracted' }, finalUrl: origin, trace: [{ action: 'click', reason: '', urlAfter: origin, descriptor: { description: '', strategies: [{ kind: 'css', selector: `[data-id="${selector}"]` }, { kind: 'nameAttr', name: 'safe' }] } }] });
   expect(a.steps[0]!.target!.strategies).toEqual([{ kind: 'nameAttr', name: 'safe' }]); expect(a.outputs).toEqual([]);

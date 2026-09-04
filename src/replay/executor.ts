@@ -238,7 +238,8 @@ export async function runReplay(
             break;
           }
           const { text, report } = await surface.readText(target!, step.timeoutMs);
-          const value = extractText(text, step.extract!.pattern);
+          const pattern = step.extract!.pattern === undefined ? undefined : resolveTemplateForRegex(step.extract!.pattern, params);
+          const value = extractText(text, pattern);
           const output = artifact.outputs.find(o => o.name === step.extract!.output);
           if (output?.type === 'number') {
             if (!value.trim()) throw new Error('Numeric extraction requires nonempty text');
