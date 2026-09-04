@@ -40,6 +40,10 @@
 
 These are inspected snapshots, not authorization to merge. Refresh refs, reviews, and checks at execution. The #34/#35 code paths below are absent from current `dev` until integrated.
 
+## Current integrated baseline — September 4, 2026
+
+Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`), and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on the same SHA. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
+
 Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/34), [PR #35](https://github.com/goodwiins/computer-use-automation-system/pull/35), and their `docs/meridian/live-evidence.md`. Existing evidence reports:
 
 - Sign-on, member inquiry, and member record have real discovery and deterministic replay evidence. Preserve that provenance. Refresh a read before each new live session.
@@ -232,7 +236,7 @@ Expected: regressions now pass; existing approval, mutation-intent, observer iso
 
 **Interfaces:** `CapabilityArtifact.parse(unknown)`, `applyMeridianContract(artifact)` and `meridianContracts` are existing exports. The test below is a contract gate, not proof of live behavior.
 
-- [ ] Add this complete test file. Initially include only the three already recorded IDs. Tasks 5–8 each add their ID before recording, making that task fail until its artifact exists and passes the shared contract.
+- [x] Add `test/meridian-artifacts.test.ts` with only the three already recorded IDs. Tasks 5–8 each add their ID before recording, making that task fail until its artifact exists and passes the shared contract.
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -263,17 +267,17 @@ it.each(ids)('%s is reviewed and satisfies the recorded contract', id => {
 });
 ```
 
-- [ ] Run `npx vitest run test/meridian-artifacts.test.ts`. Expected: all three read artifacts pass on the integrated head. If an existing artifact violates the design, fix it from its real provenance or re-record; do not loosen the contract to make the test green.
-- [ ] Follow `docs/meridian/runbook.md` setup. Keep secrets in ignored `.env` with mode 600 and a stable journal key. Define the existing CLI wrapper:
+- [x] Run `npx vitest run test/meridian-artifacts.test.ts`: 3 tests passed on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Existing approved artifacts satisfy the shared contract; no contract was loosened.
+- [x] Follow the read-only portion of `docs/meridian/runbook.md` setup. The ignored `.env` is mode 600 with a stable journal key, and the existing CLI wrapper was used. Write-task member/share/contact choices were intentionally not established because this task authorizes no posting.
 
 ```sh
 cu() { node --env-file=.env --import tsx cli.ts "$@"; }
 ```
 
 Stop `cu serve` before any CLI discovery/replay. Use an interactive terminal for discovery's approval gate. Choose current synthetic member/share/contact inputs with the operator and set `MEMBER`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, and `ADDRESS` locally. These are selected operation facts, not inferred defaults; values must be known before a write can be proposed for approval.
-- [ ] Run one fresh sign-on and member inquiry/record. Record run IDs and target outcome. If sign-on immediately encounters an injected error or session expiry again, stop this live session and record the blocker. Do not alter global injection settings, auto-login repeatedly, or use another posting as a health probe.
-- [ ] Inspect unsubmitted forms and review transitions. Verify current control labels, native action/method, session role, token presence (never its value), available shares and operation constraints. Verify the historical unknown operation only with a separate read. Preserve its original terminal state regardless of what that read finds.
-- [ ] Commit the artifact check and sanitized readiness note. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
+- [x] Run the supplied fresh sign-on preflight at source `7abda4c326260d917795fe75320af99a7233bc6d` (`ad12819b-f07a-41ff-9710-bedff1afe1a5`, `TELLER`, evaluator pass) without repeating it, then run fresh member inquiry `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` and member record `e4850bd4-6c63-42c9-8719-aaefef1c74e4` reads at source `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Both reads succeeded with evaluator pass, 10 attempts, 0 mutation intents, and no violations or incomplete checks.
+- [x] Inspect the sanitized read transitions: sign-on operator/password/branch fields and POST, inquiry by/q fields and GET Search, and record GET Select plus shares-table extraction. No write form, review transition or posting control was submitted; write-route token/role checks and concrete eligible-share choices remain incomplete gates. The historical unknown operation stayed terminal `POST_OUTCOME_UNKNOWN` and was not retried.
+- [x] Commit the artifact check and sanitized readiness note after the final integrated gates: `773d818`. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
 
 ## Live-operation rules for Tasks 5–8
 

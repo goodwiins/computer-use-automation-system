@@ -34,6 +34,21 @@ The rehearsal exposed CSS overriding the caller's hidden operator selector. The 
 
 [Profile probe results](evidence/profile-probes/summary.json) cover validation, not-found, permission, timeout, maintenance and server errors. These are per-request, read-only live probes on an operation route; no global settings were changed. They are not LLM discoveries, approved postings or write-capability replays. Maintenance cleared through the observed Continue link to the menu; the original operation was not resumed.
 
+## Current read-only readiness — September 4, 2026
+
+Task 4's fresh reads ran from the integrated `dev` tree at source SHA `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. The supplied sign-on preflight remains the only sign-on check for this task; it ran at source SHA `7abda4c326260d917795fe75320af99a7233bc6d` and completed as role `TELLER` with a passing evaluator result, 8 attempts and 0 mutation intents.
+
+| Read-only operation | Run ID | Target outcome | Evaluator |
+|---|---|---|---|
+| Member inquiry for the exact selected synthetic member | `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` | `success` | `pass`; 10 attempts, 0 mutation intents, no violations or incomplete checks |
+| Member record and current shares table | `e4850bd4-6c63-42c9-8719-aaefef1c74e4` | `success` | `pass`; 10 attempts, 0 mutation intents, no violations or incomplete checks |
+
+The current sanitized control observations show sign-on `operator` (text), `password` (password), and `branch` (select), followed by the `Sign On` POST. Inquiry used `by` (select), `q` (text), and a GET `Search`; record selection used a GET `Select` and extracted the shares table while excluding its header row. These read controls have no transaction token requirement. The current session used teller context; token values and session identifiers were never persisted.
+
+The record read confirms that a current shares table was extracted, but strict evidence protection omits member, share, balance and status values from replay results and committed documentation. The signed private journal and ignored task-private evidence retain the request identity and selected read fact for controller use; no raw output was copied into this document. No source, destination or hold share was selected, and no write form, review transition, or posting control was submitted. Write-route token presence, native POST facts, role checks and concrete eligible-share choices therefore remain gates for the separately approved write tasks.
+
+Before each read, the private journal had no active lock and no MERIDIAN API listener was running; both runs closed with terminal `success` records. The historical open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` remains terminal `POST_OUTCOME_UNKNOWN`; these separate read-only runs did not retry it or alter its journal state.
+
 ## Unknown posting — do not retry
 
 Open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` reached a live review and received explicit user approval. Dispatch occurred. The model subsequently reported completion, but artifact compilation failed because the trace omitted branch selection. No capability artifact was accepted and no reusable provenance was reconstructed.
