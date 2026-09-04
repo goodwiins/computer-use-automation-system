@@ -43,7 +43,7 @@ export class TargetResolutionError extends Error {
 }
 
 export interface Surface {
-  prepareClick?(target: TargetDescriptor, timeoutMs?: number): Promise<{ inspect(): Promise<LiveControl>; dispatch(expected: LiveControl): Promise<ResolutionReport> }>;
+  prepareClick?(target: TargetDescriptor, timeoutMs?: number): Promise<{ inspect(timeoutMs?: number): Promise<LiveControl>; dispatch(expected: LiveControl, timeoutMs?: number): Promise<ResolutionReport> }>;
   mutationDispatched?: boolean;
   effectiveRisk?: RiskClass;
   setStep?(id: string): void;
@@ -64,7 +64,7 @@ export interface Surface {
   isTextVisible(text: string, frame?: string): Promise<boolean>;
 
   /** Build a robust TargetDescriptor from whatever hint found the element. */
-  describeTarget(hint: TargetDescriptor): Promise<TargetDescriptor>;
+  describeTarget(hint: TargetDescriptor, timeoutMs?: number): Promise<TargetDescriptor>;
 
   screenshot(path: string, opts?: { maskValues?: string[] }): Promise<void>;
   close(): Promise<void>;

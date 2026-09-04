@@ -297,6 +297,7 @@ export async function runReplay(
   }
 
   for (const step of artifact.steps) {
+    surface.setStep?.(step.id);
     logger.log('step.start', { stepId: step.id, action: step.action, intent: step.intent, risk: step.risk });
     const conditionResult = await handleConditions(step.id);
     if (conditionResult === CONTINUE_SENTINEL) continue; // escalation path already executed/skipped this step

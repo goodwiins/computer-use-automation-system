@@ -75,6 +75,7 @@ export class InvocationService {
       },
       beforeDispatch: () => this.journal.update(record.runId, 'dispatching'), onClose: () => approval.cancel(),
       onEvent: (event) => {
+        if (event === 'step.start') state.step = runtime.surface.currentStep;
         if (event === 'action.start') state.step = runtime.surface.currentStep;
         if (event === 'detector.recovering') state.state = 'recovering';
         if (event === 'step.ok') state.state = 'running';

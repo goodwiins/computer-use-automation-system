@@ -10,6 +10,8 @@ import { RiskClass, type TargetDescriptor, type TableColumn } from '../artifact/
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ResolutionReport, Surface } from './types.js';
 
+const DEFAULT_TIMEOUT = 10_000;
+
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
     super(`Policy ${verdict.verdict === 'deny' ? 'denied' : 'requires human for'} "${action}": ${verdict.reason}`);
@@ -104,7 +106,7 @@ export class GuardedSurface implements Surface {
   currentUrl(): string { return this.inner.currentUrl(); }
   frameUrls(): string[] { return this.inner.frameUrls(); }
   isTextVisible(text: string, frame?: string) { return this.inner.isTextVisible(text, frame); }
-  describeTarget(hint: TargetDescriptor) { return this.inner.describeTarget(hint); }
+  describeTarget(hint: TargetDescriptor, timeoutMs?: number) { return this.inner.describeTarget(hint, timeoutMs); }
   // Forward the masking options: the logger hands sensitive values down for
   // the shot, and dropping them here would render them in the clear in every
   // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
@@ -148,11 +150,25 @@ export class GuardedSurface implements Surface {
   async click(t: TargetDescriptor, timeoutMs?: number, risk: RiskClass = 'read'): Promise<ResolutionReport> {
     return this.action('click', risk, async () => {
       this.assertAutomation();
+      const budget = timeoutMs ?? DEFAULT_TIMEOUT;
+      let deadline = Date.now() + budget;
+      const remaining = () => {
+        const value = deadline - Date.now();
+        if (!Number.isFinite(value) || value <= 0) throw new Error('Click timeout expired');
+        return Math.max(1, value);
+      };
+      const outsideBudget = async <T>(wait: () => Promise<T>) => {
+        const started = Date.now();
+        try { return await wait(); }
+        finally { deadline += Date.now() - started; }
+      };
       if (this.runtime) {
         this.assertStillInBounds('click');
         if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
-        const prepared = await this.inner.prepareClick(t, timeoutMs);
-        const live = await prepared.inspect();
+        const prepared = await this.inner.prepareClick(t, remaining());
+        remaining();
+        const live = await prepared.inspect(remaining());
+        remaining();
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
@@ -168,30 +184,33 @@ export class GuardedSurface implements Surface {
           const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');
           if (verdict.verdict === 'deny') throw new PolicyViolationError(verdict, 'click');
           this.onDecision?.({ action: 'click', url: live.destination, risk: 'irreversible', verdict: 'needs_human' });
-          const approved = await this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context);
+          remaining();
+          const approved = await outsideBudget(() => this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context));
           this.emit('approval.result', { approved, effectiveRisk: 'irreversible' });
           if (!approved) throw new Error('Submission aborted');
           this.assertAutomation();
-          const refreshed = await prepared.inspect();
+          const refreshed = await prepared.inspect(remaining());
+          remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
           this.runtime.beforeDispatch(context);
           this.mutationDispatched = true;
           // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.
           this.emit('mutation.intent', { effectiveRisk: 'irreversible' });
         } else {
-          await this.gate('click', risk, live.destination);
+          await outsideBudget(() => this.gate('click', risk, live.destination));
         }
         if (signOn && live.submit) this.signOnSubmitted = true;
-        const report = await prepared.dispatch(live);
+        const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
         return report;
       }
-      const live = await this.inner.describeTarget(t);
+      const live = await this.inner.describeTarget(t, remaining());
+      remaining();
       const floor = riskFloorFor(live);
       this.effectiveRisk = floor && RISK_RANK[floor] > RISK_RANK[risk] ? floor : risk;
       this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk });
-      await this.gate('click', this.effectiveRisk);
-      const report = await this.inner.click(t, timeoutMs);
+      await outsideBudget(() => this.gate('click', this.effectiveRisk));
+      const report = await this.inner.click(t, remaining());
       this.assertStillInBounds('click');
       return report;
     });

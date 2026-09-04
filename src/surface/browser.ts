@@ -18,6 +18,18 @@ const DEFAULT_TIMEOUT = 10_000;
 /** Time left before `deadline`, floored so a retry always gets a real attempt. */
 export const remainingMs = (deadline: number, floor = 500) => Math.max(floor, deadline - Date.now());
 
+const timeoutRemaining = (deadline: number) => {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error('Action timeout expired');
+  return Math.max(1, remaining);
+};
+
+const explicitTimeout = (timeoutMs: number | undefined, deadline: number) => {
+  if (timeoutMs === undefined) return timeoutRemaining(deadline);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Action timeout expired');
+  return Math.max(1, timeoutMs);
+};
+
 /** Escape a value for use inside a double-quoted CSS attribute selector. */
 export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
@@ -154,11 +166,13 @@ export class BrowserSurface implements Surface {
   }
 
   async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+    const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
+    const actionTimeout = timeoutRemaining(deadline);
     // Legacy pages navigate on click; wait for the frame to settle.
     await Promise.all([
-      locator.click({ timeout: timeoutMs }),
-      this.page.waitForLoadState('load', { timeout: timeoutMs }).catch(() => {}),
+      locator.click({ timeout: actionTimeout }),
+      this.page.waitForLoadState('load', { timeout: actionTimeout }).catch(() => {}),
     ]);
     return report;
   }
@@ -313,25 +327,28 @@ export class BrowserSurface implements Surface {
   }
 
   async prepareClick(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT) {
+    const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
-    const handle = await locator.elementHandle({ timeout: timeoutMs });
+    const handle = await locator.elementHandle({ timeout: timeoutRemaining(deadline) });
     if (!handle) throw new Error('Control disappeared');
     const args = { identity: this.identity, detectors: this.opts.profile?.detectors ?? [] };
     // Native form data stays private, including sign-on credentials and CSRF tokens.
     let approvedBody: string | undefined;
     return {
-      inspect: async () => {
+      inspect: async (inspectTimeoutMs?: number) => {
+        explicitTimeout(inspectTimeoutMs, deadline);
         const snapshot = await handle.evaluate(inspectControl, args);
         if (approvedBody !== undefined && approvedBody !== snapshot.body) throw new Error('Approval invalidated by changed form data');
         approvedBody = snapshot.body;
         return snapshot.live;
       },
-      dispatch: async (expected: LiveControl) => {
+      dispatch: async (expected: LiveControl, dispatchTimeoutMs?: number) => {
         if (approvedBody === undefined) throw new Error('Control was not inspected');
+        const actionTimeout = explicitTimeout(dispatchTimeoutMs, deadline);
         if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
         try {
           await Promise.all([
-            this.page.waitForNavigation({ waitUntil: 'load', timeout: timeoutMs }),
+            this.page.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
             handle.evaluate(inspectControl, { ...args, expected, body: approvedBody }),
           ]);
           await this.verifySignon();
@@ -400,12 +417,14 @@ export class BrowserSurface implements Surface {
           }
           attempts.push({ kind: strategy.kind, matches: count });
           if (count === 1 || (count > 1 && target.nth !== undefined)) {
+            if (Date.now() >= deadline) break;
             if (count > 1) locator = locator.nth(target.nth!);
             return { locator, report: { strategyUsed: i, kind: strategy.kind, matches: count } };
           }
         }
       }
-      await this.page.waitForTimeout(250);
+      if (Date.now() >= deadline) break;
+      await this.page.waitForTimeout(Math.min(250, Math.max(1, deadline - Date.now())));
     } while (Date.now() < deadline);
     throw new TargetResolutionError(target, attempts);
   }
@@ -416,8 +435,9 @@ export class BrowserSurface implements Surface {
    * Resolve the element via the discovery-time hint, then derive a tiered,
    * replay-grade descriptor from the live element's own properties.
    */
-  async describeTarget(hint: TargetDescriptor): Promise<TargetDescriptor> {
-    const { locator } = await this.resolve(hint, DEFAULT_TIMEOUT);
+  async describeTarget(hint: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<TargetDescriptor> {
+    const deadline = Date.now() + timeoutMs;
+    const { locator } = await this.resolve(hint, timeoutMs);
     const info = await locator.evaluate((el) => {
       const e = el as HTMLElement;
       const tag = e.tagName.toLowerCase();
@@ -453,7 +473,8 @@ export class BrowserSurface implements Surface {
         text: tag === 'a' ? (e.textContent ?? '').trim() || undefined : undefined,
         cssPath: parts.join(' > '),
       };
-    });
+    }, { timeout: timeoutRemaining(deadline) });
+    timeoutRemaining(deadline);
 
     const strategies: TargetStrategy[] = [];
     if (info.role && info.accName) strategies.push({ kind: 'role', role: info.role, name: info.accName });

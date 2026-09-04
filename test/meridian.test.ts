@@ -13,6 +13,7 @@ import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams } from '../src/artifact/schema.js';
 import * as clients from '../src/agent/client.js';
 import { runDiscovery } from '../src/agent/loop.js';
+import * as runtime from '../src/runtime/run.js';
 import { recordArtifact } from '../src/artifact/recorder.js';
 import { toToolSchema } from '../src/artifact/tools.js';
 import { GuardedSurface } from '../src/surface/guarded.js';
@@ -47,6 +48,76 @@ function guarded(overrides: Partial<Surface> = {}, gate = async () => true, cont
   const beforeDispatch = vi.fn();
   return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
 }
+
+function stepReportingArtifact() {
+  const input = (name: string) => ({ description: name, strategies: [{ kind: 'nameAttr' as const, name }] });
+  return {
+    schemaVersion: 2,
+    id: 'meridian-member-record',
+    name: 'meridian-member-record',
+    description: 'Report the current member record step',
+    version: '1.0.0',
+    status: 'approved',
+    app: { appId: 'meridian', entryUrl: `${origin}/fixture`, allowedOrigins: [origin] },
+    parameters: [],
+    outputs: [{ name: 'shares', type: 'table', description: 'Shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] }],
+    steps: [
+      { id: 'operator', intent: 'operator', action: 'fill', target: input('operator'), value: '{{operator}}', risk: 'reversible_write' },
+      { id: 'password', intent: 'password', action: 'fill', target: input('password'), value: '{{password}}', risk: 'reversible_write' },
+      { id: 'branch', intent: 'branch', action: 'fill', target: input('branch'), value: '{{branch}}', risk: 'reversible_write' },
+      { id: 'shares', intent: 'read shares', action: 'extract', target: { description: 'shares', strategies: [{ kind: 'css' as const, selector: '#shares' }] }, extract: { output: 'shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] }, risk: 'read' },
+      { id: 'verify-member', intent: 'verify member checkpoint', action: 'assert', assert: { kind: 'textVisible' as const, text: 'ASSERT READY' }, risk: 'read', timeoutMs: 1 },
+    ],
+    successCondition: { kind: 'urlMatches' as const, pattern: '.*' },
+    detectors: [{ id: 'fatal-fixture', description: 'fatal fixture condition', match: { kind: 'textVisible' as const, text: 'FATAL FIXTURE' }, classification: 'fatal' as const, outcomeCode: 'FIXTURE_FATAL' }],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  };
+}
+
+it('passes the requested timeout to non-profile click inspection', async () => {
+  const inspect = vi.fn(async (_hint: unknown, _timeoutMs?: number) => target);
+  const click = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
+  const inner = {
+    describeTarget: inspect, click,
+    currentUrl: () => `${origin}/menu`, frameUrls: () => [],
+  } as unknown as Surface;
+  const surface = new GuardedSurface(inner, policy, async () => true);
+  await surface.click(target, 75, 'read');
+  expect(inspect).toHaveBeenCalledWith(target, expect.any(Number));
+  expect(inspect.mock.calls[0]![1]).toBeGreaterThan(0);
+  expect(inspect.mock.calls[0]![1]).toBeLessThanOrEqual(75);
+});
+
+it('shares the click budget and refuses dispatch after inspection expires', async () => {
+  const inspect = vi.fn(async () => {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    return target;
+  });
+  const click = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
+  const inner = { describeTarget: inspect, click, currentUrl: () => `${origin}/menu`, frameUrls: () => [] } as unknown as Surface;
+  const surface = new GuardedSurface(inner, policy, async () => true);
+  await expect(surface.click(target, 10, 'read')).rejects.toThrow(/timeout/i);
+  expect(click).not.toHaveBeenCalled();
+});
+
+it('does not spend the click budget while waiting for human approval', async () => {
+  vi.useFakeTimers();
+  const click = vi.fn(async (_target: unknown, _timeoutMs?: number) => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
+  const inner = { describeTarget: async () => target, click, currentUrl: () => `${origin}/menu`, frameUrls: () => [] } as unknown as Surface;
+  const gate = vi.fn(async () => {
+    await new Promise<void>(resolve => setTimeout(resolve, 500));
+    return true;
+  });
+  const approvalPolicy = Policy.parse({ ...policy, riskHandling: { ...policy.riskHandling, irreversible: 'escalate' } });
+  const pending = new GuardedSurface(inner, approvalPolicy, gate).click(target, 50, 'irreversible');
+  for (let i = 0; i < 5 && !gate.mock.calls.length; i++) await Promise.resolve();
+  expect(gate).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(500);
+  await pending;
+  const remaining = click.mock.calls[0]![1] as number;
+  expect(remaining).toBeGreaterThan(0);
+  expect(remaining).toBeLessThanOrEqual(50);
+});
 
 describe('durable request identity', () => {
   it('deduplicates after restart, detects changed context, and never resumes dispatch', () => {
@@ -318,6 +389,76 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect(journal.records.size).toBe(1);
     const response = await request('/capabilities', caller); expect(response.status).toBe(200); expect(response.headers.get('content-security-policy')).toContain("object-src 'none'");
   } finally { await new Promise<void>(r => server.close(() => r())); journal.close(); }
+});
+
+it('reports assert-only and fatal-detector steps through the service API', async () => {
+  const previous = {
+    operator: process.env.MERIDIAN_TELLER_OPERATOR,
+    password: process.env.MERIDIAN_TELLER_PASSWORD,
+    branch: process.env.MERIDIAN_BRANCH,
+  };
+  process.env.MERIDIAN_TELLER_OPERATOR = 'SUPER1';
+  process.env.MERIDIAN_TELLER_PASSWORD = 'SECRET';
+  process.env.MERIDIAN_BRANCH = 'MAIN-001';
+  let fatalVisible = false;
+  vi.spyOn(runtime, 'createRuntime').mockImplementation(options => {
+    let currentStep = '(start)';
+    const surface = {
+      get currentStep() { return currentStep; },
+      setStep: (id: string) => { currentStep = id; },
+      start: async () => {},
+      observe: async () => ({ url: `${origin}/fixture`, title: '', frames: [] }),
+      currentUrl: () => `${origin}/fixture`,
+      frameUrls: () => [`${origin}/fixture`],
+      navigate: async () => {},
+      click: async () => ({ strategyUsed: 0, kind: 'css', matches: 1 }),
+      fill: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+      select: async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }),
+      readText: async () => ({ text: '', report: { strategyUsed: 0, kind: 'css', matches: 1 } }),
+      readTable: async () => [{ share: 'A' }],
+      isTextVisible: async (text: string) => text === 'ASSERT READY' || (text === 'FATAL FIXTURE' && fatalVisible && currentStep === 'verify-member'),
+      describeTarget: async (target: Parameters<Surface['describeTarget']>[0]) => target,
+      screenshot: async () => {},
+      close: async () => {},
+    } as unknown as ReturnType<typeof runtime.createRuntime>['surface'];
+    const logger = new RunLogger(options.kind, new Redactor(), options.evidenceDir ?? temp(), true, options.runId, options.onEvent);
+    return {
+      surface,
+      browser: { page: {} } as ReturnType<typeof runtime.createRuntime>['browser'],
+      logger,
+      session: options.session ?? new ControlSession(),
+      redactor: new Redactor(),
+      promptRedactor: new Redactor(),
+      deadline: Date.now() + 600_000,
+      close: async () => {},
+    } as ReturnType<typeof runtime.createRuntime>;
+  });
+
+  const runFixture = async (keyName: string) => {
+    const dir = temp();
+    const artifactDir = temp();
+    writeFileSync(join(artifactDir, 'fixture.json'), JSON.stringify(stepReportingArtifact()));
+    const journal = new Journal(join(dir, 'journal'), key);
+    const service = new InvocationService(journal, policy, profile, dir, ['meridian-member-record'], artifactDir);
+    try {
+      const runId = service.invoke('caller', 'meridian-member-record', { member: '1' }, keyName).runId;
+      await service.close();
+      return service.get('caller', runId);
+    } finally { journal.close(); }
+  };
+
+  try {
+    fatalVisible = false;
+    expect((await runFixture('assert-step')).step).toBe('verify-member');
+    fatalVisible = true;
+    const fatal = await runFixture('fatal-step');
+    expect(fatal.step).toBe('verify-member');
+    expect(fatal.result).toMatchObject({ status: 'failure', failure: { stepId: 'verify-member', code: 'FIXTURE_FATAL' } });
+  } finally {
+    if (previous.operator === undefined) delete process.env.MERIDIAN_TELLER_OPERATOR; else process.env.MERIDIAN_TELLER_OPERATOR = previous.operator;
+    if (previous.password === undefined) delete process.env.MERIDIAN_TELLER_PASSWORD; else process.env.MERIDIAN_TELLER_PASSWORD = previous.password;
+    if (previous.branch === undefined) delete process.env.MERIDIAN_BRANCH; else process.env.MERIDIAN_BRANCH = previous.branch;
+  }
 });
 
 it('extracts typed rows and blocks unsolicited browser POSTs through the real surface', async () => {
