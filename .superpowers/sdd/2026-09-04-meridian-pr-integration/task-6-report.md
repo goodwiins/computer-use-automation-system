@@ -30,4 +30,4 @@ The controller verified the protected primary and acceptance worktree dirty-file
 
 ## Remaining delivery gates
 
-Commit the reconciled local candidate, run the independent final documentation review, then publish it for exact-head hosted CI. PR #40 and the final post-merge `dev` SHA must remain pending until those results exist.
+The reconciled local candidate is committed. Run the independent final documentation review, then publish it for exact-head hosted CI. PR #40 and the final post-merge `dev` SHA must remain pending until those results exist.
