@@ -4,7 +4,7 @@
 
 import { chromium, type Browser, type Frame, type Locator, type Page } from 'playwright';
 import type { TargetDescriptor, TargetStrategy, RiskClass, TableColumn } from '../artifact/schema.js';
-import type { LiveControl, AppProfile, FaultScenario } from '../runtime/profile.js';
+import type { FrameContext, LiveControl, AppProfile, FaultScenario } from '../runtime/profile.js';
 import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
@@ -30,6 +30,9 @@ const explicitTimeout = (timeoutMs: number | undefined, deadline: number) => {
   return Math.max(1, timeoutMs);
 };
 
+const sameFrameContext = (left: FrameContext | undefined, right: FrameContext | undefined) => !!left && !!right
+  && left.id === right.id && left.name === right.name && left.url === right.url && left.navigation === right.navigation;
+
 /** Escape a value for use inside a double-quoted CSS attribute selector. */
 export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
@@ -40,6 +43,10 @@ export class BrowserSurface implements Surface {
   private submission?: { url: string; method: string; body: string };
   private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
+  private readonly frameIds = new WeakMap<Frame, string>();
+  private readonly frameNavigations = new WeakMap<Frame, number>();
+  private frameSequence = 0;
+  private lastFrameContext?: FrameContext;
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
@@ -56,6 +63,34 @@ export class BrowserSurface implements Surface {
       return parent ? this.frameInBounds(parent) : true;
     }
     return !this.opts.allowedOrigins || originAllowed(this.opts.allowedOrigins, url);
+  }
+
+  private trackFrame(frame: Frame): void {
+    if (!this.frameIds.has(frame)) this.frameIds.set(frame, `frame-${++this.frameSequence}`);
+    if (!this.frameNavigations.has(frame)) this.frameNavigations.set(frame, 0);
+  }
+
+  private bumpFrame(frame: Frame): void {
+    this.trackFrame(frame);
+    this.frameNavigations.set(frame, (this.frameNavigations.get(frame) ?? 0) + 1);
+  }
+
+  private frameContext(frame: Frame): FrameContext {
+    this.trackFrame(frame);
+    return {
+      id: this.frameIds.get(frame)!,
+      name: frame.name(),
+      url: frame.url(),
+      navigation: this.frameNavigations.get(frame)!,
+    };
+  }
+
+  private workingFrame(): Frame | undefined {
+    if (!this.page) return undefined;
+    const main = this.page.mainFrame();
+    const frames = this.page.frames().filter(frame => frame !== main);
+    const work = frames.find(frame => frame.name() === 'workarea') ?? frames[0];
+    return work && work.url() !== 'about:blank' ? work : main;
   }
 
   async start(entryUrl: string): Promise<void> {
@@ -80,6 +115,10 @@ export class BrowserSurface implements Surface {
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
+    this.trackFrame(this.page.mainFrame());
+    this.page.on('frameattached', frame => this.trackFrame(frame));
+    this.page.on('framenavigated', frame => this.bumpFrame(frame));
+    this.page.on('framedetached', frame => this.bumpFrame(frame));
     this.page.on('close', () => this.opts.onClose?.());
     if (this.opts.profile) await this.page.route('**/*', async route => {
       const request = route.request();
@@ -117,9 +156,17 @@ export class BrowserSurface implements Surface {
   currentUrl(): string {
     // In a frameset the top URL never changes; report the working frame's URL
     // when it is more specific.
-    const frames = this.page.frames().filter((f) => f !== this.page.mainFrame());
-    const work = frames.find((f) => f.name() === 'workarea') ?? frames[0];
+    const work = this.workingFrame();
     return work && work.url() !== 'about:blank' ? work.url() : this.page.url();
+  }
+
+  currentFrame(): FrameContext | undefined {
+    const frame = this.workingFrame();
+    return frame ? this.frameContext(frame) : undefined;
+  }
+
+  lastResolvedFrame(): FrameContext | undefined {
+    return this.lastFrameContext ? { ...this.lastFrameContext } : undefined;
   }
 
   frameUrls(): string[] {
@@ -328,28 +375,39 @@ export class BrowserSurface implements Surface {
 
   async prepareClick(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT) {
     const deadline = Date.now() + timeoutMs;
-    const { locator, report } = await this.resolve(target, timeoutMs);
+    const { locator, report, frame } = await this.resolve(target, timeoutMs);
     const handle = await locator.elementHandle({ timeout: timeoutRemaining(deadline) });
     if (!handle) throw new Error('Control disappeared');
     const args = { identity: this.identity, detectors: this.opts.profile?.detectors ?? [] };
+    const resolvedFrame = this.frameContext(frame);
     // Native form data stays private, including sign-on credentials and CSRF tokens.
     let approvedBody: string | undefined;
+    let inspectedFrame: FrameContext | undefined;
     return {
       inspect: async (inspectTimeoutMs?: number) => {
         explicitTimeout(inspectTimeoutMs, deadline);
+        const currentFrame = this.frameContext(frame);
+        if ((inspectedFrame === undefined && !sameFrameContext(currentFrame, resolvedFrame)) || (inspectedFrame && !sameFrameContext(currentFrame, inspectedFrame))) {
+          throw new Error('Control frame changed');
+        }
         const snapshot = await handle.evaluate(inspectControl, args);
         if (approvedBody !== undefined && approvedBody !== snapshot.body) throw new Error('Approval invalidated by changed form data');
         approvedBody = snapshot.body;
-        return snapshot.live;
+        inspectedFrame = currentFrame;
+        return { ...snapshot.live, frame: currentFrame };
       },
       dispatch: async (expected: LiveControl, dispatchTimeoutMs?: number) => {
         if (approvedBody === undefined) throw new Error('Control was not inspected');
         const actionTimeout = explicitTimeout(dispatchTimeoutMs, deadline);
+        const currentFrame = this.frameContext(frame);
+        if (!inspectedFrame || !sameFrameContext(currentFrame, inspectedFrame) || !sameFrameContext(currentFrame, expected.frame)) throw new Error('Control frame changed');
+        const expectedState = { ...expected };
+        delete expectedState.frame;
         if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
         try {
           await Promise.all([
-            this.page.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
-            handle.evaluate(inspectControl, { ...args, expected, body: approvedBody }),
+            frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
+            handle.evaluate(inspectControl, { ...args, expected: expectedState, body: approvedBody }),
           ]);
           await this.verifySignon();
           return report;
@@ -400,7 +458,7 @@ export class BrowserSurface implements Surface {
   private async resolve(
     target: TargetDescriptor,
     timeoutMs: number,
-  ): Promise<{ locator: Locator; report: ResolutionReport }> {
+  ): Promise<{ locator: Locator; report: ResolutionReport; frame: Frame }> {
     const deadline = Date.now() + timeoutMs;
     let attempts: Array<{ kind: string; matches: number }> = [];
     do {
@@ -419,7 +477,8 @@ export class BrowserSurface implements Surface {
           if (count === 1 || (count > 1 && target.nth !== undefined)) {
             if (Date.now() >= deadline) break;
             if (count > 1) locator = locator.nth(target.nth!);
-            return { locator, report: { strategyUsed: i, kind: strategy.kind, matches: count } };
+            this.lastFrameContext = this.frameContext(frame);
+            return { locator, report: { strategyUsed: i, kind: strategy.kind, matches: count }, frame };
           }
         }
       }
@@ -513,18 +572,61 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
   const body = document.body.innerText;
   const facts: Record<string, string> = {};
+  const addFact = (name: string, value: string) => {
+    if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
+    facts[name] = value;
+  };
+  const isRendered = (node: Element | null): node is Element => {
+    if (!node || node.getClientRects().length === 0) return false;
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const renderedText = (node: Element | null) => node ? (node as HTMLElement).innerText.trim() : '';
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
-        if (Object.hasOwn(facts, field.name)) throw new Error('Duplicate form fact');
-        facts[field.name] = field.value;
+        addFact(field.name, field.value);
       }
     }
-    for (const label of document.querySelectorAll('.box td.lbl')) {
-      facts[`review:${label.textContent?.trim()}`] = label.nextElementSibling?.textContent?.trim() ?? '';
+    const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
+    const ownLabels = (table: HTMLTableElement) => Array.from(table.querySelectorAll('tr'))
+      .filter(row => row.closest('table') === table && isRendered(row))
+      .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl') && isRendered(cell) && isRendered(cell.nextElementSibling)));
+    const tables = Array.from(new Set([
+      ...Array.from(form!.querySelectorAll('table')),
+      ...(form!.closest('table') ? [form!.closest('table')!] : []),
+    ])) as HTMLTableElement[];
+    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
+      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
+    let reviewTable: HTMLTableElement | null;
+    let reviewLabels: Element[];
+    if (transferReview) {
+      const candidates = tables.map(table => ({ table, labels: ownLabels(table) }))
+        .filter(candidate => isRendered(candidate.table))
+        .filter(candidate => candidate.labels.some(label => transferLabels.has(renderedText(label))));
+      const complete = candidates.filter(candidate => {
+        const labels = candidate.labels.map(renderedText);
+        return transferLabels.size === new Set(labels.filter(label => transferLabels.has(label))).size
+          && transferLabels.size === labels.filter(label => transferLabels.has(label)).length;
+      });
+      if (candidates.length === 1) {
+        const labels = candidates[0]!.labels.map(renderedText).filter(label => transferLabels.has(label));
+        if (new Set(labels).size !== labels.length) throw new Error('Duplicate form fact');
+      }
+      if (candidates.length !== 1 || complete.length !== 1) throw new Error('Transfer review facts are missing or ambiguous');
+      reviewTable = complete[0]!.table;
+      reviewLabels = complete[0]!.labels;
+    } else {
+      const nestedReviewTable = tables.find(table => table.querySelector('td.lbl'));
+      reviewTable = nestedReviewTable ?? form!.closest('table');
+      while (reviewTable && !reviewTable.querySelector('td.lbl')) reviewTable = reviewTable.parentElement?.closest('table') ?? null;
+      reviewLabels = Array.from(reviewTable?.querySelectorAll('td.lbl') ?? []);
+    }
+    for (const label of reviewLabels) {
+      addFact(`review:${renderedText(label)}`, renderedText(label.nextElementSibling));
     }
     const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
-    if (member) facts.member = member;
+    if (member) addFact('member', member);
   }
   const tokens = form?.querySelectorAll('input[type=hidden][name="_token"]');
   const tokenPresent = tokens?.length === 1 && !!(tokens[0] as HTMLInputElement).value;

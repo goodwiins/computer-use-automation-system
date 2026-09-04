@@ -10,6 +10,8 @@
 
 **Spec:** [MERIDIAN CORE adaptation — replacement plan](2026-09-03-meridian-adaptation.md). Read it alongside this document. Its requirements remain authoritative; this document replaces its outdated implementation sequence and production-branch starting point.
 
+**Execution status:** Resumed by the user on September 4, 2026, with a separate PR against `dev` for each major task. Tasks 5a–5b are delivered for review in [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39), using isolated branch `codex/meridian-transfer-runtime` from `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`. Preserve the earlier acceptance worktree and its draft artifact. Each live posting still requires its own approval on current facts; implementation authorization does not reuse an earlier posting decision.
+
 ## Global Constraints
 
 - “All seven required functions must work, including approved posting.”
@@ -25,6 +27,7 @@
 - “Evidence protection is required before live recording.”
 - “An unfinished function or failed safety gate remains explicitly incomplete; it is not replaced by a mock and counted as delivered.”
 - User branch rule: all new PRs target `dev`. `master` is the actual production branch in this repository; the user calls it main. Do not rewrite or deploy production.
+- User delivery rule: each major task gets its own PR against `dev`, including its relevant tests and documentation. Do not combine the remaining implementation into one delivery PR; use the boundaries below.
 - Preserve the dirty primary checkout. Use an isolated worktree and a `codex/` branch from `origin/dev`.
 - Each posting requires a separate human decision on current live facts. Artifact promotion is not transaction approval. Do not synthesize approvals in a terminal or dashboard.
 
@@ -44,23 +47,26 @@ These are inspected historical snapshots, not authorization to merge. Refresh re
 
 Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`) on `def4b38a2f906f725813f5c89563f3fe82e31140`, and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the resulting trees are equal. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
 
+The acceptance worktree delivered [PR #37](https://github.com/goodwiins/computer-use-automation-system/pull/37) at `745ef645ae48730e769e6fc639ec4f71739d23e8`; it is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`, with passing hosted CI. [PR #38](https://github.com/goodwiins/computer-use-automation-system/pull/38) previously merged at `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`. [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39) was reviewed at `b093b6503a39339399f57c2d59a3d5f5b417c18d`; its transfer runtime is being reconciled onto the merged read baseline with the operation-binding blocker fixed. The transfer draft, catalog-test edit and local evidence remain outside this runtime branch; preserve them for later artifact work.
+
 ### Current repair and integration status
 
 - Task 1 — complete: reviewed PR #34 repairs were integrated into `dev` at `4252cb7`; both the reviewed PR head and the resulting dev SHA passed their respective hosted CI checks above.
 - Task 2 — complete: CLI journal/resource and terminal-outcome repairs landed through `9a3e24d` after the scoped review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
 - Task 3 — complete: click-budget and trusted-step-reporting repairs landed through `47537d2` after the final deadline review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
-- Task 4 — complete for the read baseline: the three approved artifact checks and fresh sign-on, member-inquiry and member-record reads passed their recorded evaluator checks; the separate unsubmitted-form inspection recorded native POST destinations, controls and hidden-token presence. Chosen write review transitions and final posting facts remain open.
+- Task 4 — complete for the read baseline: the three approved artifact checks and fresh sign-on, member-inquiry and member-record reads passed their recorded evaluator checks; the separate unsubmitted-form inspection recorded native POST destinations, controls and hidden-token presence. Task 5 later observed and posted one chosen transfer; the other write review transitions and final posting facts remain open.
+- Task 5 — partial: discovery `a06406ce-c425-4cfb-bb61-4e23b73f8845` succeeded at source `745ef645ae48730e769e6fc639ec4f71739d23e8`, with one human-approved posting, evaluator pass and independent resulting-state verification. Its genuine 22-step artifact remains `draft`: the runtime protections for its four Important findings are independently reviewed in PR #39, while artifact-specific closure still requires a new complete recording. No transfer replay occurred; fully accepted capability coverage remains `3/7`.
 - Task 9a — complete for deterministic/offline acceptance at `541d776f85d94097bc1e63fa7966de69da5947de`: the reviewed dispatch, browser-closure, authority, identity, evidence and typed-output checks passed. This does not establish live target, posting, dashboard or hosted final-head acceptance.
 - Task 9b — complete for the scoped documentation and sanitized metadata backup at `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`; its source-specific local and hosted checks passed. This did not change runtime behavior or establish a live write.
 - Task 9c — complete for the scoped real dashboard read, reload, evidence, role and keyboard checks. The accepted run `288d7cae-c486-4f08-b810-c1e4aa1d4afe` and independent post-restart projection preserve the `3/7` boundary, historical redaction and unknown state. The missing elapsed-time display was assigned to Task 9d.
-- Task 9d — complete for the scoped shared elapsed-time renderer, focused browser assertion and current read documentation alignment on this branch. The new head awaits independent controller review and hosted checks; this does not close the write or whole-Task-9 gates.
-- Tasks 5–8 and the remaining live portions of Task 9 remain pending: new write discoveries/replays, separate current-fact approvals, result verification, operation-specific unhappy paths, integrated dashboard/chat rehearsal, same-browser repair, approval/handoff keyboard operation and final delivery gates are not inferred from the read or offline evidence.
+- Task 9d — complete for the scoped shared elapsed-time renderer, focused browser assertion and current read documentation alignment at `745ef645ae48730e769e6fc639ec4f71739d23e8`. Independent review and hosted checks passed; this does not close the local transfer draft, write or whole-Task-9 gates.
+- Task 5 runtime integration, new recording/promotion/replay, Tasks 6–8 and the remaining live portions of Task 9 remain pending: the successful first transfer does not establish a reusable verified write artifact, separate replay, the other write capabilities, operation-specific unhappy paths, integrated dashboard/chat rehearsal, same-browser repair, approval/handoff keyboard operation or final delivery.
 - Controller ordering ruling: Task 9a, Task 9b, Task 9c and Task 9d may proceed while Tasks 5–8 await fresh live choices and approvals; a read or artifact promotion does not authorize a write, and the historical `222ebecd-ca02-4960-a875-c2f2f76e0927` operation remains `POST_OUTCOME_UNKNOWN`.
 
 Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/34), [PR #35](https://github.com/goodwiins/computer-use-automation-system/pull/35), and their `docs/meridian/live-evidence.md`. Existing evidence reports:
 
 - Sign-on, member inquiry, and member record have real discovery and deterministic replay evidence. Preserve that provenance. Refresh a read before each new live session.
-- Four write artifacts and approved replays remain incomplete.
+- One genuine funds-transfer draft exists locally but is blocked on the four findings below; three other write artifacts remain incomplete. All four write replay gates remain open.
 - Open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` is terminal `POST_OUTCOME_UNKNOWN`. A model completion message did not establish success; compilation failed after dispatch. Never repeat this request, delete its journal record, or reconstruct its missing provenance.
 - Six injected-error probes are read-only probes; they do not prove complete write replay or successful recovery.
 - Dashboard/chat previously invoked a read but ended in `SESSION_EXPIRED`; a later caller chat/API/runtime read at `541d776f85d94097bc1e63fa7966de69da5947de` (`ff5fda32-db07-443f-930d-db2d65461dc0`) returned `202` and success with evaluator pass, and an exact-key duplicate returned the same run ID. Task 9c separately recorded genuine dashboard UI read `288d7cae-c486-4f08-b810-c1e4aa1d4afe` at source `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`, including reload, role, evidence and accepted Refresh/Send keyboard checks. The successful integrated write rehearsal and same-browser repair remain open.
@@ -68,7 +74,7 @@ Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/3
 
 ## Task map and file ownership
 
-This is a completion plan for one demo, with separately reviewable deliverables. Execute in dependency order. Each task can produce a separate PR against `dev` after its prerequisites land; do not start parallel live browser runs.
+This is a completion plan for one demo, with separately reviewable deliverables. Execute in dependency order: 5a → 5b → 5c → 5d → 6 → 7 → 8 → remaining 9. Each major deliverable must have a separate PR against `dev` after its prerequisites land; do not start parallel live browser runs. Tasks 1–3 below are retained historical instructions, already complete as recorded above; their old unchecked boxes are not a request to retarget or reimplement merged work.
 
 | Task | Owned files / responsibility | Dependency |
 | --- | --- | --- |
@@ -76,13 +82,30 @@ This is a completion plan for one demo, with separately reviewable deliverables.
 | 2 | `cli.ts`, `src/runtime/journal.ts`, `test/meridian-cli.test.ts` — CLI journal lifetime and safe terminal failures | Current #34/#35 candidate; resolve during 1 |
 | 3 | `src/surface/{types,browser,guarded}.ts`, `src/replay/executor.ts`, `src/server/service.ts`, `test/{meridian,guarded}.test.ts` — unresolved review checks | Current #34/#35 candidate; resolve during 1 |
 | 4 | `test/meridian-artifacts.test.ts`, `docs/meridian/live-evidence.md` — artifact acceptance check and live readiness | 2, 3 |
-| 5 | `artifacts/meridian-funds-transfer.v1.0.0.json`, its evidence directory | 4 |
-| 6 | `artifacts/meridian-open-share.v1.0.0.json`, its evidence directory | 4; separate explicit new operation |
-| 7 | `artifacts/meridian-update-member.v1.0.0.json`, its evidence directory | 4 |
-| 8 | `artifacts/meridian-place-hold.v1.0.0.json`, its evidence directory | 4; supervisor operator |
+| 5 | Shared transfer validation and its focused regressions; transfer draft, catalog test and evidence, as detailed in 5a–5d | 4; resumed in a separate runtime PR |
+| 6 | `artifacts/meridian-open-share.v1.0.0.json`, its evidence directory | 5d; separate explicit new operation |
+| 7 | `artifacts/meridian-update-member.v1.0.0.json`, its evidence directory | 6; apply the same bound-fact review gates |
+| 8 | `artifacts/meridian-place-hold.v1.0.0.json`, its evidence directory | 7; supervisor operator |
 | 9 | `test/meridian.test.ts`, `docs/meridian/{live-evidence,runbook,report,evaluation}.md`, sanitized evidence, `README.md`, `docs/README.md` — acceptance and delivery | 5–8 |
 
-Profile or contract corrections discovered in Tasks 5–8 belong in `config/app-profiles/meridian.json` or `src/runtime/contracts.ts` with a focused regression in `test/meridian.test.ts`. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone.
+Profile and contract corrections reuse `config/app-profiles/meridian.json`, `src/runtime/contracts.ts` and the existing shared execution paths identified in Task 5, with focused regressions in existing tests. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone. Permission to consider assistant-ui is not part of this transfer repair's scope.
+
+### Required PR boundaries
+
+These are planned deliverables, not existing GitHub PR numbers. Keep PR #37 scoped to its existing timing/read-acceptance changes.
+
+| Separate PR | Plan tasks | Included work / completion gate |
+| --- | --- | --- |
+| Transfer runtime validation | 5a–5b | Observed field mapping, shared eligibility/review/output/header checks and focused regressions; independent review and passing local/hosted code checks |
+| Funds-transfer artifact and acceptance | 5c–5d | Genuine recording/provenance, reviewed promotion, separately approved replay, catalog gate and sanitized evidence; requires the runtime PR in `dev` |
+| Open-share capability | 6 | Its artifact, required scoped runtime fixes/tests, separate discovery/replay approvals and verified result evidence |
+| Member-update capability | 7 | Its artifact, required scoped runtime fixes/tests and verified persistence evidence |
+| Account-hold capability | 8 | Its artifact, required scoped runtime fixes/tests, teller-denial and supervisor-success evidence |
+| Remaining integrated acceptance and delivery | Remaining 9 | Missing exception/integration regressions, rehearsal evidence and final runbook/report/setup updates; reuse accepted capability evidence |
+
+Use a separate isolated `codex/` branch from updated `origin/dev` for each PR. Include only that deliverable's changes. Keep the current draft and pending transfer catalog-test entry in the artifact work, outside the runtime PR; preserve them without weakening the approved-status gate. The runtime PR must pass its own complete checks from its isolated checkout. A blocked artifact may stay in a draft PR with the failed/incomplete gate stated explicitly; it is not ready to merge.
+
+Before each PR is ready for review, run its focused regressions, `npm run ci`, `npm run validate` and `git diff --check`; inspect hosted checks on that exact head. Describe the behavior, validation and unresolved limitations. Review and integrate in dependency order, verify the resulting `dev` SHA and CI separately, and do not bundle later tasks into an earlier PR. Creating a PR is not permission to merge or post a live transaction. The final acceptance PR contains only the remaining Task 9 changes, not copies of already delivered capability work.
 
 ## Task 1: Integrate the existing work through dev
 
@@ -291,7 +314,7 @@ Stop `cu serve` before any CLI discovery/replay. Use an interactive terminal for
 - [x] Run the supplied fresh sign-on preflight at source `7abda4c326260d917795fe75320af99a7233bc6d` (`ad12819b-f07a-41ff-9710-bedff1afe1a5`, `TELLER`, evaluator pass) without repeating it, then run fresh member inquiry `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` and member record `e4850bd4-6c63-42c9-8719-aaefef1c74e4` reads at source `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Both reads succeeded with evaluator pass, 10 attempts, 0 mutation intents, and no violations or incomplete checks.
 - [x] Inspect the sanitized read transitions: sign-on operator/password/branch fields and POST, inquiry by/q fields and GET Search, and record GET Select plus shares-table extraction. No write form was submitted, and no review transition or posting control was clicked; write-route token/role checks and concrete eligible-share choices remain incomplete gates. The historical unknown operation stayed terminal `POST_OUTCOME_UNKNOWN` and was not retried.
 - [x] Record the controller's separate manual read-only inspection of unsubmitted write forms: transfer, new-share, contact-update and hold native POST destinations, controls and hidden token presence are documented in [live evidence](../meridian/live-evidence.md). The teller hold page warning is not a demonstrated server or guarded denial.
-- [ ] Inspect each chosen write's review transition and final posting control with fresh facts and its separate approval. The controller inspection did not click `Continue`, `Save Changes`, `Apply Hold` or any final posting control; no write artifact, approval or posting is established.
+- [ ] Finish each chosen write's review transition and final posting inspection with fresh facts and its separate approval. The original controller inspection was unsubmitted; Task 5 subsequently established one approved transfer posting. That later result does not close the other three write inspections or the transfer's promotion findings.
 - [x] Commit the artifact check and sanitized readiness note after the final integrated gates. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
 
 ## Live-operation rules for Tasks 5–8
@@ -299,6 +322,10 @@ Stop `cu serve` before any CLI discovery/replay. Use an interactive terminal for
 For every task, discovery and replay are **two separately requested operations**, each with new live facts and separate approval. Choose fresh keys only for genuinely new operations; retries of one invocation reuse its key. Save each key locally before dispatch. Never auto-repeat any run after dispatch intent or `POST_OUTCOME_UNKNOWN`.
 
 After recording, inspect the complete draft: explicit operator/password/branch references, stable select values, meaningful assertions, extract-backed outputs, effective irreversible post risk and sensitive metadata. Confirm its real discovery run ID. Promote with `cu replay --artifact <the recorded artifact path> --approve` only after that review. Promotion returns without submitting a transaction.
+
+Apply Task 5's semantic review to every remaining write: bind the selected member and eligible resource to exact current rows, compare the actual reviewed/filled facts with the bound request, verify operation-specific output values, and exclude headers according to the observed table structure. A page heading, any visible `OPEN`, a nonempty output or a safety-evaluator pass alone closes none of these gates. Keep assertions/locators supported by the runtime; parameter values must not be interpolated into CSS.
+
+Preserve the original recording and run history. Runtime validation added after discovery is new runtime behavior, not a recorded checkpoint from the older run. A changed recorded step sequence requires a new complete discovery with its own provenance. If that requires posting, the operator must choose and separately approve a genuinely new operation; never repeat a completed or unknown operation to repair its artifact.
 
 The commands below assume Task 4's wrapper and selected variables. A declaration such as `TRANSFER_DISCOVERY_KEY` means a locally saved request identity, not a secret and not permission to retry by changing it. Do not paste real credentials or raw member data into GitHub.
 
@@ -310,35 +337,123 @@ node --env-file=.env --import tsx scripts/evaluate-run.ts "$EVIDENCE_DIR" "$RUN_
 
 Set `RUN_ID` from that command's actual output and `EVIDENCE_DIR` to the configured run root, not its `journal` subdirectory. Success requires safety pass **and** the expected business result. Preserve a failing or unknown result faithfully. Copy only inspected sanitized evidence into `docs/meridian/evidence/`; never copy the private journal, `.env`, cookies or full raw output.
 
-## Task 5: Record and verify funds transfer
+## Task 5: Clear the four transfer findings before promotion and replay
 
-**Files:** Create `artifacts/meridian-funds-transfer.v1.0.0.json`; modify `test/meridian-artifacts.test.ts`, `docs/meridian/live-evidence.md`; save sanitized evidence under `docs/meridian/evidence/funds-transfer/`.
+**Existing deliverable:** A genuine 22-step draft from discovery `a06406ce-c425-4cfb-bb61-4e23b73f8845` at source `745ef645ae48730e769e6fc639ec4f71739d23e8`. Frozen draft SHA256: `65a54c76307356d1bedaf0ab228c0ace8eae4000d09b28c6b102d70741e026e4`. Independent review found four Important issues and no Critical issue. Schema, server references, sensitive metadata, irreversible post classification and supplied run/hash alignment passed that review; they do not clear the four semantic findings.
 
-**Interfaces:** Public inputs `{member, sourceShare, destinationShare, amount, memo}`; outputs `confirmation` and typed `transaction` rows. Reuse the existing named contract. The posting requires teller authority and operator approval.
+**Interfaces:** Preserve public inputs `{member, sourceShare, destinationShare, amount, memo}` and outputs `confirmation` plus typed `transaction` rows. Reuse `moneyCents`, `Surface.readTable`, `LiveControl.facts`, `GuardedSurface.click`, `createRuntime`, `runReplay`, discovery's extract-backed outputs and `applyMeridianContract`. Current `Assertion` supports only `urlMatches` and `textVisible`; do not write a plan or artifact as if a structured row assertion already exists.
 
-- [ ] Add `'meridian-funds-transfer'` to the artifact check's `ids`. Run `npx vitest run test/meridian-artifacts.test.ts -t meridian-funds-transfer`; expected missing-artifact failure.
-- [ ] Confirm source balance and status, distinct eligible destination, amount `0.01`, and memo `Demo` with the operator. Record current balances privately for verification, using integer cents.
-- [ ] Start real discovery with a saved new-operation key:
+### Completed evidence — retain without repeating the operation
 
-```sh
-cu discover --profile meridian --name meridian-funds-transfer \
-  --goal 'Sign on with explicit operator/password/branch references. Transfer amount between the exact sourceShare and destinationShare for member with memo. Select share values, inspect review, request posting approval, then assert completion and extract confirmation and a transaction table verifying the posted details.' \
-  --param member="$MEMBER" --param sourceShare="$SOURCE_SHARE" \
-  --param destinationShare="$DESTINATION_SHARE" --param amount=0.01 --param memo=Demo \
-  --sensitive member --sensitive sourceShare --sensitive destinationShare \
-  --sensitive amount --sensitive memo --idempotency-key "$TRANSFER_DISCOVERY_KEY"
+- [x] Funds-transfer ID added to the local artifact catalog test. Its approved-status gate remains deliberately RED while this artifact is `draft`; do not weaken it or claim final CI passes with the local draft.
+- [x] One separately approved discovery posting completed successfully: evaluator pass, 18 attempts, one mutation intent, zero risk disagreements, no violations or incomplete checks. Independent private before/after reads established that the selected source/destination effects matched the approved amount. These reads verify that operation, not reusable artifact semantics.
+- [x] Preserve the earlier terminal, unposted attempts `26d911f0-cfd6-41db-959d-5b05c1aabcea` and `19603104-aac5-4e87-8cc5-1c6470fde11d`, each with zero mutation intents. Preserve the successful run and its original draft; do not backfill checkpoints into any run. No promotion or replay is complete.
+
+### Four mandatory acceptance gates
+
+| Finding / draft steps | Required behavior | Smallest meaningful negative check |
+| --- | --- | --- |
+| 1. Unbound member/share eligibility (`s9`–`s11`, after generic Select) | Exact selected member route; exactly one row for each requested share; distinct IDs; each selected row `OPEN`; valid source funds covering the requested amount using integer cents | Wrong member, duplicate/missing row, source equals destination, selected closed row with an unrelated `OPEN` row, malformed/insufficient balance: no posting approval or mutation intent |
+| 2. Heading-only review (`s18`, before `s19`) | Native request facts and visible review facts each match member, source, destination, amount and memo; missing/duplicate/conflicting facts fail closed; approval remains a separate decision and facts are rechecked immediately before dispatch | Change each fact independently, including after approval: no dispatch; an unchanged confirmation heading must not make the test pass |
+| 3. Unbound completion/output values (`s20`–`s22`) | Extracted confirmation and transaction details belong to this operation and match all five inputs; outputs are produced by observed extraction and verified before success | Empty confirmation, missing/duplicate detail, stale/unrelated details, wrong member/share/amount/memo or model-only `done.outputs`: no success; after intent, preserve `POST_OUTCOME_UNKNOWN`, never retry |
+| 4. Possible legacy `td` header in data (`s22`) | Verify the exact table's shape; return only data rows while retaining the first real row of a headerless table | A `td` header cannot satisfy `minRows` or appear as a transaction; headerless first data row cannot be silently discarded |
+
+### Task 5a: Establish the observed field and table mapping
+
+**Files:** Frozen artifact and private discovery evidence, `src/surface/browser.ts`, `src/runtime/profile.ts`, approved member-record extraction and the sanitized mapping in `docs/meridian/live-evidence.md`.
+
+- [x] Verified the frozen hash and source; preserved the dirty acceptance artifact, test and evidence edits in their original worktree. Refreshed PR #37 and `dev` before creating the separate runtime branch. Refresh them again before artifact integration; do not overwrite concurrent work.
+- [x] Mapped the observed member route, share ID/status/balance columns, native inputs, visible review labels/formats and confirmation label/value adjacency. Runtime uses invariant structural selectors and exact TypeScript comparisons; parameter-dependent CSS remains rejected.
+- [x] Recorded the evidence boundary: transaction result labels, order, header shape and confirmation/detail relationship are unverified. General `td`-header guidance does not prove that table's shape. Task 5c must establish this mapping through genuine observations; never post merely to inspect a table.
+- [x] Used the verified member/input/review map for runtime comparisons and defined the typed output contract below without guessing physical result selectors. Task 5c requires a new complete recording; submitted parameters cannot stand in for extracted outputs.
+
+### Task 5b: Enforce the semantics in the shared runtime, offline first
+
+**Implementation checkpoint:** [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39) delivers the separate runtime change against `dev`. Source `082e4c74a299b3fb6b1237a2d2c7846c2f60a663` passed independent review with no remaining findings, 248 tests across 14 files, typecheck, artifact validation and diff checks. The PR records exact-head hosted CI. Review-driven fixes bind frame/navigation state, reject ambiguous or invisible review facts, preserve Continue and child-frame submission, and retain correct action-event identity. This completes the offline runtime work, not live result-layout verification or approval of the original draft.
+
+**Regression evidence:** The initial comparison regressions and later navigation, rendering and action-lifecycle repairs captured failing checks before their fixes. The first review-fix round did not capture a RED run; that limitation is retained rather than reconstructed. The final hidden-descendant regression failed before the fix and passed afterward.
+
+**Files:** Minimal changes within `src/runtime/contracts.ts`, `src/runtime/run.ts`, `src/surface/{browser,guarded}.ts`, `src/replay/executor.ts`, `src/agent/loop.ts` and its `cli.ts` call site. Use `test/meridian.test.ts` and, only for discovery/CLI completion wiring, `test/meridian-cli.test.ts`. Change `src/surface/types.ts` or `src/runtime/profile.ts` only for the concrete observed data passed across that existing boundary. No new runner, assertion language, dependency or generic validation framework.
+
+**Runtime additions:** Small pure comparisons in `src/runtime/contracts.ts`, with names/signatures below defined by this task. Map observed data into these inputs; never manufacture `actual` from `expected`:
+
+```ts
+import type { OutputValue } from '../artifact/schema.js';
+
+type TransferFacts = {
+  member: string; sourceShare: string; destinationShare: string;
+  amount: string; memo: string;
+};
+type TransferShare = { share: string; status: string; balance: string };
+function assertTransferEligibility(
+  expected: TransferFacts, actualMember: string, shares: TransferShare[],
+): void;
+function assertTransferFacts(expected: TransferFacts, actual: TransferFacts): void;
+function assertTransferOutputs(
+  expected: TransferFacts, outputs: Record<string, OutputValue>,
+): void;
 ```
 
-- [ ] Human inspects and approves the actual facts. Automation performs and records the post. Verify the source/destination effects and any confirmation on a fresh read. If completion or artifact compilation fails after intent, stop with unknown outcome and do not rerun discovery.
-- [ ] Review and promote the artifact:
+Export these comparison functions for the existing execution paths and tests. The first requires the exact member, distinct share IDs, one matching row per ID, both statuses `OPEN`, a positive amount and sufficient source funds via `moneyCents`. The second requires exact member/share/memo equality and equal validated positive monetary values in integer cents. The output comparator requires a nonempty extracted confirmation and exactly one typed `transaction` row with `member`, `sourceShare`, `destinationShare`, `amount`, `memo` and `confirmation` columns. Amount is a money column; the others are strings, with all columns sensitive. Compare the five facts using `assertTransferFacts` and require the row confirmation to equal the separately extracted confirmation. Reject missing/extra rows or columns. These are declared output names, not guessed target labels. `applyMeridianContract` must reject the old generic `{field,value}` declaration before promotion or execution; the genuine old draft therefore requires a new complete recording. Reject missing or duplicate observed fields before constructing `TransferFacts`; never coerce a blank value to zero or normalize unrelated strings until they match.
+
+- [x] Added behavioral regressions, with RED evidence and its one recorded limitation above. Use synthetic values in existing fixtures; include a control that passes and table-driven mutations for every gate above. The minimum pure comparison check is:
+
+```ts
+const request = {
+  member: '9001', sourceShare: '9001-A', destinationShare: '9001-B',
+  amount: '1.00', memo: 'fixture',
+};
+const rows = [
+  { share: '9001-A', status: 'OPEN', balance: '2.00' },
+  { share: '9001-B', status: 'OPEN', balance: '0.00' },
+];
+expect(() => assertTransferEligibility(request, '9001', rows)).not.toThrow();
+expect(() => assertTransferEligibility(request, '9001', [
+  { ...rows[0]!, status: 'CLOSED' }, rows[1]!,
+])).toThrow();
+expect(() => assertTransferEligibility({ ...request, destinationShare: request.sourceShare }, '9001', rows)).toThrow();
+expect(() => assertTransferFacts(request, { ...request, amount: '2.00' })).toThrow();
+```
+
+- [x] Wire the bound invocation parameters from `createRuntime` into the shared guarded path for discovery and replay. After the member-selection action (`s8` in the frozen draft), before leaving `/members/{{member}}`, reuse the observed member-record table target/columns through `Surface.readTable`, mapping `shareId` to the comparison's `share` field. Reject a wrong member or ambiguous row. Require this run's eligibility snapshot before entering transfer and before posting; preserve it only through that member's expected transfer/review transitions, and clear it on unrelated navigation, member change or terminal outcome. Skipping the member page or reusing another run's snapshot cannot bypass it. Keep private facts in memory. This is a current pre-transfer observation, not a promise of atomic balance reservation; the native target remains responsible for concurrent balance changes.
+- [x] In `GuardedSurface.click`, compare the observed native and visible review facts to the bound request before presenting approval, and repeat on the freshly inspected control before `beforeDispatch`. Parse the verified display formatting first: member ID with display name, share ID with parenthesized currency balance, currency-prefixed amount and exact memo. Require exact ID boundaries and valid monetary suffixes; a prefix match or arbitrary substring is insufficient. Reuse existing token, role, deadline, approval invalidation and native-body checks. Scope visible labels to the actual review table, rejecting duplicate/conflicting labels instead of silently overwriting them in `inspectControl`.
+- [x] Call `assertTransferOutputs` before `runReplay` emits success. Add the narrow optional `DiscoveryDeps.validateCompletion?: (outputs: Record<string, OutputValue>) => void` callback in `src/agent/loop.ts`, supplied for funds transfer by `cli.ts`; call it on actual accumulated extracts before `finish('success')`. A check only after `runDiscovery` returns is too late to prevent a false `discovery.finish` success event. Keep `done.outputs` ignored and `recordArtifact` provenance trace-only. Missing/mismatched details after intent must take the existing terminal unknown path with no retry, skip, repair or second post; the negative regression must also assert no success event.
+- [x] Keep generic `readTable` behavior unchanged. The stricter transfer contract rejects legacy field/value output, header/extra rows and invalid money, preventing a header from counting as a transaction. A new recording must supply observed invariant row/column selectors for its single typed transaction row and prove that the selected values are data. Preserve a headerless table's first real data; do not globally drop the first row or guess the old result table's header status. Column selectors execute as native CSS; record structural selectors supported by `querySelectorAll`, not Playwright-only text pseudo-selectors. The result layout remains a live artifact-review gate.
+- [x] Exercise the shared path with existing local browser fixtures: an unrelated `OPEN` row cannot rescue an ineligible selection; each review mismatch prevents the human gate/dispatch; a change after approval prevents dispatch; a bad result after one intent terminates unknown with exactly one dispatch. Run both discovery and replay completion wiring checks. Fixtures establish regression behavior only and are never live discovery evidence.
+
+```sh
+npx vitest run test/meridian.test.ts test/meridian-cli.test.ts
+npm run typecheck
+git diff --check
+```
+
+Expected: focused behavioral checks pass after the fixes. The catalog test still rejects the unapproved transfer draft. Do not replace these regressions with assertion counts or checks of contract literals written by the same constructor. Independent review covered all four runtime findings and the shared call paths; all reported findings are closed. Live artifact review remains separate.
+
+- [x] Delivered Tasks 5a–5b in the separate transfer-runtime PR #39 against `dev`, with the code, regression and independent review gates above. Confirm its final hosted checks before integration. Keep the pending artifact/catalog changes in their own worktree. Begin Task 5c on the resulting reviewed `dev` baseline after integration; no live posting is authorized by the runtime merge.
+
+### Task 5c: Resolve provenance, review the exact candidate, then promote
+
+**Files:** `artifacts/meridian-funds-transfer.v1.0.0.json`, `test/meridian-artifacts.test.ts`, `docs/meridian/live-evidence.md`, `docs/meridian/evidence/funds-transfer/`. Preserve the frozen original privately and maintain the same named public contract.
+
+- [ ] Require a new complete recording after runtime hardening because the typed transaction contract changes extraction semantics; do not reuse or promote the frozen field/value draft. This remains gated on an explicitly requested new operation, not automatic execution. Preserve the old successful discovery and label all new checks with their new source SHA; the old run did not execute them.
+- [ ] If required recorded steps/targets/row selectors change, or genuine observations are missing, require a new complete discovery. Preserve `a06406ce-c425-4cfb-bb61-4e23b73f8845` as the successful original; the replacement has its own run ID and source SHA. No manual JSON insertion or human-repair capture may masquerade as original discovery provenance.
+- [ ] Prepare any necessary replacement discovery only after the operator chooses a genuinely new operation and requests it. Use selected inputs rather than fixed amount/memo defaults, a separately saved discovery key, explicit `{{operator}}`, `{{password}}`, `{{branch}}` references, all four verified semantic gates and a separate human approval at the actual posting gate. If another posting is not wanted, leave the artifact blocked. Never reuse the previous consent or request key as permission for a new operation.
+- [ ] Freeze the final candidate hash and reviewed runtime SHA. Fresh review must close each numbered finding, verify the actual table structure, compare artifact steps to genuine provenance, confirm sensitive metadata and irreversible risk, and inspect the minimal regressions. Retain evaluator results and independent before/after business verification separately. No Critical or Important finding may remain at promotion.
+- [ ] Only after that review, promote and run the existing catalog gate:
 
 ```sh
 cu replay --artifact artifacts/meridian-funds-transfer.v1.0.0.json --approve
 npx vitest run test/meridian-artifacts.test.ts -t meridian-funds-transfer
 ```
 
-- [ ] Start the dashboard with `cu serve --profile meridian`. As caller, request a separately approved transfer through chat or direct invoke. Supply the selected current inputs and a saved `TRANSFER_REPLAY_KEY`. As operator, verify facts and approve. A fresh read must verify the second operation independently; do not mistake discovery's balance change for replay's result.
-- [ ] Evaluate both runs; record exact IDs, artifact version, source SHA, approval/result distinction, and sanitized verification summary. Commit this artifact/test/evidence as one deliverable: `feat: record verified MERIDIAN funds transfer`.
+Expected: promotion changes artifact approval status without posting; the unchanged approved-status gate now passes. Promotion remains distinct from approval to execute a transaction.
+
+### Task 5d: Separately approved replay and transfer acceptance
+
+- [ ] Stop CLI discovery before starting the existing server. Through real caller chat→API→operator dashboard, request an explicitly selected new transfer with current member/share/balance facts and its saved replay key. Require a separate human decision on the exact review facts, then verify that run's output correspondence and fresh resulting-state deltas. Do not reuse the discovery's balance change as replay evidence.
+- [ ] Repeat only the same API invocation/key to confirm the original replay run ID returns without another browser or mutation. Preserve any unknown outcome and investigate with a read; changing the key is a new operation, not a repair.
+- [ ] Evaluate the actual replay and whichever discovery produced the accepted artifact. Update the sanitized ledger with source SHA, artifact version/hash, original/superseding discovery distinction, replay ID, separate approvals, all four findings' closure evidence and resulting-state verification. Omit concrete member/share/contact/amount/balance/token/session values from tracked documentation.
+- [ ] Only then count funds transfer as accepted (`4/7` if the three reads remain valid). Deliver Tasks 5c–5d through the separate funds-transfer artifact/acceptance PR against `dev`, with its catalog, local and exact-head hosted checks. Tasks 6–8 each get their own PR in order; preserve their independent approvals and capability-specific result checks.
 
 ## Task 6: Record a new open-share operation
 
@@ -423,7 +538,7 @@ npx vitest run test/meridian-artifacts.test.ts -t meridian-place-hold
 
 ## Task 9: Finish unhappy paths, integrated rehearsal and delivery
 
-**Files:** Extend existing `test/meridian.test.ts` only for missing deterministic checks; repair the shared dashboard renderer in `src/server/public/app.js`; update `docs/meridian/live-evidence.md`, `docs/meridian/runbook.md`, `docs/meridian/report.md`, `docs/meridian/evaluation.md`, and the scoped sanitized evidence summary under `docs/meridian/evidence/`. The broader `README.md` and `docs/README.md` remain outside this narrow Task 9d update.
+**Files:** Extend existing `test/meridian.test.ts` only for missing deterministic checks; update `docs/meridian/{live-evidence,runbook,report,evaluation}.md`, inspected sanitized evidence and the final setup/demo links in `README.md` and `docs/README.md`. Task 9d's shared renderer repair in `src/server/public/app.js` is complete; do not repeat it or expand this work into a frontend rewrite.
 
 **Interfaces:** Existing HTTP endpoints and auth remain unchanged. `GET /runs/:id` exposes lifecycle/result; operator `/decision` resolves one intervention. `npm run eval` consumes local evidence and authenticated journal records without mutating them.
 
@@ -435,13 +550,13 @@ npx vitest run test/meridian.test.ts test/evidence-eval.test.ts test/meridian-ar
 
 This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947de`; the earlier 198-test run at `4ec9b93` is historical and not a current-head full-suite claim.
 
-- [x] Task 9a's reviewed deterministic matrix is covered by focused local regressions at `541d776f85d94097bc1e63fa7966de69da5947de`; its scope remains offline and does not satisfy the live operation rows below. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
+- [x] Task 9a's original deterministic matrix is covered by focused local regressions at `541d776f85d94097bc1e63fa7966de69da5947de`; its scope remains offline and does not satisfy the newly added transfer semantic row or live operation rows below. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
 
 - [x] Task 9b's scoped evidence ledger and sanitized read summary retain the source-specific `3/7` boundary, current caller API-only distinction, evaluator results and historical unknown state.
 
 - [x] Task 9c's real dashboard read and independent restart check recorded login, reload, caller/operator visibility, evidence view, accepted Refresh/Send keyboard effects, historical redaction, unchanged 26-run count and unchanged unknown envelope. The initial focus-derived flag remains insufficient on its own.
 
-- [x] Task 9d repairs the shared run-card elapsed display and adds a focused browser assertion for known elapsed time, true zero and missing historical timing. The local fixture is a display check, not another live rehearsal; the new head's independent review and hosted checks remain pending.
+- [x] Task 9d repairs the shared run-card elapsed display and adds a focused browser assertion for known elapsed time, true zero and missing historical timing. Independent review and hosted checks passed at `745ef645ae48730e769e6fc639ec4f71739d23e8`. The local fixture is a display check, not another live rehearsal or validation of the uncommitted transfer draft.
 
 | Boundary | Required observable check |
 | --- | --- |
@@ -453,6 +568,7 @@ This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947
 | Model asks to approve/select supervisor/read operator run | Rejected through caller-bound service; operator secrets absent from tool context |
 | Dynamic PII, short secrets, unknown pages, logger observer failure | Sanitized evidence or metadata-only warning; observer cannot affect dispatch |
 | Tables, money, select values, unsupported outputs | Typed decimal-string rows; stable IDs; model-only outputs refused |
+| Exact transfer eligibility, review facts, completion details, table headers — runtime reviewed; artifact pending | Task 5a–5c regression and review gates pass; no wrong member/share/amount/memo accepted; no header returned as transaction data |
 | Hostile message/HTML, unauthorized evidence path | Inert UI text; denied evidence access; no credential in URL/storage |
 
 - [ ] Exercise six per-request scenarios on the actual operation route using runbook `--inject`/`--fault-route`, with new test requests and operator-selected inputs. Do not loop live mutation commands blindly. Verify the target's actual response and run classification:
@@ -467,7 +583,7 @@ This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947
 | server | Explicit stop or known safe behavior; never retry a submitted mutation |
 | missing/stale hidden token | Fail closed or target rejection recorded; token value never persisted |
 
-- [ ] Rehearse a successful balance request and a separately authorized transfer through real chat→API→dashboard. Repeat the same API request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
+- [ ] After Task 5c promotion, use Task 5d's separately authorized transfer replay as the real chat→API→dashboard write rehearsal; retain the existing successful balance-read evidence. Do not post another transfer solely to duplicate this checkbox. Repeat that same replay request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
 - [x] Reauthenticate after reload and verify caller/operator visibility, read-only keyboard usability, status/result presentation, evidence view, elapsed time and historical `sensitiveValuesUnavailable` behavior after restart through the scoped Task 9c read and Task 9d local display check. Approval/handoff controls were not clicked; their keyboard operation, same-browser repair and integrated write rehearsal remain open.
 - [ ] Update the evidence ledger with capability/version, discovery ID, replay ID, source SHA, approval, actual verified state, safety evaluation, evidence path and any limitation. If one of those facts is absent, mark the gate incomplete. Remove outdated completion claims, not adverse evidence. Update the 1–2 page report and exact setup/discovery/replay/demo commands.
 - [ ] Run final repository gates and inspect hosted CI on the same final PR head:
@@ -479,7 +595,7 @@ git diff --check
 gh pr checks --required
 ```
 
-If no required checks are configured, inspect `gh pr view --json headRefOid,statusCheckRollup` and the producer jobs explicitly. A missing workflow is not a pass. Open the delivery PR against `dev`; after merge, verify the resulting dev SHA and its CI separately. No production deployment is included.
+If no required checks are configured, inspect `gh pr view --json headRefOid,statusCheckRollup` and the producer jobs explicitly. A missing workflow is not a pass. Open the separate remaining-acceptance PR against `dev`; the capability PRs must already have delivered their own work. After merge, verify the resulting dev SHA and its CI separately. No production deployment is included.
 
 ## Coverage and completion boundary
 
@@ -496,8 +612,8 @@ Done means seven reviewed artifacts with real discovery and separately approved 
 
 ## Plan self-review
 
-- Scope checked against every section of the replacement design; existing implementation is reused and four missing write capabilities retain explicit gates.
-- Paths/signatures checked against #35 at `338734d`; new helper/test paths are labelled as additions. Rebase drift requires refreshing these checks.
+- Scope checked against the replacement design; existing implementation is reused. One successful transfer discovery remains blocked on four promotion findings, three write recordings remain incomplete, and all four write replay gates remain open.
+- Remaining transfer interfaces checked against `745ef645ae48730e769e6fc639ec4f71739d23e8`; Task 5b's additions are independently reviewed at `082e4c74a299b3fb6b1237a2d2c7846c2f60a663` on the separate runtime branch based on `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`; PR #39 records its final hosted checks. Future artifact work must use the reviewed integrated baseline.
 - No live selectors, post confirmations, resulting balances or new provenance were invented. Those are observation-dependent deliverables with explicit stop conditions.
 - The old production-based branching instruction is superseded by the user's `dev` rule.
-- No code implementation, live posting, branch retargeting or merge was performed while writing this plan.
+- Earlier planning revisions performed no code implementation or live posting. The resumed runtime implementation is scoped to Tasks 5a–5b; it performed no live posting, artifact promotion, replay or merge.

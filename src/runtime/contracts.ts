@@ -1,4 +1,117 @@
-import { Parameter, type CapabilityArtifact } from '../artifact/schema.js';
+import { moneyCents, Parameter, type CapabilityArtifact, type OutputValue, type TableColumn, type TargetDescriptor } from '../artifact/schema.js';
+
+export type TransferFacts = {
+  member: string; sourceShare: string; destinationShare: string;
+  amount: string; memo: string;
+};
+export type TransferShare = { share: string; status: string; balance: string };
+
+/** Observed in the approved member-record extraction; values are never interpolated into its selectors. */
+export const meridianTransferMemberTable: {
+  target: TargetDescriptor; columns: TableColumn[]; rowSelector: string;
+} = {
+  target: {
+    description: 'the observed member shares table',
+    strategies: [{ kind: 'css', selector: 'body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)' }],
+  },
+  columns: [
+    { name: 'shareId', selector: 'td:nth-of-type(1)', type: 'string', sensitive: true },
+    { name: 'type', selector: 'td:nth-of-type(2)', type: 'string', sensitive: true },
+    { name: 'balance', selector: 'td:nth-of-type(3)', type: 'money', sensitive: true },
+    { name: 'status', selector: 'td:nth-of-type(4)', type: 'string', sensitive: true },
+  ],
+  rowSelector: 'tr:not(:first-child)',
+};
+
+export function transferFactsFromParams(params: Record<string, string | number>): TransferFacts | undefined {
+  const names = ['member', 'sourceShare', 'destinationShare', 'amount', 'memo'] as const;
+  if (!names.every(name => typeof params[name] === 'string')) return undefined;
+  return Object.fromEntries(names.map(name => [name, params[name]!])) as TransferFacts;
+}
+
+const transferCheckFailed = (): never => { throw new Error('Transfer facts failed validation'); };
+
+function positiveCents(value: string): number {
+  try {
+    const cents = moneyCents(value);
+    if (cents <= 0) return transferCheckFailed();
+    return cents;
+  } catch {
+    return transferCheckFailed();
+  }
+}
+
+export function assertTransferEligibility(expected: TransferFacts, actualMember: string, shares: TransferShare[]): void {
+  if (!expected.member || !expected.sourceShare || !expected.destinationShare || actualMember !== expected.member || expected.sourceShare === expected.destinationShare) return transferCheckFailed();
+  const amount = positiveCents(expected.amount);
+  const seen = new Set<string>();
+  for (const row of shares) {
+    if (!row.share || seen.has(row.share)) return transferCheckFailed();
+    seen.add(row.share);
+  }
+  const selected = [expected.sourceShare, expected.destinationShare].map(share => {
+    const matches = shares.filter(row => row.share === share);
+    if (matches.length !== 1) return transferCheckFailed();
+    return matches[0]!;
+  });
+  if (selected.some(row => row.status !== 'OPEN')) return transferCheckFailed();
+  let sourceBalance: number;
+  try {
+    sourceBalance = moneyCents(selected[0]!.balance);
+    moneyCents(selected[1]!.balance);
+  } catch { return transferCheckFailed(); }
+  if (sourceBalance < amount) return transferCheckFailed();
+}
+
+export function assertTransferFacts(expected: TransferFacts, actual: TransferFacts): void {
+  if (!expected.member || !expected.sourceShare || !expected.destinationShare || expected.sourceShare === expected.destinationShare || expected.member !== actual.member || expected.sourceShare !== actual.sourceShare || expected.destinationShare !== actual.destinationShare || expected.memo !== actual.memo) return transferCheckFailed();
+  const expectedAmount = positiveCents(expected.amount);
+  const actualAmount = positiveCents(actual.amount);
+  if (expectedAmount !== actualAmount) return transferCheckFailed();
+}
+
+export function assertTransferOutputs(expected: TransferFacts, outputs: Record<string, OutputValue>): void {
+  if (Object.keys(outputs).length !== 2 || !Object.hasOwn(outputs, 'confirmation') || !Object.hasOwn(outputs, 'transaction')) return transferCheckFailed();
+  if (!Object.hasOwn(outputs, 'confirmation') || typeof outputs.confirmation !== 'string' || !outputs.confirmation.trim()) return transferCheckFailed();
+  if (!Object.hasOwn(outputs, 'transaction') || !Array.isArray(outputs.transaction) || outputs.transaction.length !== 1) return transferCheckFailed();
+  const row = outputs.transaction[0]!;
+  const fields = ['member', 'sourceShare', 'destinationShare', 'amount', 'memo', 'confirmation'];
+  if (!row || typeof row !== 'object' || Object.keys(row).length !== fields.length || fields.some(field => !Object.hasOwn(row, field) || typeof row[field] !== 'string')) return transferCheckFailed();
+  if (row.confirmation !== outputs.confirmation) return transferCheckFailed();
+  assertTransferFacts(expected, {
+    member: row.member!,
+    sourceShare: row.sourceShare!,
+    destinationShare: row.destinationShare!,
+    amount: row.amount!,
+    memo: row.memo!,
+  });
+}
+
+const TRANSFER_TRANSACTION_COLUMNS = [
+  { name: 'member', type: 'string' },
+  { name: 'sourceShare', type: 'string' },
+  { name: 'destinationShare', type: 'string' },
+  { name: 'amount', type: 'money' },
+  { name: 'memo', type: 'string' },
+  { name: 'confirmation', type: 'string' },
+] as const;
+
+function hasCanonicalTransferColumns(columns: readonly TableColumn[] | undefined): boolean {
+  if (!columns || columns.length !== TRANSFER_TRANSACTION_COLUMNS.length || new Set(columns.map(column => column.name)).size !== columns.length) return false;
+  return TRANSFER_TRANSACTION_COLUMNS.every(expected => columns.some(column =>
+    column.name === expected.name && column.type === expected.type && column.sensitive === true));
+}
+
+function assertTransferOutputDeclaration(outputs: CapabilityArtifact['outputs']): void {
+  const confirmation = outputs.find(output => output.name === 'confirmation');
+  const transaction = outputs.find(output => output.name === 'transaction');
+  if (!confirmation || confirmation.type !== 'string' || confirmation.sensitive !== true || confirmation.columns?.length) {
+    throw new Error('Transfer confirmation output must be a sensitive string');
+  }
+  if (!transaction || transaction.type !== 'table' || transaction.sensitive !== true || (transaction.minRows !== undefined && transaction.minRows !== 1) || !hasCanonicalTransferColumns(transaction.columns)) {
+    throw new Error('Transfer transaction output must declare one canonical sensitive row');
+  }
+}
 
 const string = (name: string, description: string, extra = {}) => Parameter.parse({ name, type: 'string', description, sensitive: true, ...(name === 'member' ? { pattern: '^[0-9]{1,12}$' } : ['sourceShare', 'destinationShare', 'share'].includes(name) ? { pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' } : {}), ...extra });
 /** Contract names guide discovery; only recorded extracts may become outputs. */
@@ -33,8 +146,16 @@ export function applyMeridianContract(artifact: CapabilityArtifact): CapabilityA
   const names = new Set([...contract.parameters.map(p => p.name), 'operator', 'password', 'branch']);
   for (const match of JSON.stringify(artifact.steps).matchAll(/\{\{(\w+)\}\}/g)) if (!names.has(match[1]!)) throw new Error('Recording contains undeclared parameter references');
   if (artifact.outputs.some(o => !contract.outputs.includes(o.name))) throw new Error('Recording contains undeclared outputs');
+  if (artifact.id === 'meridian-funds-transfer') assertTransferOutputDeclaration(artifact.outputs);
   const outputs = artifact.outputs.map(o => ['members', 'shares', 'transaction'].includes(o.name) ? { ...o, type: 'table' as const, minRows: o.name === 'members' ? 0 : 1 } : o);
   if (outputs.some(o => o.type === 'table' && !o.columns?.length)) throw new Error('Structured table extraction is required');
+  if (artifact.id === 'meridian-funds-transfer') {
+    const confirmationExtracts = artifact.steps.filter(step => step.action === 'extract' && step.extract?.output === 'confirmation');
+    const transactionExtracts = artifact.steps.filter(step => step.action === 'extract' && step.extract?.output === 'transaction');
+    if (confirmationExtracts.length !== 1 || confirmationExtracts[0]!.extract?.columns || transactionExtracts.length !== 1 || !hasCanonicalTransferColumns(transactionExtracts[0]!.extract?.columns)) {
+      throw new Error('Transfer recording extracts must match the canonical output columns');
+    }
+  }
   return { ...artifact, schemaVersion: 2, outputs, parameters: [...contract.parameters,
     ...['operator', 'password', 'branch'].map(name => string(name, 'Runtime-bound operator context', { source: 'server' }))] };
 }

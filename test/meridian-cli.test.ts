@@ -274,3 +274,60 @@ it('keeps terminal journal cleanup when runtime close rejects', async () => {
     expect(`${run.stdout}\n${run.stderr}`).not.toContain(PRIVATE_FAILURE);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('supplies the canonical transfer completion validator to discovery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-discovery-'));
+  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
+  const previousExitCode = process.exitCode;
+  let validator: ((outputs: Record<string, unknown>) => void) | undefined;
+  process.exitCode = undefined;
+  Object.assign(process.env, {
+    OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir, JOURNAL_HMAC_KEY: JOURNAL_KEY,
+    MERIDIAN_TELLER_OPERATOR: 'teller-test', MERIDIAN_TELLER_PASSWORD: 'offline-test-only', MERIDIAN_BRANCH: 'MAIN-001',
+  });
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => ({ openai: {}, model: 'fixture' }) }));
+  vi.doMock('../src/runtime/run.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js');
+    return {
+      ...actual,
+      createRuntime: (options: Parameters<typeof actual.createRuntime>[0]) => {
+        const redactor = new Redactor();
+        return {
+          surface: { mutationDispatched: false }, browser: { page: {} as never },
+          logger: new RunLogger(options.kind, redactor, options.evidenceDir, true, options.runId), session: {} as never,
+          redactor, promptRedactor: redactor, deadline: Date.now() + 600_000, close: async () => {},
+        } as unknown as ReturnType<typeof actual.createRuntime>;
+      },
+    };
+  });
+  vi.doMock('../src/agent/loop.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js');
+    return {
+      ...actual,
+      runDiscovery: async (_goal: string, _entry: string, _params: Record<string, string | number>, _origins: string[], deps: Parameters<typeof actual.runDiscovery>[4]) => {
+        validator = deps.validateCompletion as unknown as ((outputs: Record<string, unknown>) => void) | undefined;
+        validator?.({ confirmation: 'CONF-123', transaction: [{ member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture', confirmation: 'CONF-123' }] });
+        return { status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/members/9001/transfer/post', stopReason: 'fixture' };
+      },
+    };
+  });
+  try {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { runCli } = await import('../cli.js');
+    await runCli(['discover', '--name', 'meridian-funds-transfer', '--goal', 'Transfer', '--profile', 'meridian', '--entry', 'https://web-sample.interface-hiring.com/signon', '--idempotency-key', 'cli-discovery-transfer', '--param', 'member=9001', '--param', 'sourceShare=9001-A', '--param', 'destinationShare=9001-B', '--param', 'amount=1.00', '--param', 'memo=fixture']);
+    expect(validator).toBeTypeOf('function');
+    expect(error).not.toHaveBeenCalledWith(expect.stringContaining('canonical'));
+    log.mockRestore(); error.mockRestore();
+  } finally {
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
+    for (const name of envKeys) {
+      const value = previousEnv.get(name);
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

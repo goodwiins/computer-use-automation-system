@@ -48,6 +48,7 @@ export interface DiscoveryDeps {
   boundParams?: Record<string, string>;
   sanitizeObservation?: (text: string) => string;
   escalate?: (req: InterventionRequest) => Promise<InterventionDecision>;
+  validateCompletion?: (outputs: Record<string, OutputValue>) => void;
 }
 
 const MAX_SNAPSHOT_CHARS = 4000;
@@ -253,6 +254,7 @@ export async function runDiscovery(
   return finish('stopped', `max steps (${deps.maxSteps}) reached`);
 
   function finish(status: DiscoveryResult['status'], stopReason?: string, summary?: string): DiscoveryResult {
+    if (status === 'success') deps.validateCompletion?.(outputs);
     const result: DiscoveryResult = {
       status,
       trace,
