@@ -581,6 +581,7 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     const style = getComputedStyle(node);
     return style.display !== 'none' && style.visibility !== 'hidden';
   };
+  const renderedText = (node: Element | null) => node ? (node as HTMLElement).innerText.trim() : '';
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
@@ -602,14 +603,14 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     if (transferReview) {
       const candidates = tables.map(table => ({ table, labels: ownLabels(table) }))
         .filter(candidate => isRendered(candidate.table))
-        .filter(candidate => candidate.labels.some(label => transferLabels.has((label.textContent ?? '').trim())));
+        .filter(candidate => candidate.labels.some(label => transferLabels.has(renderedText(label))));
       const complete = candidates.filter(candidate => {
-        const labels = candidate.labels.map(label => (label.textContent ?? '').trim());
+        const labels = candidate.labels.map(renderedText);
         return transferLabels.size === new Set(labels.filter(label => transferLabels.has(label))).size
           && transferLabels.size === labels.filter(label => transferLabels.has(label)).length;
       });
       if (candidates.length === 1) {
-        const labels = candidates[0]!.labels.map(label => (label.textContent ?? '').trim()).filter(label => transferLabels.has(label));
+        const labels = candidates[0]!.labels.map(renderedText).filter(label => transferLabels.has(label));
         if (new Set(labels).size !== labels.length) throw new Error('Duplicate form fact');
       }
       if (candidates.length !== 1 || complete.length !== 1) throw new Error('Transfer review facts are missing or ambiguous');
@@ -622,7 +623,7 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
       reviewLabels = Array.from(reviewTable?.querySelectorAll('td.lbl') ?? []);
     }
     for (const label of reviewLabels) {
-      addFact(`review:${label.textContent?.trim() ?? ''}`, label.nextElementSibling?.textContent?.trim() ?? '');
+      addFact(`review:${renderedText(label)}`, renderedText(label.nextElementSibling));
     }
     const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
     if (member) addFact('member', member);

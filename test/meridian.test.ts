@@ -987,16 +987,16 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 
 it('scopes transfer review facts to its form table and rejects duplicate labels', async () => {
   const app = express();
-  const review = (variant: 'duplicate' | 'nested' | 'hidden-table' | 'hidden-row' | 'clean' = 'clean') => {
+  const review = (variant: 'duplicate' | 'nested' | 'hidden-table' | 'hidden-row' | 'hidden-label-child' | 'hidden-value-child' | 'clean' = 'clean') => {
     const duplicate = variant === 'duplicate';
     const tableStyle = variant === 'hidden-table' ? ' style="display:none"' : '';
     const rowStyle = variant === 'hidden-row' ? ' style="display:none"' : '';
-    const row = (label: string, value: string) => `<tr${rowStyle}><td class="lbl">${label}</td><td>${value}</td></tr>`;
+    const row = (label: string, value: string) => `<tr${rowStyle}><td class="lbl">${variant === 'hidden-label-child' && label === 'Amount:' ? `<span style="display:none">${label}</span>` : label}</td><td>${variant === 'hidden-value-child' && label === 'Amount:' ? `<span style="display:none">${value}</span>` : value}</td></tr>`;
     const nested = variant === 'nested' ? '<tr><td colspan="2"><table id="nested-decoy"><tr><td class="lbl">Member:</td><td>9001 - Decoy</td></tr><tr><td class="lbl">From:</td><td>9001-A ($99.00)</td></tr><tr><td class="lbl">To:</td><td>9001-B ($0.00)</td></tr><tr><td class="lbl">Amount:</td><td>$99.00</td></tr><tr><td class="lbl">Memo:</td><td>decoy</td></tr></table></td></tr>' : '';
     const rows = [row('Member:', '9001 - Fixture Member'), row('From:', '9001-A ($2.00)'), row('To:', '9001-B ($0.00)'), row('Amount:', '$1.00'), row('Memo:', 'fixture')].join('');
     return `<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><table id="actual-review"${tableStyle}>${rows}${duplicate ? '<tr><td class="lbl">Memo:</td><td>conflicting</td></tr>' : ''}${nested}</table><input type="submit" value="Post Transfer"></form><table><tr><td class="lbl">Member:</td><td>unrelated</td></tr></table>`;
   };
-  app.get('/members/9001/transfer/review', (req, res) => res.send(review(req.query.duplicate === '1' ? 'duplicate' : req.query.nested === '1' ? 'nested' : req.query.hiddenTable === '1' ? 'hidden-table' : req.query.hiddenRow === '1' ? 'hidden-row' : 'clean')));
+  app.get('/members/9001/transfer/review', (req, res) => res.send(review(req.query.duplicate === '1' ? 'duplicate' : req.query.nested === '1' ? 'nested' : req.query.hiddenTable === '1' ? 'hidden-table' : req.query.hiddenRow === '1' ? 'hidden-row' : req.query.hiddenLabelChild === '1' ? 'hidden-label-child' : req.query.hiddenValueChild === '1' ? 'hidden-value-child' : 'clean')));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
@@ -1024,6 +1024,12 @@ it('scopes transfer review facts to its form table and rejects duplicate labels'
     await browser.navigate(`${localOrigin}/members/9001/transfer/review?hiddenRow=1`);
     const hiddenRow = await browser.prepareClick(post);
     await expect(hiddenRow.inspect()).rejects.toThrow(/ambiguous/);
+    await browser.navigate(`${localOrigin}/members/9001/transfer/review?hiddenLabelChild=1`);
+    const hiddenLabelChild = await browser.prepareClick(post);
+    await expect(hiddenLabelChild.inspect()).rejects.toThrow(/ambiguous/);
+    await browser.navigate(`${localOrigin}/members/9001/transfer/review?hiddenValueChild=1`);
+    const hiddenValueChild = await browser.prepareClick(post);
+    await expect(hiddenValueChild.inspect()).resolves.toMatchObject({ facts: { 'review:Amount:': '' } });
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
