@@ -6,25 +6,21 @@
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import OpenAI, { AzureOpenAI } from 'openai';
+import { makeLLMClient } from './src/agent/client.js';
+import { createRuntime, executeReplay, operatorContext } from './src/runtime/run.js';
+import { Journal } from './src/runtime/journal.js';
+import { loadProfile, profilePolicy, FaultScenario } from './src/runtime/profile.js';
+import { applyMeridianContract, meridianContracts } from './src/runtime/contracts.js';
+import { serve } from './src/server/http.js';
 import { runDiscovery } from './src/agent/loop.js';
 import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder.js';
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
 import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
-import { CapabilityArtifact, Detector } from './src/artifact/schema.js';
+import { CapabilityArtifact, Detector, normalizeParams } from './src/artifact/schema.js';
 import { OperatorConsole } from './src/escalation/operator.js';
-import { ControlSession } from './src/escalation/session.js';
-import { RunLogger } from './src/evidence/logger.js';
-import { loadPolicy } from './src/safety/policy.js';
-import { Redactor } from './src/safety/redact.js';
-import { runReplay } from './src/replay/executor.js';
 import { originAllowed } from './src/safety/policy.js';
-import { BrowserSurface } from './src/surface/browser.js';
-import { GuardedSurface, type HumanGate } from './src/surface/guarded.js';
 
 const ARTIFACT_DIR = 'artifacts';
-const APP_PROFILE = 'config/app-profiles/cu-nexus.json';
-const POLICY_PATH = process.env.POLICY_PATH ?? 'config/policy.json';
 
 function parseArgs(argv: string[]) {
   const flags: Record<string, string | boolean> = {};
@@ -52,71 +48,61 @@ function fatal(msg: string): never {
   process.exit(1);
 }
 
-/**
- * Discovery-model client. Azure OpenAI when AZURE_OPENAI_ENDPOINT is set,
- * plain OpenAI otherwise. Both speak the same chat-completions + tools API,
- * so the agent loop is provider-agnostic.
- */
-function makeLLMClient(): { openai: OpenAI; model: string } {
-  if (process.env.AZURE_OPENAI_ENDPOINT) {
-    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT ?? fatal('AZURE_OPENAI_DEPLOYMENT is not set');
-    if (!process.env.AZURE_OPENAI_API_KEY) fatal('AZURE_OPENAI_API_KEY is not set');
-    return {
-      openai: new AzureOpenAI({
-        endpoint: process.env.AZURE_OPENAI_ENDPOINT,
-        apiKey: process.env.AZURE_OPENAI_API_KEY,
-        apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? '2024-10-21',
-        deployment,
-      }),
-      model: deployment,
-    };
-  }
-  if (!process.env.OPENAI_API_KEY) {
-    fatal('No LLM credentials: set AZURE_OPENAI_ENDPOINT/_API_KEY/_DEPLOYMENT, or OPENAI_API_KEY');
-  }
-  return { openai: new OpenAI(), model: process.env.OPENAI_MODEL ?? 'gpt-5.6-luna' };
-}
-
 async function discover(argv: string[]) {
   const { flags, params, sensitive } = parseArgs(argv);
   const goal = typeof flags.goal === 'string' ? flags.goal : fatal('--goal is required');
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
   assertSafeCapabilityName(name); // becomes a filename under artifacts/
-  const entry = typeof flags.entry === 'string' ? flags.entry : 'http://localhost:4173/';
+  const profile = loadProfile(typeof flags.profile === 'string' ? flags.profile : 'cu-nexus');
+  const entry = typeof flags.entry === 'string' ? flags.entry : profile.entryUrl ?? 'http://localhost:4173/';
   const { openai, model } = makeLLMClient();
 
-  const policy = loadPolicy(POLICY_PATH);
-  const redactor = new Redactor();
-  redactor.addSensitiveValues(sensitive.map((k) => params[k]).filter((v): v is string => !!v));
-  const logger = new RunLogger('discovery', redactor);
+  const policy = profilePolicy(profile);
+  const meridian = profile.appId === 'meridian';
+  const operator = meridian ? operatorContext(flags.operator === 'SUPERVISOR' ? 'SUPERVISOR' : 'TELLER') : undefined;
+  const serverParams = operator ? ['operator', 'password', 'branch'] : [];
+  for (const key of serverParams) { if (key in params) fatal(`--param cannot override server parameter ${key}`); params[key] = `{{${key}}}`; }
+  if (operator) sensitive.push('password');
+  const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
+  const key = typeof flags['idempotency-key'] === 'string' ? flags['idempotency-key'] : '';
+  const request = { mode: 'discovery', name, goal, params, operator: operator && { operator: operator.operator, branch: operator.branch, role: operator.role } };
+  if (journal) {
+    const existing = journal.lookup('operator', key, request).existing;
+    if (existing) { console.log(`Existing discovery run: ${existing.runId} (${existing.state})`); journal.close(); return; }
+  }
+  const record = journal?.reserve('operator', key, name, '1.0.0', request);
+  const headful = meridian || !!flags.headful;
+  const runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, params, sensitive, operator, headful,
+    runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,
+    gate: async (action, risk, reason, context) => {
+      if (!headful) return false;
+      const decision = await new OperatorConsole(runtime.browser.page, runtime.logger, runtime.session).intervene({
+        kind: 'risk_approval', capability: name, goal, reason: context ? JSON.stringify(context) : reason, url: runtime.surface.currentUrl(),
+      });
+      return decision === 'retry';
+    }, beforeDispatch: () => journal!.update(record!.runId, 'dispatching'),
+  });
+  const { surface, browser, logger, session } = runtime;
+  if (record) journal!.update(record.runId, 'running');
   console.log(`discovery run ${logger.runId} → ${logger.dir}`);
-
-  const headful = !!flags.headful;
-  const browser = new BrowserSurface({ headful, allowedOrigins: policy.allowedOrigins });
-  const session = new ControlSession((t) => logger.log('control.transfer', t));
-  // During discovery risky actions are never auto-approved; the model is told
-  // to call escalate instead, which routes through the operator when headful.
-  const humanGate: HumanGate = async (action, risk, reason) => {
-    logger.log('policy.human_gate', { action, risk, reason, attended: headful, approved: false });
-    return false;
-  };
-  const surface = new GuardedSurface(browser, policy, humanGate, (e) => logger.log('policy.decision', e));
-
-  const result = await runDiscovery(goal, entry, params, policy.allowedOrigins, {
+  try {
+  const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord all login steps using server references. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. Never choose the first of ambiguous matches.` : goal;
+  const result = await runDiscovery(discoveryGoal, entry, params, policy.allowedOrigins, {
     surface,
     logger,
     openai,
     model,
     maxSteps: policy.maxSteps,
     timeoutMs: policy.maxDiscoveryMs,
+    boundParams: operator ? { operator: operator.operator, password: operator.password, branch: operator.branch } : undefined,
+    sanitizeObservation: text => runtime.redactor.redactString(text),
     escalate: headful
       ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
       : undefined,
   });
 
   if (result.status === 'success') {
-    const profile = JSON.parse(readFileSync(APP_PROFILE, 'utf8'));
-    const artifact = recordArtifact(
+    let artifact = recordArtifact(
       {
         name,
         description: goal,
@@ -124,6 +110,7 @@ async function discover(argv: string[]) {
         entryUrl: entry,
         params,
         sensitiveParams: sensitive,
+        serverParams,
         allowedOrigins: policy.allowedOrigins,
         appId: profile.appId,
         appDetectors: profile.detectors.map((d: unknown) => Detector.parse(d)),
@@ -132,19 +119,21 @@ async function discover(argv: string[]) {
       },
       result,
     );
+    if (meridian) artifact = applyMeridianContract(artifact);
     mkdirSync(ARTIFACT_DIR, { recursive: true });
     const path = join(ARTIFACT_DIR, `${name}.v${artifact.version}.json`);
     writeFileSync(path, JSON.stringify(artifact, null, 2));
     logger.writeResult({ status: 'success', artifact: path, outputs: result.outputs, summary: result.summary });
     console.log(`\n✔ goal achieved in ${result.trace.length} recorded steps`);
-    console.log(`  outputs : ${JSON.stringify(result.outputs)}`);
+    console.log(`  outputs : ${JSON.stringify(runtime.redactor.redact(result.outputs))}`);
     console.log(`  artifact: ${path} (status: draft — review, then run with --approve to promote)`);
   } else {
     logger.writeResult({ status: result.status, stopReason: result.stopReason });
     console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
     process.exitCode = 1;
   }
-  await surface.close();
+  if (record) journal!.update(record.runId, result.status === 'success' ? 'success' : surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure');
+  } finally { await runtime.close(); journal?.close(); }
 }
 
 async function replay(argv: string[]) {
@@ -174,9 +163,10 @@ async function replay(argv: string[]) {
     console.log(`composed tenant overlay "${overlay.tenant}" onto ${overlay.base.id}@${overlay.base.version}`);
   }
 
-  const params: Record<string, string | number> =
+  let params: Record<string, string | number> =
     typeof flags.params === 'string' ? JSON.parse(flags.params) : {};
-  const policy = loadPolicy(POLICY_PATH);
+  const profile = loadProfile(typeof flags.profile === 'string' ? flags.profile : artifact.app.appId === 'meridian' ? 'meridian' : 'cu-nexus');
+  const policy = profilePolicy(profile);
   if (typeof flags['entry-override'] === 'string') {
     // For demos: point the same capability at an entry URL that injects a
     // simulated runtime condition (e.g. ?sim=maintenance). Still has to land
@@ -190,56 +180,47 @@ async function replay(argv: string[]) {
   // Overlay paramDefaults fill in under the caller's params — runReplay merges
   // them the same way. A sensitive value arriving from a default must reach the
   // redactor too, or it lands unmasked in the log, the result and screenshots.
-  const effectiveParams = { ...artifact.paramDefaults, ...params };
-  const redactor = new Redactor();
-  redactor.addSensitiveValues(
-    artifact.parameters
-      .filter((p) => p.sensitive)
-      // Falsy-but-real values (a numeric 0) must still be registered.
-      .map((p) => effectiveParams[p.name])
-      .filter((v): v is string | number => v !== undefined && v !== ''),
-  );
-  const logger = new RunLogger('replay', redactor);
-  console.log(`replay run ${logger.runId} → ${logger.dir}`);
-
+  const meridian = profile.appId === 'meridian';
+  if ((artifact.app.appId === 'meridian') !== meridian) fatal('Artifact and runtime profile do not match');
+  if (meridian) artifact = applyMeridianContract(artifact);
+  const operator = meridian ? operatorContext(flags.operator === 'SUPERVISOR' ? 'SUPERVISOR' : 'TELLER') : undefined;
+  for (const parameter of artifact.parameters.filter(p => p.source === 'server')) {
+    if (parameter.name in params) fatal('Caller cannot override server parameters');
+    if (!operator || !['operator', 'password', 'branch'].includes(parameter.name)) fatal('Unsupported server parameter');
+    params[parameter.name] = operator[parameter.name as 'operator' | 'password' | 'branch'];
+  }
+  const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
+  const key = typeof flags['idempotency-key'] === 'string' ? flags['idempotency-key'] : '';
+  if (meridian) params = normalizeParams(artifact, params);
+  const fault = flags.inject || flags['fault-route'] ? FaultScenario.parse({ kind: flags.inject, path: flags['fault-route'] }) : undefined;
+  if (fault && !meridian) fatal('Fault scenarios require the MERIDIAN profile');
+  const request = { mode: 'replay', fault: fault ?? null, id: artifact.id, version: artifact.version, params: Object.fromEntries(Object.entries(params).filter(([key]) => key !== 'password')), role: operator?.role ?? null };
+  if (journal) {
+    const existing = journal.lookup('operator', key, request).existing;
+    if (existing) { console.log(`Existing run: ${existing.runId} (${existing.state})`); journal.close(); return; }
+  }
+  const record = journal?.reserve('operator', key, artifact.id, artifact.version, request);
   const attended = !!flags.attended;
-  // Attended runs show the live window locally — unless the session is being
-  // exposed over CDP (CU_CDP_PORT), where the operator attaches remotely.
-  const browser = new BrowserSurface({
-    headful: (attended && !process.env.CU_CDP_PORT) || !!flags.headful,
-    allowedOrigins: policy.allowedOrigins,
+  const runtime = createRuntime({ kind: 'replay', artifact: artifact.id, version: artifact.version, policy, profile, fault, params: { ...artifact.paramDefaults, ...params },
+    sensitive: artifact.parameters.filter(p => p.sensitive).map(p => p.name), operator, headful: meridian || attended || !!flags.headful,
+    runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,
+    gate: async (action, risk, reason, context) => {
+      if (!attended) return false;
+      const decision = await new OperatorConsole(runtime.browser.page, runtime.logger, runtime.session).intervene({
+        kind: 'risk_approval', capability: artifact.id, goal: artifact.description, reason: context ? JSON.stringify(context) : reason, url: runtime.surface.currentUrl(),
+      });
+      return decision === 'retry';
+    }, beforeDispatch: () => journal!.update(record!.runId, 'dispatching'),
   });
-  const session = new ControlSession((t) => logger.log('control.transfer', t));
-  const humanGate: HumanGate = async (action, risk, reason) => {
-    if (!attended) {
-      logger.log('policy.human_gate', { action, risk, reason, attended, approved: false });
-      return false;
-    }
-    const decision = await new OperatorConsole(browser.page, logger, session).intervene({
-      kind: 'risk_approval',
-      capability: `${artifact.id}@${artifact.version}`,
-      goal: artifact.description,
-      reason: `${reason} (action: ${action})`,
-      url: browser.currentUrl(),
-    });
-    return decision !== 'abort';
-  };
-  const surface = new GuardedSurface(browser, policy, humanGate, (e) => logger.log('policy.decision', e));
-
-  const result = await runReplay(artifact, params, {
-    surface,
-    logger,
-    policy,
-    escalate: attended
-      ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
-      : undefined,
-  });
-
-  console.log('\nresult:');
-  // stdout is evidence too: failure.observed can echo raw page/Playwright text.
-  console.log(JSON.stringify(redactor.redact(result), null, 2));
-  if (result.status === 'failure') process.exitCode = 1;
-  await surface.close();
+  console.log(`replay run ${runtime.logger.runId} → ${runtime.logger.dir}`);
+  try {
+    if (record) journal!.update(record.runId, 'running');
+    const result = await executeReplay(artifact, params, runtime, policy,
+      attended ? req => new OperatorConsole(runtime.browser.page, runtime.logger, runtime.session).intervene(req) : undefined);
+    console.log(JSON.stringify(runtime.redactor.redact(result), null, 2));
+    if (result.status === 'failure') process.exitCode = 1;
+    if (record) journal!.update(record.runId, result.status === 'failure' && runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : result.status);
+  } finally { await runtime.close(); journal?.close(); }
 }
 
 function list() {
@@ -279,6 +260,7 @@ function validate() {
   let drift = 0;
   for (const f of readdirSync(ARTIFACT_DIR).filter((f) => f.endsWith('.json'))) {
     const a = CapabilityArtifact.parse(JSON.parse(readFileSync(join(ARTIFACT_DIR, f), 'utf8')));
+    if (a.app.appId === 'meridian') applyMeridianContract(a);
     for (const s of a.steps) {
       const floor = s.target && riskFloorFor(s.target);
       if (floor && RISK_RANK[s.risk] < RISK_RANK[floor]) {
@@ -292,11 +274,12 @@ function validate() {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
-if (cmd === 'discover') await discover(rest);
+if (cmd === 'serve') { const { flags } = parseArgs(rest); await serve(typeof flags.profile === 'string' ? flags.profile : 'meridian'); }
+else if (cmd === 'discover') await discover(rest);
 else if (cmd === 'replay') await replay(rest);
 else if (cmd === 'list') list();
 else if (cmd === 'validate') validate();
 else {
-  console.log('usage: cli.ts <discover|replay|list|validate> [flags]');
+  console.log('usage: cli.ts <discover|replay|list|validate|serve> [flags]');
   process.exit(1);
 }

@@ -671,7 +671,7 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
     expect(res.stdout).not.toContain('OVERLAYSECRET');
   }, 60_000);
 
-  it('G2: the recorder templatizes a param value inside a css selector', () => {
+  it('G2: the recorder discards parameter-dependent CSS and retains structural fallbacks', () => {
     const artifact = recordArtifact(
       {
         name: 'css-tmpl', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
@@ -683,13 +683,14 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
         status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/10042',
         trace: [{
           action: 'click', reason: 'open the row', urlAfter: 'http://localhost:4173/members/10042',
-          descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('10042')) > td:nth-of-type(2)" }] },
+          descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('10042')) > td:nth-of-type(2)" }, { kind: 'css', selector: 'tr:nth-of-type(1) > td:nth-of-type(2)' }] },
         }],
       },
     );
     const sel = JSON.stringify(artifact.steps[0]!.target!.strategies);
     expect(sel).not.toContain('10042');       // the raw value must never be persisted
-    expect(sel).toContain('{{memberId}}');
+    expect(sel).not.toContain('{{memberId}}');
+    expect(sel).toContain('tr:nth-of-type(1)');
   });
 
   // ...but not at any cost: a short value collides with selector syntax, and a
@@ -731,15 +732,15 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
           descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('123')) > td:nth-of-type(2)" }] },
         }],
       },
-    )).toThrow(/sensitive parameter "pin" is too short/);
+    )).toThrow(/no safe target strategy/);
   });
 
   it('G3: a rejected overlay entryUrl is reported without its query string', () => {
     let msg = '';
     try { applyOverlay(BASE, overlay({ status: 'approved', entryUrl: 'http://evil.test/login?pin=OVERLAYSECRET' })); }
     catch (e) { msg = (e as Error).message; }
-    expect(msg).toMatch(/outside the base artifact's allowed origins/);
-    expect(msg).toContain('http://evil.test/login');
+    expect(msg).toMatch(/outside the base artifact allowed origins/);
+    expect(msg).not.toContain('http://evil.test/login');
     expect(msg).not.toContain('OVERLAYSECRET');
   });
 
@@ -748,6 +749,6 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
     expect(applyOverlay(BASE, overlay({ status: 'approved' })).status).toBe('approved');
     expect(applyOverlay({ ...BASE, status: 'draft' }, overlay({ status: 'approved' })).status).toBe('draft');
     expect(() => applyOverlay(BASE, overlay({ status: 'approved', entryUrl: 'http://evil.test/' })))
-      .toThrow(/outside the base artifact's allowed origins/);
+      .toThrow(/outside the base artifact allowed origins/);
   });
 });

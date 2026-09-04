@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MERIDIAN · Operator desk</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><header><p>MERIDIAN CORE / LOCAL DEMONSTRATION</p><h1>Operator desk</h1><p>Recorded capabilities. Visible execution. Human approval.</p></header>
+<main><form id="login"><label>API credential <input id="credential" type="password" required autocomplete="off"></label><button>Connect</button></form><p id="status" role="status" aria-live="polite">Enter a caller or operator credential to connect.</p>
+<div id="workspace" hidden><section><h2>Capabilities</h2><form id="invoke"><label>Capability <select id="capability"></select></label><label id="role-label">Operator context <select id="operator"><option value="TELLER">Teller</option><option value="SUPERVISOR">Supervisor</option></select></label><div id="fields"></div><button>Start run</button></form></section>
+<section><h2>Chat</h2><p>Chat uses caller authority. An operator reviews transaction requests separately.</p><div id="messages" aria-live="polite"></div><form id="chat"><label>Your request <textarea id="message" required maxlength="4000"></textarea></label><button>Send</button></form></section>
+<section class="wide"><h2>Runs and evidence</h2><button id="refresh" type="button">Refresh</button><div id="runs" aria-live="polite"></div></section></div></main></body></html>

@@ -1,0 +1,171 @@
+{
+  "appId": "meridian",
+  "entryUrl": "https://web-sample.interface-hiring.com/signon",
+  "routes": [
+    "^/(?:signon|menu|members(?:/[0-9]+(?:/(?:transfer|open-share|hold)(?:/(?:review|post))?|/update)?)?)?$"
+  ],
+  "forms": [
+    {
+      "path": "^/signon$",
+      "method": "POST",
+      "control": "Sign On",
+      "mutation": false,
+      "token": false
+    },
+    {
+      "path": "^/members$",
+      "method": "GET",
+      "control": "Search",
+      "mutation": false,
+      "token": false
+    },
+    {
+      "path": "^/members/[0-9]+/(transfer|open-share|hold)/review$",
+      "method": "POST",
+      "control": "Continue",
+      "mutation": false,
+      "token": true
+    },
+    {
+      "path": "^/members/[0-9]+/transfer/post$",
+      "method": "POST",
+      "control": "Post Transfer",
+      "mutation": true,
+      "token": true
+    },
+    {
+      "path": "^/members/[0-9]+/open-share/post$",
+      "method": "POST",
+      "control": "Open Share",
+      "mutation": true,
+      "token": true
+    },
+    {
+      "path": "^/members/[0-9]+/hold/post$",
+      "method": "POST",
+      "control": "Apply Hold",
+      "mutation": true,
+      "token": true,
+      "role": "SUPERVISOR"
+    },
+    {
+      "path": "^/members/[0-9]+/update$",
+      "method": "POST",
+      "control": "Save Changes",
+      "mutation": true,
+      "token": true
+    }
+  ],
+  "maskSelectors": [
+    "body > table > tbody > tr:nth-child(3) > td",
+    "body > table > tbody > tr:nth-last-child(2) > td",
+    "input",
+    "textarea",
+    "select",
+    ".box"
+  ],
+  "detectors": [
+    {
+      "id": "insufficient-funds",
+      "description": "Available funds are insufficient",
+      "match": {
+        "kind": "textVisible",
+        "text": "Insufficient available balance in the source share."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "id": "validation",
+      "description": "Input rejected by the application",
+      "match": {
+        "kind": "textVisible",
+        "text": "could not be validated"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "validation-injected",
+      "description": "Transaction rejected",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANSACTION REJECTED"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "no-matches",
+      "description": "No member records matched the search",
+      "match": {
+        "kind": "textVisible",
+        "text": "No member records matched your search."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "notfound",
+      "description": "No matching member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "RECORD NOT FOUND"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "permission",
+      "description": "Operator lacks required supervisor authority",
+      "match": {
+        "kind": "textVisible",
+        "text": "SUPERVISOR OVERRIDE REQUIRED"
+      },
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED"
+    },
+    {
+      "id": "timeout",
+      "description": "Session expired; invoke a new run",
+      "match": {
+        "kind": "textVisible",
+        "text": "YOUR SESSION HAS TIMED OUT"
+      },
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED"
+    },
+    {
+      "id": "maintenance",
+      "description": "Maintenance notice; safe Continue link returns to menu",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE IN PROGRESS"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue to menu",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "server",
+      "description": "Application error; no automatic transaction retry",
+      "match": {
+        "kind": "textVisible",
+        "text": "APPLICATION ERROR"
+      },
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR"
+    }
+  ]
+}

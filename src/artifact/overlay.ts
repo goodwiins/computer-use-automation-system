@@ -12,7 +12,7 @@
 // it is reviewable as a distinct thing from its base.
 
 import { z } from 'zod';
-import { originAllowed, redactUrlForLog } from '../safety/policy.js';
+import { originAllowed } from '../safety/policy.js';
 import { CapabilityArtifact, TargetStrategy, type CapabilityArtifact as Artifact } from './schema.js';
 
 export const TenantOverlay = z.object({
@@ -62,7 +62,7 @@ export function applyOverlay(base: Artifact, overlay: TenantOverlay): Artifact {
     throw new Error(
       // Thrown before the CLI builds its Redactor, so keep the query string out:
       // a tenant entry URL can carry a sensitive default (?pin=...).
-      `Overlay entryUrl "${redactUrlForLog(overlay.entryUrl)}" is outside the base artifact's allowed origins [${base.app.allowedOrigins.join(', ')}]`,
+      'Overlay entryUrl is outside the base artifact allowed origins',
     );
   }
 

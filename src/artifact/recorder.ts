@@ -48,6 +48,7 @@ export interface RecorderInput {
   entryUrl: string;
   params: Record<string, string | number>;
   sensitiveParams: string[];
+  serverParams?: string[];
   allowedOrigins: string[];
   appId: string;
   appDetectors: Detector[];
@@ -66,33 +67,32 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   );
   const substitute = (s: string, entries: typeof paramEntries): string => {
     let out = s;
-    for (const [name, value] of entries) out = out.split(String(value)).join(`{{${name}}}`);
+    for (const [name, value] of entries) if (String(value)) out = out.split(String(value)).join(`{{${name}}}`);
     return out;
   };
   const templatize = (s: string): string => substitute(s, paramEntries);
 
-  // CSS selectors are the one place a param value collides with *syntax*: the
-  // discovery prompt asks for `td:nth-of-type(4)`-style anchors, so a 1-3 char
-  // param ("4", "12") templatizes a structural literal and silently re-aims the
-  // selector at another cell on the next replay. Same threshold the redactor
-  // uses for the same reason (redact.ts MIN_SUBSTRING_LEN), opposite handling:
-  // there a short value is matched as a whole token, here there is no token
-  // boundary to lean on — `(4)` looks like one — so short values are left
-  // literal. That trades a silent wrong-cell read for a loud resolution
-  // failure. A *sensitive* short value (a PIN) is the one case with nothing
-  // safe to do: it must not be persisted literal and cannot be templatized
-  // safely, so recording refuses rather than writing the secret into the artifact.
-  const MIN_CSS_PARAM_LEN = 4;
-  const templatizeCss = (s: string): string => {
-    for (const [name, value] of paramEntries) {
-      const v = String(value);
-      if (v.length < MIN_CSS_PARAM_LEN && v.length > 0 && input.sensitiveParams.includes(name) && s.includes(v)) {
-        throw new Error(
-          `Cannot record artifact: sensitive parameter "${name}" is too short to templatize safely and appears literally in css selector "${s}"`,
-        );
-      }
+  // Never splice runtime data into CSS syntax. Keep only invariant strategies.
+  const safeCss = (selector: string): boolean => {
+    const decoded = selector.replace(/\\(?:\r\n|[\n\r\f])/g, '').replace(/\\([0-9a-f]{1,6})\s?|\\([^\n\r\f])/gi,
+      (_, hex: string | undefined, char: string) => hex ? (() => { const code = parseInt(hex, 16); return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? '\ufffd' : String.fromCodePoint(code); })() : char);
+    if (decoded.includes('{{')) return false;
+    // Structural indices are not invocation data; sensitive values still fail closed.
+    const semantic = decoded.replace(/:nth-(?:of-type|child)\(\d+\)/g, '');
+    return !paramEntries.some(([name, value]) => String(value) &&
+      ((input.sensitiveParams.includes(name) ? decoded : semantic).includes(String(value)) || selector.includes(String(value)) && input.sensitiveParams.includes(name)));
+  };
+
+  const valueTemplate = (entry: DiscoveryResult['trace'][number]) => {
+    const matches = paramEntries.filter(([, value]) => String(value) === entry.value);
+    if (matches.length === 1) return `{{${matches[0]![0]}}}`;
+    if (matches.length > 1) {
+      const field = entry.descriptor?.strategies.find(s => s.kind === 'nameAttr');
+      const match = matches.find(([name]) => field?.kind === 'nameAttr' && field.name === name);
+      if (match) return `{{${match[0]}}}`;
+      throw new Error('Cannot record an ambiguous parameter binding');
     }
-    return substitute(s, paramEntries.filter(([, v]) => String(v).length >= MIN_CSS_PARAM_LEN));
+    return templatize(entry.value!);
   };
 
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
@@ -101,39 +101,38 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     description: `Invocation parameter "${name}"`,
     required: true,
     sensitive: input.sensitiveParams.includes(name),
+    ...(input.serverParams?.includes(name) ? { source: 'server' as const } : {}),
   }));
 
   const steps: Step[] = discovery.trace.map((entry, i) => {
     const id = `s${i + 1}`;
     switch (entry.action) {
+      case 'assert':
+        return { id, intent: templatize(entry.reason), action: 'assert', assert: entry.assert!.kind === 'textVisible' ? { ...entry.assert!, text: templatize(entry.assert!.text) } : { ...entry.assert!, pattern: templatize(entry.assert!.pattern) }, risk: 'read', timeoutMs: 10_000 };
       case 'navigate':
         return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
         return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: floorRisk(entry.risk ?? 'read', entry.descriptor!), timeoutMs: 10_000 };
       case 'fill':
-        return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: valueTemplate(entry), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'select':
-        return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: valueTemplate(entry), selectBy: entry.selectBy, risk: 'reversible_write', timeoutMs: 10_000 };
       case 'extract':
-        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName! }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: entry.columns, rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
     }
   });
 
   // Click targets whose text was a parameter value (e.g. a search-result link
   // showing the member number) also need templating.
   for (const step of steps) {
+    if (step.extract && ((step.extract.rowSelector && !safeCss(step.extract.rowSelector)) || step.extract.columns?.some(c => !safeCss(c.selector)))) throw new Error('Cannot record parameter-dependent table selectors');
     if (!step.target) continue;
     step.target = {
       ...step.target,
       description: templatize(step.target.description),
-      strategies: step.target.strategies.map((s) => {
+      strategies: step.target.strategies.filter((s) => s.kind !== 'css' || safeCss(s.selector)).map((s) => {
         if (s.kind === 'text') return { ...s, text: templatize(s.text) };
         if (s.kind === 'role') return { ...s, name: templatize(s.name) };
-        // css too: the model is told to anchor table selectors on a row label
-        // (tools.ts), so a param value can end up inside the selector. Replay
-        // already resolves templates in css (schema.resolveTarget) — without
-        // this the runtime value would be persisted into the artifact.
-        if (s.kind === 'css') return { ...s, selector: templatizeCss(s.selector) };
         return s;
       }),
       snapshot: step.target.snapshot && {
@@ -141,6 +140,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
         text: step.target.snapshot.text && templatize(step.target.snapshot.text),
       },
     };
+    if (!step.target.strategies.length) throw new Error('Cannot record artifact: no safe target strategy remains');
   }
 
   // Success condition: the flow verifiably ended where discovery ended.
@@ -154,14 +154,16 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   // observed values (PII may have been extracted during discovery).
   const outputStepId = (name: string): string =>
     steps.find((s) => s.action === 'extract' && s.extract?.output === name)?.id ?? '?';
-  const outputs = Object.keys(discovery.outputs).map((name) => ({
+  const outputs = [...new Set(steps.flatMap((s) => s.extract ? [s.extract.output] : []))].map((name) => ({
     name,
-    type: 'string' as const,
+    type: steps.find(s => s.extract?.output === name)?.extract?.columns ? 'table' as const : 'string' as const,
+    columns: steps.find(s => s.extract?.output === name)?.extract?.columns,
+    sensitive: input.appId === 'meridian',
     description: `Extracted during the flow at step ${outputStepId(name)}`,
   }));
 
   return CapabilityArtifact.parse({
-    schemaVersion: 1,
+    schemaVersion: input.appId === 'meridian' || steps.some(s => s.selectBy || s.extract?.columns) ? 2 : 1,
     id: input.name,
     name: input.name,
     description: templatize(input.goal),

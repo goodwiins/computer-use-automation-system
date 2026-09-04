@@ -3,7 +3,8 @@
 // here), and locator resolution prefers role+name over structure.
 
 import { chromium, type Browser, type Frame, type Locator, type Page } from 'playwright';
-import type { TargetDescriptor, TargetStrategy } from '../artifact/schema.js';
+import type { TargetDescriptor, TargetStrategy, RiskClass, TableColumn } from '../artifact/schema.js';
+import type { LiveControl, AppProfile, FaultScenario } from '../runtime/profile.js';
 import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
@@ -23,12 +24,14 @@ export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
+  private faultInjected = false;
+  private submission?: { url: string; method: string };
   private dialogs: Array<{ type: string; message: string }> = [];
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
   // legacy page can neither be read nor clicked.
-  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[] } = {}) {}
+  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
     const url = frame.url();
@@ -53,6 +56,7 @@ export class BrowserSurface implements Surface {
     // port only keeps arbitrary flags out of chromium's argv; a real
     // deployment fronts CDP with an authenticated co-browsing bridge.
     const port = process.env.CU_CDP_PORT;
+    if (port && this.opts.profile?.appId === 'meridian') throw new Error('Remote CDP is not enabled for MERIDIAN');
     const args: string[] = [];
     if (port) {
       const n = Number(port);
@@ -63,6 +67,23 @@ export class BrowserSurface implements Surface {
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
+    this.page.on('close', () => this.opts.onClose?.());
+    if (this.opts.profile) await this.page.route('**/*', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!['GET', 'HEAD'].includes(request.method())) {
+        const allowed = this.submission?.url === url.href && this.submission.method === request.method();
+        this.submission = undefined;
+        return allowed ? route.continue() : route.abort();
+      }
+      if (request.isNavigationRequest() && (!this.opts.profile!.routes?.some(p => new RegExp(p).test(url.pathname)) || /\/(post|review)$/.test(url.pathname))) return route.abort();
+      if (!this.faultInjected && this.opts.fault && request.isNavigationRequest() && url.pathname === this.opts.fault.path) {
+        this.faultInjected = true; url.searchParams.set('inject', this.opts.fault.kind);
+        return route.continue({ url: url.href });
+      }
+      return route.continue();
+    });
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -90,6 +111,7 @@ export class BrowserSurface implements Surface {
   }
 
   async observe(): Promise<Observation> {
+    await this.collectSensitive();
     const frames: Observation['frames'] = [];
     for (const frame of this.page.frames()) {
       if (frame.url() === 'about:blank' || !this.frameInBounds(frame)) continue;
@@ -131,9 +153,14 @@ export class BrowserSurface implements Surface {
     return report;
   }
 
-  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport> {
     const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
+    if (selectBy === 'value') {
+      if (await locator.evaluate((e, selected) => [...(e as HTMLSelectElement).options].filter(o => o.value === selected).length, value) !== 1) throw new Error('Share or option value is missing or ambiguous');
+      await locator.selectOption({ value }, { timeout: timeoutMs });
+      return report;
+    }
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
       // Fall back to value= on whatever budget is left, so a label miss costs
       // one timeout, not two.
@@ -163,6 +190,18 @@ export class BrowserSurface implements Surface {
   }
 
   async screenshot(path: string, opts: { maskValues?: string[] } = {}): Promise<void> {
+    if (this.opts.profile) {
+      await this.collectSensitive();
+      const profile = this.opts.profile;
+      if (!profile.routes?.some(pattern => new RegExp(pattern).test(new URL(this.currentUrl()).pathname))) throw new Error('Unknown page: metadata-only evidence');
+      const requiredMask = profile.maskSelectors?.[0];
+      if (!requiredMask || await this.page.locator(requiredMask).count() !== 1) throw new Error('Unknown page structure: metadata-only evidence');
+      // Whole content cells include dynamically observed financial/contact data.
+      const masks = this.page.frames().flatMap(frame => (profile.maskSelectors ?? ['body']).map(selector => frame.locator(selector)));
+      for (const frame of this.page.frames()) for (const value of opts.maskValues ?? []) masks.push(frame.getByText(value, { exact: false }));
+      await this.page.screenshot({ path, fullPage: true, mask: masks });
+      return;
+    }
     const restore = await this.maskSensitiveInputs(opts.maskValues ?? []);
     try {
       await this.page.screenshot({ path, fullPage: true });
@@ -204,6 +243,63 @@ export class BrowserSurface implements Surface {
           })
           .catch(() => {});
       }
+    };
+  }
+
+  async collectSensitive(): Promise<void> {
+    if (!this.opts.profile || !this.page) return;
+    for (const frame of this.page.frames()) {
+      const values = await frame.evaluate(() => {
+        const result: string[] = [];
+        for (const e of document.querySelectorAll('input, textarea, select')) {
+          const input = e as HTMLInputElement;
+          if (input.type !== 'submit' && input.value) result.push(input.value);
+        }
+        for (const e of document.querySelectorAll('td.lbl + td, .box td, table[border="1"] td')) {
+          if (e.textContent?.trim()) result.push(e.textContent.trim());
+        }
+        const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
+        if (sid) result.push(sid);
+        return result;
+      });
+      this.opts.sensitive?.(values);
+    }
+  }
+
+  async readTable(target: TargetDescriptor, columns: TableColumn[], timeoutMs = DEFAULT_TIMEOUT, rowSelector?: string) {
+    const { locator } = await this.resolve(target, timeoutMs);
+    const rows = await locator.evaluate((table, { cols, rows }) => [...table.querySelectorAll(rows ?? 'tr')]
+      .filter(row => row.querySelector('td') && !row.querySelector('th'))
+      .map(row => Object.fromEntries(cols.map(col => {
+        const cells = row.querySelectorAll(col.selector);
+        if (cells.length !== 1) throw new Error('Ambiguous table column');
+        let value = (cells[0]!.textContent ?? '').trim();
+        if (col.type === 'money') {
+          value = value.replace(/[$,]/g, '');
+          if (!/^-?(0|[1-9]\d*)\.\d{2}$/.test(value)) throw new Error('Invalid money column');
+        }
+        return [col.name, value];
+      }))), { cols: columns, rows: rowSelector });
+    this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => c.sensitive).map(c => row[c.name]!)));
+    return rows;
+  }
+
+  async prepareClick(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT) {
+    const { locator, report } = await this.resolve(target, timeoutMs);
+    const handle = await locator.elementHandle({ timeout: timeoutMs });
+    if (!handle) throw new Error('Control disappeared');
+    return {
+      inspect: () => handle.evaluate(inspectControl, undefined),
+      dispatch: async (expected: LiveControl) => {
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method };
+        try {
+          await Promise.all([
+            this.page.waitForNavigation({ waitUntil: 'load', timeout: timeoutMs }),
+            handle.evaluate(inspectControl, expected),
+          ]);
+          return report;
+        } finally { this.submission = undefined; await handle.dispose(); }
+      },
     };
   }
 
@@ -338,4 +434,43 @@ export class BrowserSurface implements Surface {
       snapshot: { tag: info.tag, role: info.role, text: info.text ?? info.accName },
     };
   }
+}
+
+// Recheck and dispatch in the same browser task, using the same DOM element.
+function inspectControl(element: Element, expected?: LiveControl): LiveControl {
+  if (!element.isConnected) throw new Error('Control is detached');
+  const input = element as HTMLInputElement;
+  const form = input.form;
+  const submit = !!form && (input.type === 'submit' || input.type === 'image');
+  const anchor = element.closest('a');
+  if (!submit && !anchor) throw new Error('Unknown clickable control');
+  const destination = submit ? (input.getAttribute('formaction') ? input.formAction : form!.action) : anchor!.href;
+  const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
+  const body = document.body.innerText;
+  const facts: Record<string, string> = {};
+  if (submit && new URL(destination).pathname !== '/signon') {
+    for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
+      if (field.name && field.name !== '_token' && field.type !== 'password') {
+        if (Object.hasOwn(facts, field.name)) throw new Error('Duplicate form fact');
+        facts[field.name] = field.value;
+      }
+    }
+    for (const label of document.querySelectorAll('.box td.lbl')) {
+      facts[`review:${label.textContent?.trim()}`] = label.nextElementSibling?.textContent?.trim() ?? '';
+    }
+    const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
+    if (member) facts.member = member;
+  }
+  const tokens = form?.querySelectorAll('input[type=hidden][name="_token"]');
+  const tokenPresent = tokens?.length === 1 && !!(tokens[0] as HTMLInputElement).value;
+  const state: LiveControl = {
+    url: location.href, destination, method, submit, control: input.type === 'submit' ? input.value : element.textContent?.trim() ?? '',
+    operator: body.match(/OPR\s+(\S+)/)?.[1] ?? '', branch: body.match(/BR\s+(\S+)/)?.[1] ?? '', facts, tokenPresent,
+    error: !!document.querySelector('ul li') && !!document.querySelector('.err'),
+  };
+  if (expected) {
+    if (JSON.stringify(expected) !== JSON.stringify(state)) throw new Error('Approval invalidated by changed page state');
+    (element as HTMLElement).click();
+  }
+  return state;
 }

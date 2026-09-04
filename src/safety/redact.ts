@@ -21,10 +21,10 @@ export class Redactor {
     for (const v of values) {
       const s = String(v);
       if (s.length === 0) continue;
-      this.sensitiveValues.push(s);
+      if (!this.sensitiveValues.includes(s)) this.sensitiveValues.push(s);
       // Values surface URL-encoded in query strings and form bodies too.
       const enc = encodeURIComponent(s);
-      if (enc !== s) this.sensitiveValues.push(enc);
+      if (enc !== s && !this.sensitiveValues.includes(enc)) this.sensitiveValues.push(enc);
     }
   }
 

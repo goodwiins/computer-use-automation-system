@@ -27,7 +27,7 @@ export const Policy = z.object({
 });
 export type Policy = z.infer<typeof Policy>;
 
-export function loadPolicy(path: string): Policy {
+export function loadPolicy(path: string | URL): Policy {
   return Policy.parse(JSON.parse(readFileSync(path, 'utf8')));
 }
 

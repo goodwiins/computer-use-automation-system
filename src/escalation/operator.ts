@@ -18,6 +18,7 @@ export class OperatorConsole {
   ) {}
 
   async intervene(req: InterventionRequest): Promise<InterventionDecision> {
+    if (this.page.isClosed()) return 'abort';
     this.session.transfer('human', req.reason);
     this.logger.log('handoff.to_human', { request: { ...req } });
 
@@ -63,9 +64,13 @@ export class OperatorConsole {
     }
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 300_000);
+    const onClose = () => controller.abort();
+    this.page.on('close', onClose);
     let decision: InterventionDecision;
     for (;;) {
-      const answer = (await rl.question('operator> ')).trim().toLowerCase();
+      const answer = (await rl.question('operator> ', { signal: controller.signal }).catch(() => 'abort')).trim().toLowerCase();
       if (isRiskApproval) {
         if (answer === 'approve') {
           decision = 'retry';
@@ -84,6 +89,8 @@ export class OperatorConsole {
       }
       console.log('Please type: retry | skip | abort');
     }
+    clearTimeout(deadline);
+    this.page.off('close', onClose);
     rl.close();
 
     await detach();
@@ -97,7 +104,7 @@ export class OperatorConsole {
    * with values redacted — so the evidence trail covers the whole run, not
    * just the automated part.
    */
-  private async recordHumanActions(): Promise<() => Promise<void>> {
+  async recordHumanActions(): Promise<() => Promise<void>> {
     const binding = '__cuReportHumanAction';
     // The binding is callable by any script on the page, so a hostile page can
     // fire it in a loop and bury the evidence trail. Cap what one binding will
@@ -137,6 +144,7 @@ export class OperatorConsole {
             document.addEventListener(
               'click',
               (e) => {
+                if (!e.isTrusted) return;
                 const t = e.target as HTMLElement;
                 report({ type: 'click', tag: t.tagName, text: (t.textContent ?? '').trim().slice(0, 60) });
               },
@@ -145,6 +153,7 @@ export class OperatorConsole {
             document.addEventListener(
               'change',
               (e) => {
+                if (!e.isTrusted) return;
                 const t = e.target as HTMLInputElement;
                 report({ type: 'change', tag: t.tagName, name: t.name, valueLength: (t.value ?? '').length });
               },

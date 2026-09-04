@@ -1,10 +1,11 @@
+import type { LiveControl } from '../runtime/profile.js';
 // The Surface is the seam between "how we perceive/act on a UI" and
 // everything above it (discovery loop, replay executor, recorder). The
 // artifact schema speaks only in Surface terms — so a desktop implementation
 // (OS accessibility APIs) or a screenshot+coordinates implementation can slot
 // in without touching artifacts or the replay engine.
 
-import type { RiskClass, TargetDescriptor } from '../artifact/schema.js';
+import type { RiskClass, TargetDescriptor, TableColumn } from '../artifact/schema.js';
 
 export interface FrameObservation {
   frame: string; // '' = main frame
@@ -41,6 +42,11 @@ export class TargetResolutionError extends Error {
 }
 
 export interface Surface {
+  prepareClick?(target: TargetDescriptor, timeoutMs?: number): Promise<{ inspect(): Promise<LiveControl>; dispatch(expected: LiveControl): Promise<ResolutionReport> }>;
+  mutationDispatched?: boolean;
+  effectiveRisk?: RiskClass;
+  setStep?(id: string): void;
+  readTable?(target: TargetDescriptor, columns: TableColumn[], timeoutMs?: number, rowSelector?: string): Promise<Array<Record<string, string>>>;
   start(entryUrl: string): Promise<void>;
   observe(): Promise<Observation>;
   currentUrl(): string;
@@ -52,7 +58,7 @@ export interface Surface {
   // policy gate; unguarded implementations ignore it.
   click(target: TargetDescriptor, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
-  select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
+  select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport>;
   readText(target: TargetDescriptor, timeoutMs?: number): Promise<{ text: string; report: ResolutionReport }>;
   isTextVisible(text: string, frame?: string): Promise<boolean>;
 

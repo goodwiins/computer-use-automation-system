@@ -5,6 +5,7 @@
   "description": "Computer-use automation system: LLM discovery -> capability artifact -> deterministic replay, with escalation and safety guardrails.",
   "type": "module",
   "scripts": {
+    "serve": "tsx cli.ts serve",
     "target-app": "tsx target-app/server.ts",
     "discover": "tsx cli.ts discover",
     "replay": "tsx cli.ts replay",

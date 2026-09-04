@@ -193,3 +193,9 @@ scripts/          scripted end-to-end escalation demo
 docs/             use cases, architecture diagram, demo runbook, audits, plans
 .githooks/        pre-push local CI gate (see Setup)
 ```
+
+## MERIDIAN adaptation (in progress)
+
+The shared runtime, asynchronous API, local operator dashboard and thin chat entry point are described in [the MERIDIAN runbook](docs/meridian/runbook.md). See [the implementation report](docs/meridian/report.md) for verified behavior and the remaining live acceptance gates. Configure `.env` from `.env.example`, then run `node --env-file=.env --import tsx cli.ts serve --profile meridian`.
+
+Live LLM-discovered MERIDIAN artifacts and approved posting evidence are still pending. Existing mock fixtures are not a substitute for that evidence.
