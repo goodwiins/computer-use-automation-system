@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
 import { applyMeridianContract, meridianContracts } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
+import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams } from '../src/artifact/schema.js';
 import * as clients from '../src/agent/client.js';
@@ -207,6 +208,35 @@ describe('durable request identity', () => {
     const path = join(dir, `${first.runId}.json`); writeFileSync(path, readFileSync(path, 'utf8').replace('interrupted', 'success'));
     expect(() => new Journal(dir, key)).toThrow(/authentication failed/);
   });
+
+  it('returns an existing service run before creating another runtime', () => {
+    const names = ['MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
+    const previous = new Map(names.map(name => [name, process.env[name]]));
+    const dir = temp();
+    const journal = new Journal(join(dir, 'journal'), key);
+    const createRuntime = vi.spyOn(runtime, 'createRuntime');
+    process.env.MERIDIAN_TELLER_OPERATOR = 'TELLER-ONE';
+    process.env.MERIDIAN_TELLER_PASSWORD = 'TELLER-PASSWORD';
+    process.env.MERIDIAN_SUPERVISOR_OPERATOR = 'SUPERVISOR-ONE';
+    process.env.MERIDIAN_SUPERVISOR_PASSWORD = 'SUPERVISOR-PASSWORD';
+    process.env.MERIDIAN_BRANCH = 'MAIN-001';
+    try {
+      const service = new InvocationService(journal, policy, profile, temp(), ['meridian-member-record'], 'artifacts');
+      const request = { mode: 'replay', capability: 'meridian-member-record', version: '1.0.0', args: { member: '123' }, context: { operator: 'TELLER-ONE', branch: 'MAIN-001', role: 'TELLER' } };
+      const record = journal.reserve('operator', 'same-key', 'meridian-member-record', '1.0.0', request);
+      expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER').runId).toBe(record.runId);
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER')).toThrow(/another request/);
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR')).toThrow(/another request/);
+      expect(createRuntime).not.toHaveBeenCalled();
+    } finally {
+      journal.close();
+      for (const name of names) {
+        const value = previous.get(name);
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
 });
 
 describe('single-use interventions and live controls', () => {
@@ -232,6 +262,18 @@ describe('single-use interventions and live controls', () => {
     expect(session.currentOwner).toBe('human'); approval.decide(id, 'abort');
     expect(await pending).toBe('abort'); expect(() => approval.decide(id, 'retry')).toThrow(/Stale/);
     const expired = approval.wait(request); await vi.advanceTimersByTimeAsync(300000); expect(await expired).toBe('abort'); expect(session.currentOwner).toBe('automation');
+  });
+
+  it('aborts a closed browser intervention without dispatch or control handoff', async () => {
+    let dispatches = 0;
+    const page = { isClosed: () => true, click: () => { dispatches++; } } as never;
+    const session = new ControlSession();
+    const result = await new OperatorConsole(page, new RunLogger('replay', new Redactor(), temp()), session).intervene({
+      kind: 'replay_stuck', capability: 'hold@1.0.0', goal: 'apply hold', stepId: 'post', reason: 'stuck', url: origin,
+    });
+    expect(result).toBe('abort');
+    expect(session.currentOwner).toBe('automation');
+    expect(dispatches).toBe(0);
   });
   it('requires approval for a down-labelled post even if policy allows it', async () => {
     const gate = vi.fn(async () => false); const run = guarded({}, gate);
@@ -450,8 +492,26 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
     const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
     expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
-    tool = 'approve';
-    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
+    for (tool of ['approve', 'select_supervisor']) expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
+
+    let dispatches = 0;
+    const session = new ControlSession();
+    const approval = new Approval(session, () => {}, Date.now() + 600_000);
+    const pending = approval.wait({ kind: 'replay_stuck', capability: 'hold', goal: 'apply hold', reason: 'stuck', url: origin }).then(decision => {
+      if (decision === 'approve') dispatches++;
+      return decision;
+    });
+    service.live.set(run.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval });
+    const operator = { Authorization: `Bearer ${'o'.repeat(32)}` };
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'retry' }))).status).toBe(409);
+    const approvalId = approval.pending!.id;
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'approve' }))).status).toBe(409);
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'abort' }))).status).toBe(200);
+    expect(await pending).toBe('abort');
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'retry' }))).status).toBe(409);
+    expect(dispatches).toBe(0);
+    expect((await request(`/runs/${run.runId}/evidence/missing.json`, caller)).status).toBe(403);
+    expect((await request(`/runs/${run.runId}/evidence/missing.json`, operator)).status).toBe(404);
     expect(journal.records.size).toBe(1);
     const response = await request('/capabilities', caller); expect(response.status).toBe(200); expect(response.headers.get('content-security-policy')).toContain("object-src 'none'");
   } finally { await new Promise<void>(r => server.close(() => r())); journal.close(); }
@@ -551,6 +611,26 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
     await browser.page.evaluate(() => fetch('/members/1/update', { method: 'POST' }).catch(() => {})); expect(posted).toBe(0);
     const dir = temp(); const logger = new RunLogger('replay', new Redactor(), dir, true); logger.log('error', { password: 'PRIVATE', params: { member: 'PRIVATE' }, observed: 'PRIVATE' }); logger.writeResult({ status: 'success', outputs: { name: 'PRIVATE' } });
     expect(readdirSync(logger.dir).map(f => readFileSync(join(logger.dir, f), 'utf8')).join('')).not.toContain('PRIVATE');
+  } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('downgrades an unknown-page screenshot to metadata-only evidence', async () => {
+  const app = express();
+  app.get('/known', (_req, res) => res.send('<main>known</main>'));
+  app.get('/unknown', (_req, res) => res.send('<main>unknown</main>'));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const localProfile = { ...profile, entryUrl: `${localOrigin}/known`, routes: ['^/known$', '^/unknown$'], maskSelectors: ['body'] };
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: localProfile });
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  try {
+    await browser.start(`${localOrigin}/known`);
+    await browser.navigate(`${localOrigin}/unknown`);
+    localProfile.routes = ['^/known$'];
+    expect(await logger.screenshot(browser, 'unknown-page')).toBe('(metadata-only evidence)');
+    expect(readFileSync(join(logger.dir, 'log.jsonl'), 'utf8')).toContain('evidence.warning');
+    expect(readFileSync(join(logger.dir, 'log.jsonl'), 'utf8')).not.toContain('/unknown');
+    expect(readdirSync(logger.dir).some(file => file.endsWith('.png'))).toBe(false);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
 }, 15000);
 
