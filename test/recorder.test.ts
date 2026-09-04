@@ -165,6 +165,12 @@ describe('recordArtifact regex parameterization', () => {
     { value: '.', pattern: '[.]' },
     { value: '.', pattern: '[\\.]' },
     { value: 'é', pattern: '[é]' },
+    { value: 'é', pattern: '[\\é]' },
+    { value: 'é', pattern: '[^\\é]' },
+    { value: 'é', pattern: '\\é' },
+    { value: '.', pattern: '[..]' },
+    { value: 'é', pattern: '[éé]' },
+    { value: '.', pattern: '[\\.\\.]' },
   ])('rejects singleton encoded value $value in $pattern', ({ value, pattern }) => {
     const singletonInput = { ...sensitiveInput, params: { member: value } };
     expect(() => recordArtifact(singletonInput, traceForPattern('assert', pattern))).toThrow(/pattern/);

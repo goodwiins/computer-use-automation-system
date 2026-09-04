@@ -80,6 +80,17 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     const genericEscapes = 'dDsSwWbB';
     const literalEscapes = '\\^$.*+?()[\]{}|\/-';
     const controlEscapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', f: '\f', v: '\v' };
+    const isGenericEscape = (escape: string, inClass = false): boolean => genericEscapes.includes(escape) && !(inClass && escape === 'b');
+    const decodeLiteralEscape = (escape: string, inClass = false): string | undefined => {
+      if (inClass && escape === 'b') return '\b';
+      if (Object.hasOwn(controlEscapes, escape)) return controlEscapes[escape];
+      return literalEscapes.includes(escape) ? escape : undefined;
+    };
+    const assertSupportedEscape = (escape: string | undefined, inClass = false): void => {
+      if (!escape || (!isGenericEscape(escape, inClass) && decodeLiteralEscape(escape, inClass) === undefined)) {
+        throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
+      }
+    };
     type Projection = { char: string; start: number; end: number } | null;
     const projection: Projection[] = [];
     const protectedSpans: Array<{ start: number; end: number }> = [];
@@ -92,15 +103,25 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       throw new Error('Cannot record parameter-dependent regex patterns with an unterminated class');
     };
     const exactClass = (body: string): string | undefined => {
-      if (body.startsWith('^')) return undefined;
+      type ClassAtom = { char: string; rangeOperator: boolean } | null;
+      const atoms: ClassAtom[] = [];
       const chars = Array.from(body);
-      if (chars.length === 1) return chars[0];
-      if (chars.length === 2 && chars[0] === '\\') {
-        if (literalEscapes.includes(chars[1]!)) return chars[1];
-        if (Object.hasOwn(controlEscapes, chars[1]!)) return controlEscapes[chars[1]!];
-        if (chars[1] === 'b') return '\b';
+      for (let i = 0; i < chars.length;) {
+        if (chars[i] === '\\') {
+          const next = chars[i + 1];
+          assertSupportedEscape(next, true);
+          if (isGenericEscape(next!, true)) atoms.push(null);
+          else atoms.push({ char: decodeLiteralEscape(next!, true)!, rangeOperator: false });
+          i += 2;
+          continue;
+        }
+        atoms.push({ char: chars[i]!, rangeOperator: chars[i] === '-' });
+        i++;
       }
-      if (chars.length === 3 && chars[1] === '-' && chars[0] === chars[2]) return chars[0];
+      if (body.startsWith('^') || !atoms.length || atoms.some(atom => atom === null)) return undefined;
+      const literals = atoms as Array<Exclude<ClassAtom, null>>;
+      if (literals.every(atom => atom.char === literals[0]!.char)) return literals[0]!.char;
+      if (literals.length === 3 && !literals[0]!.rangeOperator && literals[1]!.rangeOperator && !literals[2]!.rangeOperator && literals[0]!.char === literals[2]!.char) return literals[0]!.char;
       return undefined;
     };
     // A class with more than one possible character is generic for this
@@ -109,12 +130,6 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     // a time; preserving every other class keeps existing captures such as
     // `[^|]` and `[?#]` usable without trying to interpret class semantics.
     const genericClass = (body: string): boolean => !exactClass(body);
-
-    for (const match of pattern.matchAll(/\\([A-Za-z0-9])/g)) {
-      if (!genericEscapes.includes(match[1]!) && !Object.hasOwn(controlEscapes, match[1]!)) {
-        throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
-      }
-    }
 
     for (let i = 0; i < pattern.length;) {
       const placeholder = /^\{\{\w+\}\}/.exec(pattern.slice(i));
@@ -127,11 +142,9 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       const char = pattern[i]!;
       if (char === '\\') {
         const next = pattern[i + 1];
-        if (!next) throw new Error('Cannot record parameter-dependent regex patterns with a trailing escape');
-        if (genericEscapes.includes(next)) projection.push(null);
-        else if (Object.hasOwn(controlEscapes, next)) projection.push({ char: controlEscapes[next]!, start: i, end: i + 2 });
-        else if (literalEscapes.includes(next)) projection.push({ char: next, start: i, end: i + 2 });
-        else throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
+        assertSupportedEscape(next);
+        if (isGenericEscape(next!)) projection.push(null);
+        else projection.push({ char: decodeLiteralEscape(next!)!, start: i, end: i + 2 });
         protect(i, i + 2);
         i += 2;
         continue;
