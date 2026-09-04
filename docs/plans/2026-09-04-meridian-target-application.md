@@ -202,7 +202,7 @@ if (err instanceof InsufficientFundsError) {
 
 ```ts
 if (err instanceof InsufficientFundsError) {
-  return finish('business_outcome', err.outcomeCode, undefined,
+  return finish('business_outcome', err.outcomeCode, undefined, undefined,
     { outcomeCode: err.outcomeCode, detail: err.message });
 }
 ```
@@ -220,16 +220,19 @@ Replace the nested `finish` function with this version. Existing three-argument 
 ```ts
 function finish(
   status: DiscoveryResult['status'], stopReason?: string, summary?: string,
+  finalUrl = surface.currentUrl(),
   outcome?: { outcomeCode: string; detail: string },
 ): DiscoveryResult {
   if (status === 'success') deps.validateCompletion?.(outputs);
   const result: DiscoveryResult = {
-    status, trace, outputs, summary, finalUrl: surface.currentUrl(), stopReason, ...outcome,
+    status, trace, outputs, summary, finalUrl, stopReason, ...outcome,
   };
   logger.log('discovery.finish', { status, stopReason, outputs, steps: trace.length, ...outcome });
   return result;
 }
 ```
+
+Keep the existing four-argument startup exits that pass `entryUrl` as `finalUrl`, and retain the `classifies discovery startup denial before model or escalation` regression in `test/runtime-lifecycle.test.ts`. The new outcome parameter must not make startup cancellation or startup `POST_OUTCOME_UNKNOWN` call `surface.currentUrl()` before the surface starts.
 
 - [ ] **Step 8: Extend the existing CLI discovery fixture, preserving its cleanup and validator assertions.** In `test/meridian-cli.test.ts`, replace that test's opening line with `it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transfer completion validator to discovery: %s', async status => {`. Replace its mocked discovery return with:
 
