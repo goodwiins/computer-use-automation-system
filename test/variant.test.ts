@@ -41,6 +41,9 @@ base.app.allowedOrigins = [ORIGIN];
 const overlayJson = {
   schemaVersion: 1,
   tenant: 'premier',
+  // A reviewed overlay: without this it composes as `draft` and unattended
+  // replay is refused (an overlay can re-aim a locator, so it needs its own review).
+  status: 'approved',
   appId: 'cu-nexus',
   base: { id: 'lookup-member-balance', version: '1.0.0' },
   entryUrl: `${ORIGIN}/?tenant=premier`,

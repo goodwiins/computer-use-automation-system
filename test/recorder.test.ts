@@ -71,6 +71,14 @@ describe('recordArtifact parameterization', () => {
     expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: '/members/{{memberId}}$' });
   });
 
+  it('accepts the observed result route with changing search queries without persisting them', () => {
+    const recorded = recordArtifact(input, { ...discovery, finalUrl: 'http://localhost:4173/members?by=number&q=12345' });
+    const pattern = recorded.successCondition.kind === 'urlMatches' ? recorded.successCondition.pattern : '';
+    expect(new RegExp(pattern).test('http://localhost:4173/members?by=name&q=Van+Dyke')).toBe(true);
+    expect(new RegExp(pattern).test('http://localhost:4173/members/12345')).toBe(false);
+    expect(pattern).not.toContain('12345');
+  });
+
   it('declares extracted outputs in the contract', () => {
     expect(artifact.outputs.map((o) => o.name)).toEqual(['savingsBalance']);
   });
@@ -127,5 +135,65 @@ describe('recordArtifact risk-label floor', () => {
   it('never floors plain link clicks', () => {
     const a = recordArtifact(input, clickTrace('12345', 'a', 'link', 'read'));
     expect(a.steps[0]!.risk).toBe('read');
+  });
+});
+
+describe('recordArtifact regex parameterization', () => {
+  const sensitiveInput = {
+    ...input,
+    name: 'member-regex',
+    goal: 'Read member 123',
+    params: { member: '123' },
+    sensitiveParams: ['member'],
+  };
+
+  const traceForPattern = (action: 'assert' | 'extract', pattern: string): DiscoveryResult => ({
+    status: 'success',
+    outputs: action === 'extract' ? { value: 'captured' } : {},
+    finalUrl: 'http://localhost:4173/members/123',
+    trace: action === 'assert'
+      ? [{ action, reason: 'verify member', assert: { kind: 'urlMatches', pattern }, urlAfter: 'http://localhost:4173/members/123' }]
+      : [{ action, reason: 'read value', descriptor: { description: 'value', strategies: [{ kind: 'nameAttr', name: 'value' }] }, outputName: 'value', pattern, extractedText: 'captured', urlAfter: 'http://localhost:4173/members/123' }],
+  });
+
+  it.each(['\\x31\\x32\\x33', '[1][2][3]', '[1-1][2-2][3-3]', '(?:1)(?:2)(?:3)', '1{1}2{1}3{1}'])('rejects encoded sensitive values in %s before recording assertions or extracts', pattern => {
+    expect(() => recordArtifact(sensitiveInput, traceForPattern('assert', pattern))).toThrow(/pattern/);
+    expect(() => recordArtifact(sensitiveInput, traceForPattern('extract', pattern))).toThrow(/pattern/);
+  });
+
+  it.each([
+    { value: '.', pattern: '[.]' },
+    { value: '.', pattern: '[\\.]' },
+    { value: 'é', pattern: '[é]' },
+    { value: 'é', pattern: '[\\é]' },
+    { value: 'é', pattern: '[^\\é]' },
+    { value: 'é', pattern: '\\é' },
+    { value: '.', pattern: '[..]' },
+    { value: 'é', pattern: '[éé]' },
+    { value: '.', pattern: '[\\.\\.]' },
+  ])('rejects singleton encoded value $value in $pattern', ({ value, pattern }) => {
+    const singletonInput = { ...sensitiveInput, params: { member: value } };
+    expect(() => recordArtifact(singletonInput, traceForPattern('assert', pattern))).toThrow(/pattern/);
+    expect(() => recordArtifact(singletonInput, traceForPattern('extract', pattern))).toThrow(/pattern/);
+  });
+
+  it('keeps safe generic captures and supported parameter placeholders', () => {
+    const generic = recordArtifact(sensitiveInput, traceForPattern('extract', 'OPR\\s+(\\S+)'));
+    expect(generic.steps[0]!.extract?.pattern).toBe('OPR\\s+(\\S+)');
+
+    const unrelatedLiteral = recordArtifact(sensitiveInput, traceForPattern('extract', 'label 1: (\\S+)'));
+    expect(unrelatedLiteral.steps[0]!.extract?.pattern).toBe('label 1: (\\S+)');
+
+    const placeholder = recordArtifact(sensitiveInput, traceForPattern('assert', '^/members/{{member}}$'));
+    expect(placeholder.steps[0]!.assert).toEqual({ kind: 'urlMatches', pattern: '^/members/{{member}}$' });
+
+    const literal = recordArtifact(sensitiveInput, traceForPattern('extract', 'member=(123)'));
+    expect(literal.steps[0]!.extract?.pattern).toBe('member=({{member}})');
+  });
+
+  it('keeps short numeric values from being confused with regex quantifiers', () => {
+    const shortInput = { ...sensitiveInput, params: { member: '4' } };
+    const artifact = recordArtifact(shortInput, traceForPattern('assert', '^\\d{1,12}$'));
+    expect(artifact.steps[0]!.assert).toEqual({ kind: 'urlMatches', pattern: '^\\d{1,12}$' });
   });
 });

@@ -1,9 +1,11 @@
+import type { OutputValue } from '../artifact/schema.js';
 // The replay result contract. The central distinction — the one the brief
 // calls "the most common design mistake" — is that a business outcome
 // ("no such member") is a first-class *answer*, not a failure. Callers
 // branch on `status`; only `failure` means the capability itself broke.
 
 export interface StepFailure {
+  code?: string;
   stepId: string;
   intent: string;
   expected: string;
@@ -14,7 +16,7 @@ export interface StepFailure {
 export type ReplayResult =
   | {
       status: 'success';
-      outputs: Record<string, string>;
+      outputs: Record<string, OutputValue>;
       runId: string;
       evidenceDir: string;
       recoveries: string[]; // detector ids recovered from along the way

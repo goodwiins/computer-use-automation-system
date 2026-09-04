@@ -18,6 +18,8 @@ const targetProps = {
 } as const;
 
 export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
+  { type: 'function', function: { name: 'assert', description: 'Record a checkpoint that must hold during replay.',
+    parameters: { type: 'object', properties: { kind: { type: 'string', enum: ['textVisible', 'urlMatches'] }, text: { type: 'string' }, pattern: { type: 'string' }, frame: { type: 'string' }, reason: { type: 'string' } }, required: ['kind', 'reason'] } } },
   {
     type: 'function',
     function: {
@@ -44,7 +46,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
       description: 'Type a value into a text input.',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, value: { type: 'string' } },
+        properties: { ...targetProps, value: { type: 'string' }, selectBy: { type: 'string', enum: ['label', 'value'] } },
         required: ['value', 'reason'],
       },
     },
@@ -53,10 +55,10 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'select',
-      description: 'Choose an option in a dropdown by its visible label.',
+      description: 'Choose an option; prefer selectBy=value for stable share IDs.',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, value: { type: 'string' } },
+        properties: { ...targetProps, value: { type: 'string' }, selectBy: { type: 'string', enum: ['label', 'value'] } },
         required: ['value', 'reason'],
       },
     },
@@ -68,7 +70,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
       description: 'Read a piece of on-screen text as a named output of the capability (e.g. a balance).',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, outputName: { type: 'string' } },
+        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'CSS selecting data rows within the table; exclude header rows, including legacy td headers' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
         required: ['outputName', 'reason'],
       },
     },
@@ -127,7 +129,7 @@ export function hintToDescriptor(hint: TargetHint, description: string): TargetD
   if (hint.text) strategies.push({ kind: 'text', text: hint.text, exact: true });
   if (hint.css) strategies.push({ kind: 'css', selector: hint.css });
   if (strategies.length === 0) throw new Error('Target hint needs at least one of: role+name, text, nameAttr, css');
-  return { description, frame: hint.frame, strategies };
+  return { description, frame: hint.frame === '(main)' ? '' : hint.frame || undefined, strategies };
 }
 
 export function systemPrompt(goal: string, params: Record<string, string | number>, origins: string[]): string {
@@ -149,7 +151,9 @@ Rules:
 - The app may use frames; pass the frame name you see in the observation.
 - Use extract to read any data the goal asks for, THEN call done with those outputs.
 - For extract targets inside tables, pass a css selector anchored to a stable row label rather than position, e.g. tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4) — row order can differ between records.
-- Do not perform destructive or irreversible actions; if one seems required, call escalate.
+- Request the required final submission with click. The runtime requires separate human approval before it acts; you cannot approve it. Never claim success after a human repair without recorded checks and extraction.
+- Server-bound parameters are references such as {{password}}. Fill using that reference, never request or echo the literal secret.
+- Use assert for checkpoints and extract with columns for structured table rows.
 - On click, classify clicks that submit forms or commit changes with the appropriate risk (read / reversible_write / irreversible).
 - If an action fails, read the error, re-observe, and try a different approach. If you are stuck after a few attempts, call escalate.`;
 }

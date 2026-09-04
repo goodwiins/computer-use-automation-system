@@ -1,0 +1,486 @@
+{
+  "schemaVersion": 2,
+  "id": "meridian-member-record",
+  "name": "meridian-member-record",
+  "description": "Sign on using server references with nameAttr operator, password, branch. Open the exact member record specified by member. Assert a stable member-record checkpoint. Use the observed table structure to extract all current shares as a table named shares, with shareId, type, balance (money), and status columns. Exclude the td header row. Do not select or modify any share.",
+  "version": "1.0.0",
+  "status": "approved",
+  "app": {
+    "appId": "meridian",
+    "entryUrl": "https://web-sample.interface-hiring.com/signon",
+    "allowedOrigins": [
+      "https://web-sample.interface-hiring.com"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "member",
+      "type": "string",
+      "description": "Member number",
+      "required": true,
+      "sensitive": true,
+      "pattern": "^[0-9]{1,12}$"
+    },
+    {
+      "name": "operator",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "shares",
+      "type": "table",
+      "description": "Extracted during the flow at step s11",
+      "sensitive": true,
+      "columns": [
+        {
+          "name": "shareId",
+          "selector": "td:nth-of-type(1)",
+          "type": "string",
+          "sensitive": true
+        },
+        {
+          "name": "type",
+          "selector": "td:nth-of-type(2)",
+          "type": "string",
+          "sensitive": true
+        },
+        {
+          "name": "balance",
+          "selector": "td:nth-of-type(3)",
+          "type": "money",
+          "sensitive": true
+        },
+        {
+          "name": "status",
+          "selector": "td:nth-of-type(4)",
+          "type": "string",
+          "sensitive": true
+        }
+      ],
+      "minRows": 1
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Enter the server-referenced operator ID for sign-on.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the server-referenced operator ID for sign-on.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "operator"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{operator}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the server-referenced password for sign-on without exposing the secret.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the server-referenced password for sign-on without exposing the secret.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "password"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{password}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s3",
+      "intent": "Select the server-referenced branch for sign-on.",
+      "action": "select",
+      "target": {
+        "description": "Select the server-referenced branch for sign-on.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "branch"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{branch}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s4",
+      "intent": "Submit the completed sign-on form using the server-referenced credentials and branch.",
+      "action": "click",
+      "target": {
+        "description": "Submit the completed sign-on form using the server-referenced credentials and branch.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Sign On"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Sign On"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s5",
+      "intent": "Confirm successful sign-on and stable main-menu checkpoint before opening member inquiry.",
+      "action": "assert",
+      "assert": {
+        "kind": "textVisible",
+        "text": "MAIN MENU"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s6",
+      "intent": "Open member inquiry to locate the exact requested member {{member}}.",
+      "action": "click",
+      "target": {
+        "description": "Open member inquiry to locate the exact requested member {{member}}.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Member Inquiry / Selection"
+          },
+          {
+            "kind": "text",
+            "text": "Member Inquiry / Selection",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Member Inquiry / Selection"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s7",
+      "intent": "Enter the exact requested member number for inquiry.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the exact requested member number for inquiry.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "q"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{member}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s8",
+      "intent": "Submit the exact member-number inquiry for member {{member}}.",
+      "action": "click",
+      "target": {
+        "description": "Submit the exact member-number inquiry for member {{member}}.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Search"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s9",
+      "intent": "Open the uniquely matched member record for member {{member}}.",
+      "action": "click",
+      "target": {
+        "description": "Open the uniquely matched member record for member {{member}}.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Select"
+          },
+          {
+            "kind": "text",
+            "text": "Select",
+            "exact": true
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Select"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s10",
+      "intent": "Confirm the exact member-record URL for member {{member}} as a stable checkpoint.",
+      "action": "assert",
+      "assert": {
+        "kind": "urlMatches",
+        "pattern": "/members/{{member}}$"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s11",
+      "intent": "Extract all current share rows from the observed shares table, excluding its first td header row without selecting or modifying any share.",
+      "action": "extract",
+      "target": {
+        "description": "Extract all current share rows from the observed shares table, excluding its first td header row without selecting or modifying any share.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "table"
+        }
+      },
+      "extract": {
+        "output": "shares",
+        "columns": [
+          {
+            "name": "shareId",
+            "selector": "td:nth-of-type(1)",
+            "type": "string",
+            "sensitive": true
+          },
+          {
+            "name": "type",
+            "selector": "td:nth-of-type(2)",
+            "type": "string",
+            "sensitive": true
+          },
+          {
+            "name": "balance",
+            "selector": "td:nth-of-type(3)",
+            "type": "money",
+            "sensitive": true
+          },
+          {
+            "name": "status",
+            "selector": "td:nth-of-type(4)",
+            "type": "string",
+            "sensitive": true
+          }
+        ],
+        "rowSelector": "tr:not(:first-child)"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    }
+  ],
+  "successCondition": {
+    "kind": "urlMatches",
+    "pattern": "/members/{{member}}$"
+  },
+  "detectors": [
+    {
+      "id": "insufficient-funds",
+      "description": "Available funds are insufficient",
+      "match": {
+        "kind": "textVisible",
+        "text": "Insufficient available balance in the source share."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "id": "validation",
+      "description": "Input rejected by the application",
+      "match": {
+        "kind": "textVisible",
+        "text": "could not be validated"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "validation-injected",
+      "description": "Transaction rejected",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANSACTION REJECTED"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "no-matches",
+      "description": "No member records matched the search",
+      "match": {
+        "kind": "textVisible",
+        "text": "No member records matched your search."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "notfound",
+      "description": "No matching member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "RECORD NOT FOUND"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "permission",
+      "description": "Operator lacks required supervisor authority",
+      "match": {
+        "kind": "textVisible",
+        "text": "SUPERVISOR OVERRIDE REQUIRED"
+      },
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED"
+    },
+    {
+      "id": "timeout",
+      "description": "Session expired; invoke a new run",
+      "match": {
+        "kind": "textVisible",
+        "text": "YOUR SESSION HAS TIMED OUT"
+      },
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED"
+    },
+    {
+      "id": "maintenance",
+      "description": "Maintenance notice; safe Continue link returns to menu",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE IN PROGRESS"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue to menu",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "server",
+      "description": "Application error; no automatic transaction retry",
+      "match": {
+        "kind": "textVisible",
+        "text": "APPLICATION ERROR"
+      },
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR"
+    }
+  ],
+  "provenance": {
+    "discoveredAt": "2026-09-04T04:02:26.499Z",
+    "model": "gpt-5.6-luna",
+    "discoveryRunId": "99c13cb8-041b-4487-89bf-cad26467193d",
+    "goal": "Sign on using server references with nameAttr operator, password, branch. Open the exact member record specified by member. Assert a stable member-record checkpoint. Use the observed table structure to extract all current shares as a table named shares, with shareId, type, balance (money), and status columns. Exclude the td header row. Do not select or modify any share."
+  }
+}

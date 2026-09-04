@@ -1,0 +1,12 @@
+{
+  "verifiedAt": "2026-09-04T04:13:34.797Z",
+  "scope": "Live caller dashboard -> Azure chat -> HTTP shared replay; read-only",
+  "chatHttpStatus": 202,
+  "runId": "b1c437d4-708f-40cb-bf38-b20f11566922",
+  "capability": "meridian-member-record",
+  "state": "failure",
+  "resultStatus": "failure",
+  "failureCode": "SESSION_EXPIRED",
+  "credentialCleared": true,
+  "operatorSelectorHidden": false
+}

@@ -1,0 +1,6 @@
+{
+  "runId": "222ebecd-ca02-4960-a875-c2f2f76e0927",
+  "capability": "meridian-open-share",
+  "status": "POST_OUTCOME_UNKNOWN",
+  "reason": "Approved dispatch was followed by discovery completion, but artifact compilation failed because branch selection was not recorded. No artifact was accepted. Subsequent read-only checks stopped before the member record. Do not retry this operation."
+}

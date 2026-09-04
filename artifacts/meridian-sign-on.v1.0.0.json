@@ -1,0 +1,371 @@
+{
+  "schemaVersion": 2,
+  "id": "meridian-sign-on",
+  "name": "meridian-sign-on",
+  "description": "Sign on using server references with nameAttr operator, password, branch. Omit frame for the main page. Assert MAIN MENU. Extract operator and branch separately from the footer using structural CSS and one-capture regex patterns. Extract role separately from the signed-on message using a one-capture pattern for TELLER or SUPERVISOR. Never include SID or timestamp in outputs. Output names: operator, branch, role.",
+  "version": "1.0.0",
+  "status": "approved",
+  "app": {
+    "appId": "meridian",
+    "entryUrl": "https://web-sample.interface-hiring.com/signon",
+    "allowedOrigins": [
+      "https://web-sample.interface-hiring.com"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "operator",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "operator",
+      "type": "string",
+      "description": "Extracted during the flow at step s6",
+      "sensitive": true
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "description": "Extracted during the flow at step s7",
+      "sensitive": true
+    },
+    {
+      "name": "role",
+      "type": "string",
+      "description": "Extracted during the flow at step s8",
+      "sensitive": true
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Enter the server-provided operator reference for sign-on.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the server-provided operator reference for sign-on.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "operator"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{operator}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the server-provided password reference into the password field.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the server-provided password reference into the password field.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "password"
+          },
+          {
+            "kind": "css",
+            "selector": "input[type=\"password\"]"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{password}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s3",
+      "intent": "Select the server-provided branch reference for sign-on.",
+      "action": "select",
+      "target": {
+        "description": "Select the server-provided branch reference for sign-on.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "branch"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{branch}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s4",
+      "intent": "Submit the completed sign-on form using the provided operator, password, and branch references.",
+      "action": "click",
+      "target": {
+        "description": "Submit the completed sign-on form using the provided operator, password, and branch references.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Sign On"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Sign On"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s5",
+      "intent": "Confirm successful sign-on reached the main menu.",
+      "action": "assert",
+      "assert": {
+        "kind": "textVisible",
+        "text": "MAIN MENU"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s6",
+      "intent": "Extract the operator identifier from the dedicated footer row using structural CSS and a single capture.",
+      "action": "extract",
+      "target": {
+        "description": "Extract the operator identifier from the dedicated footer row using structural CSS and a single capture.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "body > table > tbody > tr:nth-last-of-type(2) > td"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "td"
+        }
+      },
+      "extract": {
+        "output": "operator",
+        "pattern": "OPR\\s+([A-Z0-9]+)\\s+\\|"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s7",
+      "intent": "Extract the branch separately from the dedicated footer row using structural CSS and a single capture.",
+      "action": "extract",
+      "target": {
+        "description": "Extract the branch separately from the dedicated footer row using structural CSS and a single capture.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "body > table > tbody > tr:nth-of-type(4) > td"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "td"
+        }
+      },
+      "extract": {
+        "output": "branch",
+        "pattern": "BR\\s+([^|]+)\\s+\\|"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s8",
+      "intent": "Extract the role separately from the signed-on message using a single capture for TELLER or SUPERVISOR.",
+      "action": "extract",
+      "target": {
+        "description": "Extract the role separately from the signed-on message using a single capture for TELLER or SUPERVISOR.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > font:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "font"
+        }
+      },
+      "extract": {
+        "output": "role",
+        "pattern": "\\((TELLER|SUPERVISOR)\\)"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    }
+  ],
+  "successCondition": {
+    "kind": "urlMatches",
+    "pattern": "/menu$"
+  },
+  "detectors": [
+    {
+      "id": "insufficient-funds",
+      "description": "Available funds are insufficient",
+      "match": {
+        "kind": "textVisible",
+        "text": "Insufficient available balance in the source share."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "id": "validation",
+      "description": "Input rejected by the application",
+      "match": {
+        "kind": "textVisible",
+        "text": "could not be validated"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "validation-injected",
+      "description": "Transaction rejected",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANSACTION REJECTED"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "no-matches",
+      "description": "No member records matched the search",
+      "match": {
+        "kind": "textVisible",
+        "text": "No member records matched your search."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "notfound",
+      "description": "No matching member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "RECORD NOT FOUND"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "permission",
+      "description": "Operator lacks required supervisor authority",
+      "match": {
+        "kind": "textVisible",
+        "text": "SUPERVISOR OVERRIDE REQUIRED"
+      },
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED"
+    },
+    {
+      "id": "timeout",
+      "description": "Session expired; invoke a new run",
+      "match": {
+        "kind": "textVisible",
+        "text": "YOUR SESSION HAS TIMED OUT"
+      },
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED"
+    },
+    {
+      "id": "maintenance",
+      "description": "Maintenance notice; safe Continue link returns to menu",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE IN PROGRESS"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue to menu",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "server",
+      "description": "Application error; no automatic transaction retry",
+      "match": {
+        "kind": "textVisible",
+        "text": "APPLICATION ERROR"
+      },
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR"
+    }
+  ],
+  "provenance": {
+    "discoveredAt": "2026-09-04T03:53:19.002Z",
+    "model": "gpt-5.6-luna",
+    "discoveryRunId": "4ac2997a-7ceb-4592-8497-c660e58e6bdf",
+    "goal": "Sign on using server references with nameAttr operator, password, branch. Omit frame for the main page. Assert MAIN MENU. Extract operator and branch separately from the footer using structural CSS and one-capture regex patterns. Extract role separately from the signed-on message using a one-capture pattern for TELLER or SUPERVISOR. Never include SID or timestamp in outputs. Output names: operator, branch, role."
+  }
+}

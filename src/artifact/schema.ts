@@ -68,6 +68,15 @@ export const Detector = z.object({
 });
 export type Detector = z.infer<typeof Detector>;
 
+export const TableColumn = z.object({
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  selector: z.string().min(1),
+  type: z.enum(['string', 'money']),
+  sensitive: z.boolean().optional(),
+});
+export type TableColumn = z.infer<typeof TableColumn>;
+export type OutputValue = string | number | Array<Record<string, string>>;
+
 // ---------- Steps ----------
 export const RiskClass = z.enum(['read', 'reversible_write', 'irreversible']);
 export type RiskClass = z.infer<typeof RiskClass>;
@@ -85,7 +94,8 @@ export const Step = z.object({
   target: TargetDescriptor.optional(), // click/fill/select/extract
   url: z.string().optional(), // navigate; may contain {{param}}
   value: z.string().optional(), // fill/select; may contain {{param}}
-  extract: z.object({ output: z.string() }).optional(), // extract -> which declared output
+  extract: z.object({ output: z.string(), columns: z.array(TableColumn).min(1).optional(), pattern: UrlPattern.optional(), rowSelector: z.string().optional() }).optional(),
+  selectBy: z.enum(['label', 'value']).optional(), // extract -> which declared output
   assert: Assertion.optional(), // assert steps = checkpoints
   risk: RiskClass.default('read'),
   timeoutMs: z.number().int().positive().default(10_000),
@@ -101,18 +111,25 @@ export const Parameter = z.object({
   // sensitive params are redacted in all logs/evidence and must never be
   // written into the artifact as literals
   sensitive: z.boolean().default(false),
+  source: z.enum(['public', 'server']).optional(),
+  format: z.enum(['money', 'positiveMoney']).optional(),
+  pattern: UrlPattern.optional(),
+  enum: z.array(z.string()).min(1).optional(),
 });
 export type Parameter = z.infer<typeof Parameter>;
 
 export const Output = z.object({
   name: z.string(),
-  type: z.enum(['string', 'number']),
+  type: z.enum(['string', 'number', 'table']),
   description: z.string(),
+  sensitive: z.boolean().optional(),
+  columns: z.array(TableColumn).min(1).optional(),
+  minRows: z.number().int().nonnegative().optional(),
 });
 export type Output = z.infer<typeof Output>;
 
 export const CapabilityArtifact = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   id: z.string(),
   name: z.string(),
   description: z.string(),
@@ -200,12 +217,18 @@ export function validateParams(
       continue;
     }
     const v = params[p.name];
+    if (p.format) {
+      try { const cents = moneyCents(String(v)); if (p.format === 'positiveMoney' && cents === 0) throw new Error(); }
+      catch { return { ok: false, error: `Parameter "${p.name}" must be a valid decimal amount` }; }
+    }
+    if (p.pattern && !new RegExp(p.pattern).test(String(v))) return { ok: false, error: `Parameter "${p.name}" has an invalid format` };
+    if (p.enum && !p.enum.includes(String(v))) return { ok: false, error: `Invalid choice for "${p.name}"` };
     if (p.type === 'string' && typeof v !== 'string') {
       return { ok: false, error: `Parameter "${p.name}" must be a string, got "${v}"` };
     }
     if (
       p.type === 'number' &&
-      (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '' || Number.isNaN(Number(v))))
+      (!Number.isFinite(Number(v)) || (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '' || !Number.isFinite(Number(v)))))
     ) {
       return { ok: false, error: `Parameter "${p.name}" must be a number, got "${v}"` };
     }
@@ -215,4 +238,44 @@ export function validateParams(
     if (!declared.has(k)) return { ok: false, error: `Unknown parameter "${k}"` };
   }
   return { ok: true };
+}
+
+/** Canonical decimal strings only; no floating-point money comparisons. */
+export function moneyCents(value: string): number {
+  if (!/^(0|[1-9]\d{0,12})(\.\d{1,2})?$/.test(value)) throw new Error('Invalid decimal amount');
+  const [whole, fraction = ''] = value.split('.');
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+  if (!Number.isSafeInteger(cents)) throw new Error('Amount exceeds safe range');
+  return cents;
+}
+
+export function validOutput(output: Output, value: OutputValue | undefined): boolean {
+  if (output.type === 'string') return typeof value === 'string' && value.trim().length > 0;
+  if (output.type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  return Array.isArray(value) && value.length >= (output.minRows ?? 0) && !!output.columns?.length && value.every(row =>
+    output.columns!.every(column => typeof row[column.name] === 'string' &&
+      (column.type !== 'money' || /^-?(0|[1-9]\d*)\.\d{2}$/.test(row[column.name]!))));
+}
+
+export function normalizeParams(artifact: CapabilityArtifact, params: Record<string, string | number>) {
+  const normalized = { ...artifact.paramDefaults, ...params };
+  const check = validateParams(artifact, normalized);
+  if (!check.ok) throw new Error('Parameters do not match the capability contract');
+  for (const p of artifact.parameters) {
+    if (!Object.hasOwn(normalized, p.name)) continue;
+    if (p.type === 'number') normalized[p.name] = Number(normalized[p.name]);
+    if (p.format) {
+      const cents = moneyCents(String(normalized[p.name]));
+      normalized[p.name] = `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+    }
+  }
+  return normalized;
+}
+
+/** Extract one explicitly captured value from shared legacy text, never an entire session footer. */
+export function extractText(text: string, pattern?: string): string {
+  if (!pattern) return text;
+  const matches = [...text.matchAll(new RegExp(UrlPattern.parse(pattern), 'g'))];
+  if (matches.length !== 1 || matches[0]!.length !== 2 || !matches[0]![1]?.trim()) throw new Error('Text extraction requires one match and one nonempty capture');
+  return matches[0]![1]!.trim();
 }

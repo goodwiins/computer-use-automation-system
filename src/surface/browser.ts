@@ -3,7 +3,8 @@
 // here), and locator resolution prefers role+name over structure.
 
 import { chromium, type Browser, type Frame, type Locator, type Page } from 'playwright';
-import type { TargetDescriptor, TargetStrategy } from '../artifact/schema.js';
+import type { TargetDescriptor, TargetStrategy, RiskClass, TableColumn } from '../artifact/schema.js';
+import type { LiveControl, AppProfile, FaultScenario } from '../runtime/profile.js';
 import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
@@ -17,18 +18,33 @@ const DEFAULT_TIMEOUT = 10_000;
 /** Time left before `deadline`, floored so a retry always gets a real attempt. */
 export const remainingMs = (deadline: number, floor = 500) => Math.max(floor, deadline - Date.now());
 
+const timeoutRemaining = (deadline: number) => {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error('Action timeout expired');
+  return Math.max(1, remaining);
+};
+
+const explicitTimeout = (timeoutMs: number | undefined, deadline: number) => {
+  if (timeoutMs === undefined) return timeoutRemaining(deadline);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Action timeout expired');
+  return Math.max(1, timeoutMs);
+};
+
 /** Escape a value for use inside a double-quoted CSS attribute selector. */
 export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
 export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
+  private faultInjected = false;
+  private submission?: { url: string; method: string; body: string };
+  private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
   // legacy page can neither be read nor clicked.
-  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[] } = {}) {}
+  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
     const url = frame.url();
@@ -53,6 +69,7 @@ export class BrowserSurface implements Surface {
     // port only keeps arbitrary flags out of chromium's argv; a real
     // deployment fronts CDP with an authenticated co-browsing bridge.
     const port = process.env.CU_CDP_PORT;
+    if (port && this.opts.profile?.appId === 'meridian') throw new Error('Remote CDP is not enabled for MERIDIAN');
     const args: string[] = [];
     if (port) {
       const n = Number(port);
@@ -63,6 +80,25 @@ export class BrowserSurface implements Surface {
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.page = await this.browser.newPage();
+    this.page.on('close', () => this.opts.onClose?.());
+    if (this.opts.profile) await this.page.route('**/*', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!['GET', 'HEAD'].includes(request.method())) {
+        const allowed = this.submission?.url === url.href && this.submission.method === request.method()
+          && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
+          && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
+        this.submission = undefined;
+        return allowed ? route.continue() : route.abort();
+      }
+      if (request.isNavigationRequest() && (!this.opts.profile!.routes?.some(p => new RegExp(p).test(url.pathname)) || /\/(post|review)$/.test(url.pathname))) return route.abort();
+      if (!this.faultInjected && this.opts.fault && request.isNavigationRequest() && url.pathname === this.opts.fault.path) {
+        this.faultInjected = true; url.searchParams.set('inject', this.opts.fault.kind);
+        return route.continue({ url: url.href });
+      }
+      return route.continue();
+    });
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -71,6 +107,7 @@ export class BrowserSurface implements Surface {
       d.dismiss().catch(() => {});
     });
     await this.page.goto(entryUrl, { waitUntil: 'load' });
+    await this.verifySignon();
   }
 
   drainDialogs(): Array<{ type: string; message: string }> {
@@ -90,6 +127,7 @@ export class BrowserSurface implements Surface {
   }
 
   async observe(): Promise<Observation> {
+    await this.collectSensitive();
     const frames: Observation['frames'] = [];
     for (const frame of this.page.frames()) {
       if (frame.url() === 'about:blank' || !this.frameInBounds(frame)) continue;
@@ -103,7 +141,18 @@ export class BrowserSurface implements Surface {
             }))
             .filter((f) => f.name),
         );
-        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields });
+        const tables = await frame.evaluate(() => Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
+          const parts: string[] = [];
+          let node: Element | null = table;
+          while (node && node.tagName !== 'BODY') {
+            const parent: Element | null = node.parentElement;
+            const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
+            parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+            node = parent;
+          }
+          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: Array.from(table.rows[0]?.cells ?? [], cell => cell.tagName.toLowerCase()), rows: table.rows.length };
+        }));
+        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields, tables });
       } catch {
         // Frameset parent pages have no body; skip silently.
       }
@@ -113,14 +162,17 @@ export class BrowserSurface implements Surface {
 
   async navigate(url: string): Promise<void> {
     await this.page.goto(url, { waitUntil: 'load' });
+    await this.verifySignon();
   }
 
   async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+    const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
+    const actionTimeout = timeoutRemaining(deadline);
     // Legacy pages navigate on click; wait for the frame to settle.
     await Promise.all([
-      locator.click({ timeout: timeoutMs }),
-      this.page.waitForLoadState('load', { timeout: timeoutMs }).catch(() => {}),
+      locator.click({ timeout: actionTimeout }),
+      this.page.waitForLoadState('load', { timeout: actionTimeout }).catch(() => {}),
     ]);
     return report;
   }
@@ -131,9 +183,14 @@ export class BrowserSurface implements Surface {
     return report;
   }
 
-  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
+  async select(target: TargetDescriptor, value: string, timeoutMs = DEFAULT_TIMEOUT, _risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport> {
     const deadline = Date.now() + timeoutMs;
     const { locator, report } = await this.resolve(target, timeoutMs);
+    if (selectBy === 'value') {
+      if (await locator.evaluate((e, selected) => [...(e as HTMLSelectElement).options].filter(o => o.value === selected).length, value) !== 1) throw new Error('Share or option value is missing or ambiguous');
+      await locator.selectOption({ value }, { timeout: timeoutMs });
+      return report;
+    }
     await locator.selectOption({ label: value }, { timeout: timeoutMs }).catch(async () => {
       // Fall back to value= on whatever budget is left, so a label miss costs
       // one timeout, not two.
@@ -163,6 +220,18 @@ export class BrowserSurface implements Surface {
   }
 
   async screenshot(path: string, opts: { maskValues?: string[] } = {}): Promise<void> {
+    if (this.opts.profile) {
+      await this.collectSensitive();
+      const profile = this.opts.profile;
+      if (!profile.routes?.some(pattern => new RegExp(pattern).test(new URL(this.currentUrl()).pathname))) throw new Error('Unknown page: metadata-only evidence');
+      const requiredMask = profile.maskSelectors?.[0];
+      if (!requiredMask || await this.page.locator(requiredMask).count() !== 1) throw new Error('Unknown page structure: metadata-only evidence');
+      // Whole content cells include dynamically observed financial/contact data.
+      const masks = this.page.frames().flatMap(frame => (profile.maskSelectors ?? ['body']).map(selector => frame.locator(selector)));
+      for (const frame of this.page.frames()) for (const value of opts.maskValues ?? []) masks.push(frame.getByText(value, { exact: false }));
+      await this.page.screenshot({ path, fullPage: true, mask: masks });
+      return;
+    }
     const restore = await this.maskSensitiveInputs(opts.maskValues ?? []);
     try {
       await this.page.screenshot({ path, fullPage: true });
@@ -207,6 +276,88 @@ export class BrowserSurface implements Surface {
     };
   }
 
+  async collectSensitive(): Promise<void> {
+    if (!this.opts.profile || !this.page) return;
+    for (const frame of this.page.frames()) {
+      const observed = await frame.evaluate(() => {
+        const result: string[] = [];
+        const secrets: string[] = [];
+        for (const e of document.querySelectorAll('input, textarea, select')) {
+          const input = e as HTMLInputElement;
+          if (input.type !== 'submit' && input.value) result.push(input.value);
+          if (['password', 'hidden'].includes(input.type) && input.value) secrets.push(input.value);
+        }
+        for (const e of document.querySelectorAll('td.lbl + td, .box td, table[border="1"] td')) {
+          if (e.textContent?.trim()) result.push(e.textContent.trim());
+        }
+        const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
+        if (sid) { result.push(sid); secrets.push(sid); }
+        return { values: result, secrets };
+      });
+      this.opts.sensitive?.(observed.values, observed.secrets);
+    }
+  }
+
+  async readTable(target: TargetDescriptor, columns: TableColumn[], timeoutMs = DEFAULT_TIMEOUT, rowSelector?: string) {
+    const { locator } = await this.resolve(target, timeoutMs);
+    const rows = await locator.evaluate((table, { cols, rows }) => [...table.querySelectorAll(rows ?? 'tr')]
+      .filter(row => row.querySelector('td') && !row.querySelector('th'))
+      .map(row => Object.fromEntries(cols.map(col => {
+        const cells = row.querySelectorAll(col.selector);
+        if (cells.length !== 1) throw new Error('Ambiguous table column');
+        let value = (cells[0]!.textContent ?? '').trim();
+        if (col.type === 'money') {
+          value = value.replace(/[$,]/g, '');
+          if (!/^-?(0|[1-9]\d*)\.\d{2}$/.test(value)) throw new Error('Invalid money column');
+        }
+        return [col.name, value];
+      }))), { cols: columns, rows: rowSelector });
+    this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => this.opts.profile?.appId === 'meridian' || c.sensitive).map(c => row[c.name]!)));
+    return rows;
+  }
+
+  private async verifySignon() {
+    if (!this.opts.profile || new URL(this.page.url()).pathname !== '/menu') return;
+    const body = await this.page.locator('body').innerText();
+    const role = body.match(/Signed on as[^\n]*\((TELLER|SUPERVISOR)\)/)?.[1];
+    const operator = body.match(/OPR\s+(\S+)/)?.[1];
+    const branch = body.match(/BR\s+(\S+)/)?.[1];
+    const sid = body.match(/SID\s+(\S+)/)?.[1];
+    this.identity = role && operator && branch && sid ? { role, operator, branch, sid } : undefined;
+  }
+
+  async prepareClick(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT) {
+    const deadline = Date.now() + timeoutMs;
+    const { locator, report } = await this.resolve(target, timeoutMs);
+    const handle = await locator.elementHandle({ timeout: timeoutRemaining(deadline) });
+    if (!handle) throw new Error('Control disappeared');
+    const args = { identity: this.identity, detectors: this.opts.profile?.detectors ?? [] };
+    // Native form data stays private, including sign-on credentials and CSRF tokens.
+    let approvedBody: string | undefined;
+    return {
+      inspect: async (inspectTimeoutMs?: number) => {
+        explicitTimeout(inspectTimeoutMs, deadline);
+        const snapshot = await handle.evaluate(inspectControl, args);
+        if (approvedBody !== undefined && approvedBody !== snapshot.body) throw new Error('Approval invalidated by changed form data');
+        approvedBody = snapshot.body;
+        return snapshot.live;
+      },
+      dispatch: async (expected: LiveControl, dispatchTimeoutMs?: number) => {
+        if (approvedBody === undefined) throw new Error('Control was not inspected');
+        const actionTimeout = explicitTimeout(dispatchTimeoutMs, deadline);
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
+        try {
+          await Promise.all([
+            this.page.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
+            handle.evaluate(inspectControl, { ...args, expected, body: approvedBody }),
+          ]);
+          await this.verifySignon();
+          return report;
+        } finally { this.submission = undefined; await handle.dispose(); }
+      },
+    };
+  }
+
   async close(): Promise<void> {
     await this.browser?.close();
   }
@@ -219,7 +370,9 @@ export class BrowserSurface implements Surface {
       .filter((f) => f.url() !== 'about:blank' && this.frameInBounds(f));
     if (frameName === undefined) return all;
     if (frameName === '') return [this.page.mainFrame()].filter((f) => this.frameInBounds(f));
-    return all.filter((f) => f.name() === frameName);
+    const matches = all.filter((f) => f.name() === frameName);
+    if (!matches.length) throw new Error('Requested frame does not exist; omit frame for the main page or use a frame name from the observation');
+    return matches;
   }
 
   private buildLocator(frame: Frame, s: TargetStrategy): Locator {
@@ -264,12 +417,14 @@ export class BrowserSurface implements Surface {
           }
           attempts.push({ kind: strategy.kind, matches: count });
           if (count === 1 || (count > 1 && target.nth !== undefined)) {
+            if (Date.now() >= deadline) break;
             if (count > 1) locator = locator.nth(target.nth!);
             return { locator, report: { strategyUsed: i, kind: strategy.kind, matches: count } };
           }
         }
       }
-      await this.page.waitForTimeout(250);
+      if (Date.now() >= deadline) break;
+      await this.page.waitForTimeout(Math.min(250, Math.max(1, deadline - Date.now())));
     } while (Date.now() < deadline);
     throw new TargetResolutionError(target, attempts);
   }
@@ -280,8 +435,9 @@ export class BrowserSurface implements Surface {
    * Resolve the element via the discovery-time hint, then derive a tiered,
    * replay-grade descriptor from the live element's own properties.
    */
-  async describeTarget(hint: TargetDescriptor): Promise<TargetDescriptor> {
-    const { locator } = await this.resolve(hint, DEFAULT_TIMEOUT);
+  async describeTarget(hint: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<TargetDescriptor> {
+    const deadline = Date.now() + timeoutMs;
+    const { locator } = await this.resolve(hint, timeoutMs);
     const info = await locator.evaluate((el) => {
       const e = el as HTMLElement;
       const tag = e.tagName.toLowerCase();
@@ -317,7 +473,8 @@ export class BrowserSurface implements Surface {
         text: tag === 'a' ? (e.textContent ?? '').trim() || undefined : undefined,
         cssPath: parts.join(' > '),
       };
-    });
+    }, { timeout: timeoutRemaining(deadline) });
+    timeoutRemaining(deadline);
 
     const strategies: TargetStrategy[] = [];
     if (info.role && info.accName) strategies.push({ kind: 'role', role: info.role, name: info.accName });
@@ -338,4 +495,66 @@ export class BrowserSurface implements Surface {
       snapshot: { tag: info.tag, role: info.role, text: info.text ?? info.accName },
     };
   }
+}
+
+// Recheck and dispatch in the same browser task, using the same DOM element.
+interface TargetIdentity { operator: string; branch: string; role: string; sid: string }
+function canonicalForm(entries: Iterable<[string, string]>) {
+  return JSON.stringify(Array.from(entries, ([k, v]) => [k.replace(/\r?\n|\r/g, '\r\n'), v.replace(/\r?\n|\r/g, '\r\n')]).sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0));
+}
+function inspectControl(element: Element, args: { identity?: TargetIdentity; detectors: AppProfile['detectors']; expected?: LiveControl; body?: string }): { live: LiveControl; body: string } {
+  if (!element.isConnected) throw new Error('Control is detached');
+  const input = element as HTMLInputElement;
+  const form = input.form;
+  const submit = !!form && (input.type === 'submit' || input.type === 'image');
+  const anchor = element.closest('a');
+  if (!submit && !anchor) throw new Error('Unknown clickable control');
+  const destination = submit ? (input.getAttribute('formaction') ? input.formAction : form!.action) : anchor!.href;
+  const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
+  const body = document.body.innerText;
+  const facts: Record<string, string> = {};
+  if (submit && new URL(destination).pathname !== '/signon') {
+    for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
+      if (field.name && field.name !== '_token' && field.type !== 'password') {
+        if (Object.hasOwn(facts, field.name)) throw new Error('Duplicate form fact');
+        facts[field.name] = field.value;
+      }
+    }
+    for (const label of document.querySelectorAll('.box td.lbl')) {
+      facts[`review:${label.textContent?.trim()}`] = label.nextElementSibling?.textContent?.trim() ?? '';
+    }
+    const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
+    if (member) facts.member = member;
+  }
+  const tokens = form?.querySelectorAll('input[type=hidden][name="_token"]');
+  const tokenPresent = tokens?.length === 1 && !!(tokens[0] as HTMLInputElement).value;
+  const operator = body.match(/OPR\s+(\S+)/)?.[1] ?? '';
+  const branch = body.match(/BR\s+(\S+)/)?.[1] ?? '';
+  const sid = body.match(/SID\s+(\S+)/)?.[1];
+  const role = args.identity && args.identity.sid === sid && args.identity.operator === operator && args.identity.branch === branch ? args.identity.role : '';
+  const conditions = args.detectors.filter(d => d.match.kind === 'textVisible' ? body.includes(d.match.text) : new RegExp(d.match.pattern).test(location.href)).map(d => d.id);
+  const fields = submit ? Array.from(form!.elements).filter(e => {
+    const field = e as HTMLInputElement;
+    return field.name && !field.matches(':disabled') && (field.type !== 'submit' || e === element);
+  }).map(e => {
+    const field = e as HTMLInputElement;
+    if (['file', 'checkbox', 'radio', 'image', 'reset', 'button', 'select-multiple'].includes(field.type)) throw new Error('Unsupported form field');
+    return [field.name.replace(/\r?\n|\r/g, '\r\n'), field.value.replace(/\r?\n|\r/g, '\r\n')];
+  }) : [];
+  const entries = submit ? Array.from(new FormData(form!, input).entries(), ([k, v]) => {
+    if (typeof v !== 'string') throw new Error('File form submissions are not supported');
+    return [k.replace(/\r?\n|\r/g, '\r\n'), v.replace(/\r?\n|\r/g, '\r\n')];
+  }) : [];
+  const formBody = JSON.stringify(entries.sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0));
+  if (formBody !== JSON.stringify(fields.sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0))) throw new Error('Native form data differs from inspected fields');
+  const state: LiveControl = {
+    url: location.href, destination, method, submit, control: input.type === 'submit' ? input.value : element.textContent?.trim() ?? '',
+    operator, branch, role, conditions, facts, tokenPresent,
+    error: !!document.querySelector('ul li') && !!document.querySelector('.err'),
+  };
+  if (args.expected) {
+    if (args.body !== formBody || JSON.stringify(args.expected) !== JSON.stringify(state)) throw new Error('Approval invalidated by changed page state');
+    (element as HTMLElement).click();
+  }
+  return { live: state, body: formBody };
 }

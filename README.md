@@ -169,6 +169,11 @@ npm test        # the suite alone
 npm run ci      # what the pre-push hook runs: typecheck + the suite, ~22s
 ```
 
+[GitHub Actions](.github/workflows/ci.yml) runs the same `npm run ci` gate on
+every pull request and pushes to `master` or `dev`, using Node 22 and Chromium
+on Ubuntu. It also supports manual runs from the Actions tab. No API keys or
+repository secrets are required.
+
 ## Repo map
 
 ```
@@ -188,3 +193,9 @@ scripts/          scripted end-to-end escalation demo
 docs/             use cases, architecture diagram, demo runbook, audits, plans
 .githooks/        pre-push local CI gate (see Setup)
 ```
+
+## MERIDIAN adaptation (in progress)
+
+The shared runtime, asynchronous API, local operator dashboard and thin chat entry point are described in [the MERIDIAN runbook](docs/meridian/runbook.md). See [the implementation report](docs/meridian/report.md) for verified behavior and the remaining live acceptance gates. Configure `.env` from `.env.example`, then run `node --env-file=.env --import tsx cli.ts serve --profile meridian`.
+
+Three live LLM-discovered, reviewed MERIDIAN read artifacts are available: sign-on, member inquiry, and member record. The four write capabilities and verified approved postings remain incomplete. See [live evidence](docs/meridian/live-evidence.md), including the separately recorded unknown posting. Existing mock fixtures are not a substitute for live evidence.

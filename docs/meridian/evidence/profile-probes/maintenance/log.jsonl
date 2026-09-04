@@ -1,0 +1,3 @@
+{"ts":"2026-09-04T03:39:38.351Z","seq":0,"event":"probe.start","kind":"maintenance","code":"READ_ONLY_PROFILE_PROBE_NOT_REPLAY"}
+{"ts":"2026-09-04T03:39:39.355Z","seq":1,"event":"probe.detector","detector":"maintenance","classification":"recoverable"}
+{"ts":"2026-09-04T03:39:39.529Z","seq":2,"event":"probe.recovery","status":"notice cleared; returned to menu; operation not resumed"}

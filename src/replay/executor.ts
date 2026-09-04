@@ -11,10 +11,13 @@
 //      attended mode, escalate to a human on the live session.
 
 import {
+  extractText,
   resolveTarget,
   resolveTemplate,
   resolveTemplateForRegex,
   validateParams,
+  validOutput,
+  type OutputValue,
   type Assertion,
   type CapabilityArtifact,
   type Step,
@@ -42,7 +45,7 @@ export async function runReplay(
 ): Promise<ReplayResult> {
   const { surface, logger } = deps;
   const recoveries: string[] = [];
-  const outputs: Record<string, string> = {};
+  const outputs: Record<string, OutputValue> = {};
   const base = { runId: logger.runId, evidenceDir: logger.dir, recoveries };
 
   // Per-tenant defaults (from an overlay) fill in under the caller's params.
@@ -77,6 +80,7 @@ export async function runReplay(
   }
 
   function fail(failure: StepFailure, escalated = false): ReplayResult {
+    if (surface.mutationDispatched) failure = { ...failure, code: 'POST_OUTCOME_UNKNOWN', observed: 'Dispatch began but completion was not verified. Do not repeat this operation.' };
     logger.log('replay.failure', { ...failure, escalated });
     const result: ReplayResult = { status: 'failure', failure, escalated, ...base };
     logger.writeResult(result);
@@ -85,6 +89,7 @@ export async function runReplay(
 
   // Returns null to continue, or a terminal result.
   async function handleConditions(stepId: string): Promise<ReplayResult | null> {
+    if (surface.mutationDispatched) return null;
     for (let round = 0; round < 2; round++) {
       try {
         const d = await checkDetectors(surface, artifact);
@@ -109,6 +114,7 @@ export async function runReplay(
             // Recovery actions come from config, not the reviewed step list —
             // pass an explicit risk so they go through the policy gate like
             // any other state-touching click instead of riding a silent default.
+            surface.setStep?.(stepId);
             await surface.click(d.recovery.target, undefined, 'reversible_write');
           }
           // Recovery is bounded to one attempt: re-check only THIS detector's
@@ -125,6 +131,7 @@ export async function runReplay(
           }
           continue; // recovery cleared it: re-check the full list for another condition
         }
+        if (artifact.schemaVersion === 2 && d.classification === 'fatal') return fail({ code: d.outcomeCode ?? d.id.toUpperCase(), stepId, intent: 'check runtime conditions', expected: 'valid authorized session', observed: d.description });
         // Fatal, or a recoverable that already failed recovery once.
         const shot = await logger.screenshot(surface, `fatal-${d.id}`);
         return await failOrEscalate(
@@ -145,7 +152,7 @@ export async function runReplay(
 
   // Hard failure path — in attended mode, hand the live session to a human first.
   async function failOrEscalate(failure: StepFailure): Promise<ReplayResult> {
-    if (!deps.escalate) return fail(failure);
+    if (surface.mutationDispatched || !deps.escalate) return fail(failure);
     logger.log('escalation.raised', { stepId: failure.stepId, reason: failure.observed });
     const decision = await deps.escalate({
       kind: 'replay_stuck',
@@ -167,7 +174,7 @@ export async function runReplay(
       if (retry) return retry;
       return CONTINUE_SENTINEL;
     }
-    return CONTINUE_SENTINEL; // 'skip': human performed the step manually
+    return artifact.schemaVersion === 2 ? fail({ ...failure, observed: 'Unchecked skip is not permitted' }, true) : CONTINUE_SENTINEL;
   }
 
   // Sentinel letting failOrEscalate signal "carry on with the next step".
@@ -199,6 +206,7 @@ export async function runReplay(
   // Returns null on success, a terminal result otherwise.
   async function runStep(step: Step, isRetry = false): Promise<ReplayResult | null> {
     const started = Date.now();
+    surface.setStep?.(step.id);
     // Recorded descriptors are parameterized (e.g. a link named "{{memberId}}");
     // bind them to this invocation's params before resolving.
     const target = step.target && resolveTarget(step.target, params);
@@ -218,14 +226,30 @@ export async function runReplay(
           break;
         }
         case 'select': {
-          const report = await surface.select(target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk);
+          const report = await surface.select(target!, resolveTemplate(step.value!, params), step.timeoutMs, step.risk, step.selectBy);
           logger.log('step.resolution', { stepId: step.id, resolution: report });
           break;
         }
         case 'extract': {
+          if (step.extract?.columns) {
+            if (!surface.readTable) throw new Error('Table extraction unavailable');
+            outputs[step.extract.output] = await surface.readTable(target!, step.extract.columns, step.timeoutMs, step.extract.rowSelector);
+            logger.log('step.extracted', { stepId: step.id, output: step.extract.output });
+            break;
+          }
           const { text, report } = await surface.readText(target!, step.timeoutMs);
-          outputs[step.extract!.output] = text;
-          logger.log('step.extracted', { stepId: step.id, output: step.extract!.output, value: text, resolution: report });
+          const pattern = step.extract!.pattern === undefined ? undefined : resolveTemplateForRegex(step.extract!.pattern, params);
+          const value = extractText(text, pattern);
+          const output = artifact.outputs.find(o => o.name === step.extract!.output);
+          if (output?.type === 'number') {
+            if (!value.trim()) throw new Error('Numeric extraction requires nonempty text');
+            const number = Number(value);
+            if (!Number.isFinite(number)) throw new Error('Numeric extraction requires a finite number');
+            outputs[step.extract!.output] = number;
+          } else {
+            outputs[step.extract!.output] = value;
+          }
+          logger.log('step.extracted', { stepId: step.id, output: step.extract!.output, value, resolution: report });
           break;
         }
         case 'assert': {
@@ -239,6 +263,7 @@ export async function runReplay(
       logger.log('step.ok', { stepId: step.id, action: step.action, ms: Date.now() - started, isRetry });
       return null;
     } catch (err) {
+      if (surface.mutationDispatched) return fail({ stepId: step.id, intent: step.intent, expected: 'verified posting completion', observed: 'POST_OUTCOME_UNKNOWN' });
       noteDialogs(step.id);
       // The dialog that explains this failure often fired on an EARLIER step
       // that "succeeded" (the click happened; the navigation it should have
@@ -253,7 +278,7 @@ export async function runReplay(
       // A recovery ran and cleared the condition that (most likely) broke this
       // step — re-run it once. Bounded: the retry's own failure is terminal.
       // Never auto-retry an irreversible step: its first attempt may have landed.
-      if (recoveries.length > recoveriesBefore && !isRetry && step.risk !== 'irreversible') return runStep(step, true);
+      if (recoveries.length > recoveriesBefore && !isRetry && (surface.effectiveRisk ?? step.risk) !== 'irreversible') return runStep(step, true);
 
       const shot = await logger.screenshot(surface, `failed-${step.id}`);
       const failure: StepFailure = {
@@ -272,6 +297,7 @@ export async function runReplay(
   }
 
   for (const step of artifact.steps) {
+    surface.setStep?.(step.id);
     logger.log('step.start', { stepId: step.id, action: step.action, intent: step.intent, risk: step.risk });
     const conditionResult = await handleConditions(step.id);
     if (conditionResult === CONTINUE_SENTINEL) continue; // escalation path already executed/skipped this step
@@ -333,6 +359,9 @@ export async function runReplay(
     }
   }
 
+  for (const output of artifact.outputs) {
+    if (artifact.schemaVersion === 2 && !validOutput(output, outputs[output.name])) return fail({ stepId: '(outputs)', intent: 'validate output types', expected: output.type, observed: 'Output does not satisfy its declared contract' });
+  }
   const shot = await logger.screenshot(surface, 'success');
   logger.log('replay.success', { outputs, screenshot: shot });
   const result: ReplayResult = { status: 'success', outputs, ...base };

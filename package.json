@@ -5,11 +5,13 @@
   "description": "Computer-use automation system: LLM discovery -> capability artifact -> deterministic replay, with escalation and safety guardrails.",
   "type": "module",
   "scripts": {
+    "serve": "tsx cli.ts serve",
     "target-app": "tsx target-app/server.ts",
     "discover": "tsx cli.ts discover",
     "replay": "tsx cli.ts replay",
     "list": "tsx cli.ts list",
     "validate": "tsx cli.ts validate",
+    "eval": "tsx scripts/evaluate-run.ts",
     "test": "vitest run",
     "ci": "npm run typecheck && npm test",
     "typecheck": "tsc --noEmit"

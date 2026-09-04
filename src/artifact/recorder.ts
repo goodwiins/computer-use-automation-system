@@ -48,6 +48,7 @@ export interface RecorderInput {
   entryUrl: string;
   params: Record<string, string | number>;
   sensitiveParams: string[];
+  serverParams?: string[];
   allowedOrigins: string[];
   appId: string;
   appDetectors: Detector[];
@@ -64,10 +65,209 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   const paramEntries = Object.entries(input.params).sort(
     (a, b) => String(b[1]).length - String(a[1]).length,
   );
-  const templatize = (s: string): string => {
+  const substitute = (s: string, entries: typeof paramEntries): string => {
     let out = s;
-    for (const [name, value] of paramEntries) out = out.split(String(value)).join(`{{${name}}}`);
+    for (const [name, value] of entries) if (String(value)) out = out.split(String(value)).join(`{{${name}}}`);
     return out;
+  };
+  const templatize = (s: string): string => substitute(s, paramEntries);
+
+  // Regex syntax can encode a value without containing its literal spelling.
+  // Keep a small grammar: generic escapes/classes stay opaque, deterministic
+  // literals can be templated, and unsupported encodings fail closed.
+  // ponytail: regex projection is intentionally bounded; extend the grammar only for a reviewed pattern.
+  const safeRegexPattern = (pattern: string): string => {
+    const genericEscapes = 'dDsSwWbB';
+    const literalEscapes = '\\^$.*+?()[\]{}|\/-';
+    const controlEscapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', f: '\f', v: '\v' };
+    const isGenericEscape = (escape: string, inClass = false): boolean => genericEscapes.includes(escape) && !(inClass && escape === 'b');
+    const decodeLiteralEscape = (escape: string, inClass = false): string | undefined => {
+      if (inClass && escape === 'b') return '\b';
+      if (Object.hasOwn(controlEscapes, escape)) return controlEscapes[escape];
+      return literalEscapes.includes(escape) ? escape : undefined;
+    };
+    const assertSupportedEscape = (escape: string | undefined, inClass = false): void => {
+      if (!escape || (!isGenericEscape(escape, inClass) && decodeLiteralEscape(escape, inClass) === undefined)) {
+        throw new Error('Cannot record parameter-dependent regex patterns with unsupported escapes');
+      }
+    };
+    type Projection = { char: string; start: number; end: number } | null;
+    const projection: Projection[] = [];
+    const protectedSpans: Array<{ start: number; end: number }> = [];
+    const protect = (start: number, end: number) => protectedSpans.push({ start, end });
+    const classEnd = (start: number): number => {
+      for (let i = start + 1; i < pattern.length; i++) {
+        if (pattern[i] === '\\') i++;
+        else if (pattern[i] === ']') return i;
+      }
+      throw new Error('Cannot record parameter-dependent regex patterns with an unterminated class');
+    };
+    const exactClass = (body: string): string | undefined => {
+      type ClassAtom = { char: string; rangeOperator: boolean } | null;
+      const atoms: ClassAtom[] = [];
+      const chars = Array.from(body);
+      for (let i = 0; i < chars.length;) {
+        if (chars[i] === '\\') {
+          const next = chars[i + 1];
+          assertSupportedEscape(next, true);
+          if (isGenericEscape(next!, true)) atoms.push(null);
+          else atoms.push({ char: decodeLiteralEscape(next!, true)!, rangeOperator: false });
+          i += 2;
+          continue;
+        }
+        atoms.push({ char: chars[i]!, rangeOperator: chars[i] === '-' });
+        i++;
+      }
+      if (body.startsWith('^') || !atoms.length || atoms.some(atom => atom === null)) return undefined;
+      const literals = atoms as Array<Exclude<ClassAtom, null>>;
+      if (literals.every(atom => atom.char === literals[0]!.char)) return literals[0]!.char;
+      if (literals.length === 3 && !literals[0]!.rangeOperator && literals[1]!.rangeOperator && !literals[2]!.rangeOperator && literals[0]!.char === literals[2]!.char) return literals[0]!.char;
+      return undefined;
+    };
+    // A class with more than one possible character is generic for this
+    // boundary. Singleton classes and equal-character ranges are handled by
+    // `exactClass` above because they can encode a parameter one character at
+    // a time; preserving every other class keeps existing captures such as
+    // `[^|]` and `[?#]` usable without trying to interpret class semantics.
+    const genericClass = (body: string): boolean => !exactClass(body);
+
+    for (let i = 0; i < pattern.length;) {
+      const placeholder = /^\{\{\w+\}\}/.exec(pattern.slice(i));
+      if (placeholder) {
+        protect(i, i + placeholder[0].length);
+        projection.push(null);
+        i += placeholder[0].length;
+        continue;
+      }
+      const char = pattern[i]!;
+      if (char === '\\') {
+        const next = pattern[i + 1];
+        assertSupportedEscape(next);
+        if (isGenericEscape(next!)) projection.push(null);
+        else projection.push({ char: decodeLiteralEscape(next!)!, start: i, end: i + 2 });
+        protect(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (char === '[') {
+        const end = classEnd(i);
+        const body = pattern.slice(i + 1, end);
+        const literal = exactClass(body);
+        if (literal) projection.push({ char: literal, start: i, end: end + 1 });
+        else if (genericClass(body)) projection.push(null);
+        else throw new Error('Cannot record parameter-dependent regex patterns with unsupported classes');
+        protect(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      if (char === '(') {
+        i++;
+        if (pattern[i] === '?') {
+          if (![':', '=', '!', '>'].includes(pattern[i + 1] ?? '')) throw new Error('Cannot record parameter-dependent regex patterns with unsupported groups');
+          i += 2;
+        }
+        continue;
+      }
+      if (char === ')' || char === '^' || char === '$') {
+        i++;
+        continue;
+      }
+      if (char === '|') {
+        projection.push(null);
+        i++;
+        continue;
+      }
+      if (char === '{') {
+        const end = pattern.indexOf('}', i + 1);
+        if (end < 0) throw new Error('Cannot record parameter-dependent regex patterns with an unterminated quantifier');
+        const quantifier = pattern.slice(i + 1, end);
+        const previous = projection.at(-1);
+        if (/^\d+$/.test(quantifier) && previous && Number(quantifier) > 1 && Number(quantifier) <= 32) {
+          for (let repeat = 1; repeat < Number(quantifier); repeat++) projection.push({ ...previous });
+        } else if (!/^\d+$/.test(quantifier)) {
+          projection.push(null);
+        }
+        protect(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      if ('*+?.'.includes(char)) {
+        projection.push(null);
+        i++;
+        continue;
+      }
+      projection.push({ char, start: i, end: i + 1 });
+      i++;
+    }
+
+    for (const [name, value] of paramEntries) {
+      const v = String(value);
+      if (!v) continue;
+      const valueChars = Array.from(v);
+      const hasSafeRawOccurrence = (startAt: number): boolean => {
+        for (let start = pattern.indexOf(v, startAt); start >= 0; start = pattern.indexOf(v, start + 1)) {
+          const end = start + v.length;
+          if (!protectedSpans.some(span => start < span.end && end > span.start)) return true;
+        }
+        return false;
+      };
+      const hasSafeLiteralOccurrence = hasSafeRawOccurrence(0);
+      for (let start = 0; start <= projection.length - valueChars.length; start++) {
+        const run = projection.slice(start, start + valueChars.length);
+        if (run.length !== valueChars.length || run.some((part) => !part) || run.map((part) => (part as Exclude<Projection, null>).char).join('') !== v) continue;
+        const rawStart = (run[0] as Exclude<Projection, null>).start;
+        const rawEnd = (run.at(-1) as Exclude<Projection, null>).end;
+        if (pattern.slice(rawStart, rawEnd) !== v) {
+          throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
+        }
+      }
+      // If a value's characters occur in separate literal tokens, the
+      // pattern may still encode the value through groups, alternation, or
+      // other regex structure that this small grammar does not interpret.
+      // Keep direct raw occurrences usable, but fail closed on any such
+      // fragment rather than allowing a partial secret to remain in the
+      // artifact.
+      const deterministic = projection.filter((part): part is Exclude<Projection, null> => part !== null).map(part => part.char);
+      let valueIndex = 0;
+      for (const char of deterministic) if (char === valueChars[valueIndex]) valueIndex++;
+      const isDeterministicValue = deterministic.length >= valueChars.length &&
+        deterministic.every(char => valueChars.includes(char)) &&
+        valueIndex === valueChars.length;
+      if (!hasSafeLiteralOccurrence && isDeterministicValue) {
+        throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
+      }
+    }
+
+    let templated = '';
+    let cursor = 0;
+    for (const span of protectedSpans.sort((a, b) => a.start - b.start)) {
+      templated += templatize(pattern.slice(cursor, span.start)) + pattern.slice(span.start, span.end);
+      cursor = span.end;
+    }
+    return templated + templatize(pattern.slice(cursor));
+  };
+
+  // Never splice runtime data into CSS syntax. Keep only invariant strategies.
+  const safeCss = (selector: string): boolean => {
+    const decoded = selector.replace(/\\(?:\r\n|[\n\r\f])/g, '').replace(/\\([0-9a-f]{1,6})\s?|\\([^\n\r\f])/gi,
+      (_, hex: string | undefined, char: string) => hex ? (() => { const code = parseInt(hex, 16); return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? '\ufffd' : String.fromCodePoint(code); })() : char);
+    if (decoded.includes('{{')) return false;
+    // Structural indices are not invocation data; sensitive values still fail closed.
+    const semantic = decoded.replace(/:nth-(?:of-type|child)\(\d+\)/g, '');
+    return !paramEntries.some(([name, value]) => String(value) &&
+      ((input.sensitiveParams.includes(name) ? decoded : semantic).includes(String(value)) || selector.includes(String(value)) && input.sensitiveParams.includes(name)));
+  };
+
+  const valueTemplate = (entry: DiscoveryResult['trace'][number]) => {
+    const matches = paramEntries.filter(([, value]) => String(value) === entry.value);
+    if (matches.length === 1) return `{{${matches[0]![0]}}}`;
+    if (matches.length > 1) {
+      const field = entry.descriptor?.strategies.find(s => s.kind === 'nameAttr');
+      const match = matches.find(([name]) => field?.kind === 'nameAttr' && field.name === name);
+      if (match) return `{{${match[0]}}}`;
+      throw new Error('Cannot record an ambiguous parameter binding');
+    }
+    return templatize(entry.value!);
   };
 
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
@@ -76,32 +276,36 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     description: `Invocation parameter "${name}"`,
     required: true,
     sensitive: input.sensitiveParams.includes(name),
+    ...(input.serverParams?.includes(name) ? { source: 'server' as const } : {}),
   }));
 
   const steps: Step[] = discovery.trace.map((entry, i) => {
     const id = `s${i + 1}`;
     switch (entry.action) {
+      case 'assert':
+        return { id, intent: templatize(entry.reason), action: 'assert', assert: entry.assert!.kind === 'textVisible' ? { ...entry.assert!, text: templatize(entry.assert!.text) } : { ...entry.assert!, pattern: safeRegexPattern(entry.assert!.pattern) }, risk: 'read', timeoutMs: 10_000 };
       case 'navigate':
         return { id, intent: templatize(entry.reason), action: 'navigate', url: templatize(entry.url!), risk: 'read', timeoutMs: 10_000 };
       case 'click':
         return { id, intent: templatize(entry.reason), action: 'click', target: entry.descriptor!, risk: floorRisk(entry.risk ?? 'read', entry.descriptor!), timeoutMs: 10_000 };
       case 'fill':
-        return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'fill', target: entry.descriptor!, value: valueTemplate(entry), risk: 'reversible_write', timeoutMs: 10_000 };
       case 'select':
-        return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: templatize(entry.value!), risk: 'reversible_write', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: valueTemplate(entry), selectBy: entry.selectBy, risk: 'reversible_write', timeoutMs: 10_000 };
       case 'extract':
-        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName! }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: input.appId === 'meridian' ? entry.columns?.map(c => ({ ...c, sensitive: true })) : entry.columns, pattern: entry.pattern === undefined ? undefined : safeRegexPattern(entry.pattern), rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
     }
   });
 
   // Click targets whose text was a parameter value (e.g. a search-result link
   // showing the member number) also need templating.
   for (const step of steps) {
+    if (step.extract && ((step.extract.rowSelector && !safeCss(step.extract.rowSelector)) || step.extract.columns?.some(c => !safeCss(c.selector)))) throw new Error('Cannot record parameter-dependent table selectors');
     if (!step.target) continue;
     step.target = {
       ...step.target,
       description: templatize(step.target.description),
-      strategies: step.target.strategies.map((s) => {
+      strategies: step.target.strategies.filter((s) => s.kind !== 'css' || safeCss(s.selector)).map((s) => {
         if (s.kind === 'text') return { ...s, text: templatize(s.text) };
         if (s.kind === 'role') return { ...s, name: templatize(s.name) };
         return s;
@@ -111,27 +315,32 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
         text: step.target.snapshot.text && templatize(step.target.snapshot.text),
       },
     };
+    if (!step.target.strategies.length) throw new Error('Cannot record artifact: no safe target strategy remains');
   }
 
   // Success condition: the flow verifiably ended where discovery ended.
-  const finalPath = new URL(discovery.finalUrl).pathname;
+  const finalLocation = new URL(discovery.finalUrl);
+  const finalPath = finalLocation.pathname;
+  const ending = finalLocation.search || finalLocation.hash ? '(?:[?#].*)?$' : '$';
   const successCondition = {
     kind: 'urlMatches' as const,
-    pattern: `${escapeRegex(templatize(finalPath)).replace(/\\\{\\\{(\w+)\\\}\\\}/g, '{{$1}}')}$`,
+    pattern: `${escapeRegex(templatize(finalPath)).replace(/\\\{\\\{(\w+)\\\}\\\}/g, '{{$1}}')}${ending}`,
   };
 
   // Find which step extracted each output, for a description that carries no
   // observed values (PII may have been extracted during discovery).
   const outputStepId = (name: string): string =>
     steps.find((s) => s.action === 'extract' && s.extract?.output === name)?.id ?? '?';
-  const outputs = Object.keys(discovery.outputs).map((name) => ({
+  const outputs = [...new Set(steps.flatMap((s) => s.extract ? [s.extract.output] : []))].map((name) => ({
     name,
-    type: 'string' as const,
+    type: steps.find(s => s.extract?.output === name)?.extract?.columns ? 'table' as const : 'string' as const,
+    columns: steps.find(s => s.extract?.output === name)?.extract?.columns,
+    sensitive: input.appId === 'meridian',
     description: `Extracted during the flow at step ${outputStepId(name)}`,
   }));
 
   return CapabilityArtifact.parse({
-    schemaVersion: 1,
+    schemaVersion: input.appId === 'meridian' || steps.some(s => s.selectBy || s.extract?.columns || s.extract?.pattern) ? 2 : 1,
     id: input.name,
     name: input.name,
     description: templatize(input.goal),

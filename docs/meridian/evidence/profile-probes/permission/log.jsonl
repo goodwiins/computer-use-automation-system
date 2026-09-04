@@ -1,0 +1,2 @@
+{"ts":"2026-09-04T03:39:36.363Z","seq":0,"event":"probe.start","kind":"permission","code":"READ_ONLY_PROFILE_PROBE_NOT_REPLAY"}
+{"ts":"2026-09-04T03:39:37.297Z","seq":1,"event":"probe.detector","detector":"permission","classification":"fatal","outcomeCode":"PERMISSION_DENIED"}
