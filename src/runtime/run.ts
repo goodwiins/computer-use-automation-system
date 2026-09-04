@@ -42,10 +42,12 @@ export function createRuntime(options: {
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
     } : undefined, (event, data) => logger.log(event, data));
-  const timer = setTimeout(() => { options.onClose?.(); void surface.close(); }, 600_000);
+  let timer: ReturnType<typeof setTimeout>;
+  const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
+    close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };
+  timer = setTimeout(() => { void closeRuntime(runtime); }, 600_000);
   timer.unref();
-  return { surface, browser, logger, session, redactor, promptRedactor, deadline,
-    close: async () => { clearTimeout(timer); options.onClose?.(); await surface.close(); } };
+  return runtime;
 }
 
 export async function executeReplay(artifact: CapabilityArtifact, params: Record<string, string | number>,

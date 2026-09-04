@@ -189,7 +189,8 @@ async function discover(argv: string[]) {
         console.log(`  outputs : ${JSON.stringify(runtime.redactor.redact(result.outputs))}`);
         console.log(`  artifact: ${path} (status: draft — review, then run with --approve to promote)`);
       } else {
-        logger.writeResult({ status: result.status, stopReason: result.stopReason });
+        const code = result.stopReason === 'RUN_ABORTED' || result.stopReason === 'POST_OUTCOME_UNKNOWN' ? result.stopReason : undefined;
+        logger.writeResult(code ? { status: 'failure', failure: { code } } : { status: result.status });
         console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
         process.exitCode = 1;
       }

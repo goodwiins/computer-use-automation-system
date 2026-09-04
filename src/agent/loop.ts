@@ -70,7 +70,12 @@ export async function runDiscovery(
   };
 
   logger.log('discovery.start', { goal, entryUrl, model, params });
-  await surface.start(entryUrl);
+  try { await surface.start(entryUrl); }
+  catch (err) {
+    if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN', undefined, entryUrl);
+    if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED', undefined, entryUrl);
+    throw err;
+  }
 
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt(goal, params, origins) },
@@ -254,13 +259,13 @@ export async function runDiscovery(
   }
   return finish('stopped', `max steps (${deps.maxSteps}) reached`);
 
-  function finish(status: DiscoveryResult['status'], stopReason?: string, summary?: string): DiscoveryResult {
+  function finish(status: DiscoveryResult['status'], stopReason?: string, summary?: string, finalUrl = surface.currentUrl()): DiscoveryResult {
     const result: DiscoveryResult = {
       status,
       trace,
       outputs,
       summary,
-      finalUrl: surface.currentUrl(),
+      finalUrl,
       stopReason,
     };
     logger.log('discovery.finish', { status, stopReason, outputs, steps: trace.length });

@@ -10,7 +10,8 @@ import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { Redactor } from '../src/safety/redact.js';
 import { CapabilityArtifact } from '../src/artifact/schema.js';
-import { GuardedSurface } from '../src/surface/guarded.js';
+import { GuardedSurface, RunAbortedError } from '../src/surface/guarded.js';
+import { BrowserSurface } from '../src/surface/browser.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { runDiscovery } from '../src/agent/loop.js';
 import { runReplay } from '../src/replay/executor.js';
@@ -18,7 +19,7 @@ import type { Surface } from '../src/surface/types.js';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'runtime-lifecycle-')); dirs.push(dir); return dir; };
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const origin = 'https://web-sample.interface-hiring.com';
 const profile = loadProfile('meridian');
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
@@ -67,6 +68,41 @@ it('preserves the original replay error even when cleanup and warning persistenc
   vi.spyOn(logger, 'log').mockImplementation(() => { throw original; });
   const candidate = { surface: fixtureSurface(), logger, close: async () => { throw new Error('Cleanup failed'); } } as unknown as ReturnType<typeof runtime.createRuntime>;
   await expect(runtime.executeReplay(fixtureArtifact(), {}, candidate, policy)).rejects.toBe(original);
+});
+
+it('isolates deadline notification failures and still closes the browser', async () => {
+  vi.useFakeTimers();
+  const browserClose = vi.spyOn(BrowserSurface.prototype, 'close').mockResolvedValue();
+  const candidate = runtime.createRuntime({
+    kind: 'discovery', artifact: 'fixture', version: '1.0.0', policy,
+    params: {}, sensitive: [], gate: async () => true, evidenceDir: temp(),
+    onClose: () => { throw new Error('Injected private deadline callback failure'); },
+  });
+
+  await vi.advanceTimersByTimeAsync(600_000);
+
+  expect(browserClose).toHaveBeenCalledOnce();
+  const log = readFileSync(join(candidate.logger.dir, 'log.jsonl'), 'utf8');
+  expect(log).toContain('RUNTIME_CLEANUP_FAILED');
+  expect(log).not.toContain('Injected private deadline callback failure');
+});
+
+it('classifies discovery startup denial before model or escalation', async () => {
+  const surface = fixtureSurface();
+  surface.start = async () => { throw new RunAbortedError('navigate'); };
+  const create = vi.fn();
+  const escalate = vi.fn();
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+
+  const result = await runDiscovery('read', `${origin}/signon`, {}, [origin], {
+    surface, logger,
+    openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+    model: 'offline', maxSteps: 1, escalate,
+  });
+
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'RUN_ABORTED', finalUrl: `${origin}/signon` });
+  expect(create).not.toHaveBeenCalled();
+  expect(escalate).not.toHaveBeenCalled();
 });
 
 it('closes a constructed runtime before releasing the slot after setup fails', async () => {
