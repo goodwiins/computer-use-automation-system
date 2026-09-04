@@ -1,6 +1,6 @@
 # MERIDIAN CORE adaptation — replacement plan
 
-Status: proposed for implementation. Supersedes the earlier adaptation plan and incorporates both Claude Fable 5.1 reviews, with corrections to recommendations that weakened the assignment's safety requirements.
+Status: design reference. The [Superpowers execution plan](2026-09-04-meridian-superpowers.md) tracks current PRs and the remaining work. Supersedes the earlier adaptation plan and incorporates both Claude Fable 5.1 reviews, with corrections to recommendations that weakened the assignment's safety requirements.
 
 ## 1. Outcome, boundaries, and prerequisites
 
@@ -19,7 +19,7 @@ On September 3, the open heads were #32 `376e52d`, #31 `60d6090`, and #6 `9117af
 3. In #6, remove the raw rejected overlay URL from exceptions. For CSS recording, discard strategies containing parameter-dependent literals or unresolved templates instead of introducing a CSS parser or blindly substituting values. Decode CSS escape forms when checking for sensitive literals; reject an artifact if a safe strategy cannot be established. Preserve invariant structural fallbacks. Never treat a short sensitive value as safe to persist because it is short.
 4. Validate quote/backslash inputs, empty and short values, structural indices, overlay defaults, and overlay approval composition. Existing manually templated CSS must be explicitly reviewed; the MERIDIAN recording path will not generate it.
 5. Require `npm run ci`, `npm run validate`, and `git diff --check`; verify hosted CI on final heads and the merged baseline.
-6. Create `codex/meridian-adaptation` in an isolated worktree from merged `master`. Preserve the primary checkout's modified capability artifact.
+6. Create implementation branches in isolated worktrees from merged `dev`, using the `codex/` prefix; open PRs against `dev`. Production (`master` in this repository) is reserved for releases. Preserve the primary checkout's modified capability artifact.
 
 ## 2. Adapt the shared core and record all seven functions
 

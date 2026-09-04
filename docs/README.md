@@ -7,3 +7,5 @@
 - `plans/` — dated implementation plans (`YYYY-MM-DD-<topic>.md`)
 
 - [MERIDIAN CORE adaptation plan](plans/2026-09-03-meridian-adaptation.md) — three-day scope, security decisions, and acceptance gates
+
+- [MERIDIAN Superpowers execution plan](plans/2026-09-04-meridian-superpowers.md) — remaining work, current PR dependencies, executable steps, and acceptance checks
