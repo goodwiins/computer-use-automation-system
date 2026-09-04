@@ -71,6 +71,14 @@ describe('recordArtifact parameterization', () => {
     expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: '/members/{{memberId}}$' });
   });
 
+  it('accepts the observed result route with changing search queries without persisting them', () => {
+    const recorded = recordArtifact(input, { ...discovery, finalUrl: 'http://localhost:4173/members?by=number&q=12345' });
+    const pattern = recorded.successCondition.kind === 'urlMatches' ? recorded.successCondition.pattern : '';
+    expect(new RegExp(pattern).test('http://localhost:4173/members?by=name&q=Van+Dyke')).toBe(true);
+    expect(new RegExp(pattern).test('http://localhost:4173/members/12345')).toBe(false);
+    expect(pattern).not.toContain('12345');
+  });
+
   it('declares extracted outputs in the contract', () => {
     expect(artifact.outputs.map((o) => o.name)).toEqual(['savingsBalance']);
   });

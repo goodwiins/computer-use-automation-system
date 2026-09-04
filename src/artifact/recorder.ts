@@ -118,13 +118,14 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       case 'select':
         return { id, intent: templatize(entry.reason), action: 'select', target: entry.descriptor!, value: valueTemplate(entry), selectBy: entry.selectBy, risk: 'reversible_write', timeoutMs: 10_000 };
       case 'extract':
-        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: entry.columns, rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
+        return { id, intent: templatize(entry.reason), action: 'extract', target: entry.descriptor!, extract: { output: entry.outputName!, columns: input.appId === 'meridian' ? entry.columns?.map(c => ({ ...c, sensitive: true })) : entry.columns, pattern: entry.pattern, rowSelector: entry.rowSelector }, risk: 'read', timeoutMs: 10_000 };
     }
   });
 
   // Click targets whose text was a parameter value (e.g. a search-result link
   // showing the member number) also need templating.
   for (const step of steps) {
+    if (step.extract?.pattern && !safeCss(step.extract.pattern)) throw new Error('Cannot record parameter-dependent extraction patterns');
     if (step.extract && ((step.extract.rowSelector && !safeCss(step.extract.rowSelector)) || step.extract.columns?.some(c => !safeCss(c.selector)))) throw new Error('Cannot record parameter-dependent table selectors');
     if (!step.target) continue;
     step.target = {
@@ -144,10 +145,12 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   }
 
   // Success condition: the flow verifiably ended where discovery ended.
-  const finalPath = new URL(discovery.finalUrl).pathname;
+  const finalLocation = new URL(discovery.finalUrl);
+  const finalPath = finalLocation.pathname;
+  const ending = finalLocation.search || finalLocation.hash ? '(?:[?#].*)?$' : '$';
   const successCondition = {
     kind: 'urlMatches' as const,
-    pattern: `${escapeRegex(templatize(finalPath)).replace(/\\\{\\\{(\w+)\\\}\\\}/g, '{{$1}}')}$`,
+    pattern: `${escapeRegex(templatize(finalPath)).replace(/\\\{\\\{(\w+)\\\}\\\}/g, '{{$1}}')}${ending}`,
   };
 
   // Find which step extracted each output, for a description that carries no
@@ -163,7 +166,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   }));
 
   return CapabilityArtifact.parse({
-    schemaVersion: input.appId === 'meridian' || steps.some(s => s.selectBy || s.extract?.columns) ? 2 : 1,
+    schemaVersion: input.appId === 'meridian' || steps.some(s => s.selectBy || s.extract?.columns || s.extract?.pattern) ? 2 : 1,
     id: input.name,
     name: input.name,
     description: templatize(input.goal),

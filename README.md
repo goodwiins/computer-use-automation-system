@@ -198,4 +198,4 @@ docs/             use cases, architecture diagram, demo runbook, audits, plans
 
 The shared runtime, asynchronous API, local operator dashboard and thin chat entry point are described in [the MERIDIAN runbook](docs/meridian/runbook.md). See [the implementation report](docs/meridian/report.md) for verified behavior and the remaining live acceptance gates. Configure `.env` from `.env.example`, then run `node --env-file=.env --import tsx cli.ts serve --profile meridian`.
 
-Live LLM-discovered MERIDIAN artifacts and approved posting evidence are still pending. Existing mock fixtures are not a substitute for that evidence.
+Three live LLM-discovered, reviewed MERIDIAN read artifacts are available: sign-on, member inquiry, and member record. The four write capabilities and verified approved postings remain incomplete. See [live evidence](docs/meridian/live-evidence.md), including the separately recorded unknown posting. Existing mock fixtures are not a substitute for live evidence.

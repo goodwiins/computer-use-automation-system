@@ -1,0 +1,2 @@
+{"ts":"2026-09-04T03:39:34.030Z","seq":0,"event":"probe.start","kind":"validation","code":"READ_ONLY_PROFILE_PROBE_NOT_REPLAY"}
+{"ts":"2026-09-04T03:39:35.307Z","seq":1,"event":"probe.detector","detector":"validation-injected","classification":"business_outcome","outcomeCode":"VALIDATION_REJECTED"}

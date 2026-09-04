@@ -27,6 +27,8 @@ export function createRuntime(options: {
   onEvent?: (event: string, data: Record<string, unknown>) => void; onClose?: () => void;
 }) {
   const redactor = new Redactor();
+  const promptRedactor = new Redactor();
+  if (options.operator) promptRedactor.addSensitiveValues([options.operator.password]);
   redactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   if (options.operator) redactor.addSensitiveValues([options.operator.password]);
   const strict = options.profile?.appId === 'meridian';
@@ -34,7 +36,7 @@ export function createRuntime(options: {
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
   const browser = new BrowserSurface({ headful: options.headful, fault: options.fault, allowedOrigins: options.policy.allowedOrigins, onClose: options.onClose,
-    ...(strict ? { profile: options.profile, sensitive: values => redactor.addSensitiveValues(values) } : {}) });
+    ...(strict ? { profile: options.profile, sensitive: (values: string[], secrets: string[] = []) => { redactor.addSensitiveValues(values); promptRedactor.addSensitiveValues(secrets); } } : {}) });
   const surface = new GuardedSurface(browser, options.policy, options.gate, e => logger.log('policy.decision', e),
     strict ? { profile: options.profile!, session, deadline, runId: logger.runId, artifact: options.artifact, version: options.version,
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
@@ -42,7 +44,7 @@ export function createRuntime(options: {
     } : undefined);
   const timer = setTimeout(() => { options.onClose?.(); void surface.close(); }, 600_000);
   timer.unref();
-  return { surface, browser, logger, session, redactor, deadline,
+  return { surface, browser, logger, session, redactor, promptRedactor, deadline,
     close: async () => { clearTimeout(timer); options.onClose?.(); await surface.close(); } };
 }
 

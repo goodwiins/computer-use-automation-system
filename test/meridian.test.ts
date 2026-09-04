@@ -1,3 +1,5 @@
+import { hintToDescriptor } from '../src/agent/tools.js';
+import { extractText } from '../src/artifact/schema.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,6 +71,21 @@ describe('durable request identity', () => {
 });
 
 describe('single-use interventions and live controls', () => {
+  it('permits one sign-on and refuses mid-flow navigation or redirected login actions', async () => {
+    let url = `${origin}/signon`;
+    const run = guarded({ currentUrl: () => url });
+    run.change({ ...control, destination: `${origin}/signon`, control: 'Sign On', method: 'POST', submit: true });
+    await run.surface.start(url);
+    await run.surface.fill(target, 'server-reference');
+    await run.surface.click(target);
+    url = `${origin}/menu`;
+    await expect(run.surface.navigate(`${origin}/signon`)).rejects.toThrow(/Mid-flow/);
+    await expect(run.surface.click(target)).rejects.toThrow(/Mid-flow/);
+    await expect(run.surface.start(`${origin}/signon`)).rejects.toThrow(/only once/);
+    url = `${origin}/signon`;
+    await expect(run.surface.fill(target, 'server-reference')).rejects.toThrow(/Session ended/);
+    expect(run.dispatch).toHaveBeenCalledTimes(2);
+  });
   it('expires, rejects stale IDs, and serializes abort', async () => {
     vi.useFakeTimers(); const session = new ControlSession(); const approval = new Approval(session, () => {}, Date.now() + 600000);
     const request = { kind: 'replay_stuck' as const, capability: 'c', goal: '', reason: '', url: '' };
@@ -164,11 +181,18 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
   app.post('/members/1/update', (_req, res) => { posted++; res.end('saved'); });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r)); const address = server.address() as { port: number };
   const origin = `http://127.0.0.1:${address.port}`;
-  const browser = new BrowserSurface({ allowedOrigins: [origin], profile });
+  const capturedSensitive: string[] = [];
+  const browser = new BrowserSurface({ allowedOrigins: [origin], profile, sensitive: values => capturedSensitive.push(...values) });
   try {
     await browser.start(`${origin}/members`);
+    const table = (await browser.observe()).frames[0]!.tables![0]!;
+    expect(table.headers).toEqual(['Share', 'Balance']);
+    await expect(browser.readText({ description: 'missing frame', frame: 'missing', strategies: [{ kind: 'css', selector: '#shares' }] })).rejects.toThrow(/Requested frame does not exist/);
+    expect(table.headerCells).toEqual(['th', 'th']);
+    expect(await browser.page.locator(table.selector).count()).toBe(1);
     const rows = await browser.readTable({ description: 'shares', strategies: [{ kind: 'css', selector: '#shares' }] }, [{ name: 'share', selector: 'td:nth-child(1)', type: 'string' }, { name: 'balance', selector: 'td:nth-child(2)', type: 'money' }]);
     expect(rows).toEqual([{ share: 'A', balance: '12.30' }]);
+    expect(capturedSensitive).toContain('12.30');
     await browser.select({ description: 'share', strategies: [{ kind: 'nameAttr', name: 'share' }] }, 'B', 1000, 'read', 'value');
     expect(await browser.page.locator('select').inputValue()).toBe('B');
     await browser.page.evaluate(() => fetch('/members/1/update', { method: 'POST' }).catch(() => {})); expect(posted).toBe(0);
@@ -185,7 +209,8 @@ it('rechecks a real form before approved dispatch and masks dynamic evidence end
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r)); const address = server.address() as { port: number };
   const localOrigin = `http://127.0.0.1:${address.port}`;
   const redactor = new Redactor();
-  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: { ...profile, maskSelectors: ['.box', 'p', 'input', 'textarea', 'select'] }, sensitive: values => redactor.addSensitiveValues(values) });
+  const promptRedactor = new Redactor();
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: { ...profile, maskSelectors: ['.box', 'p', 'input', 'textarea', 'select'] }, sensitive: (values, secrets = []) => { redactor.addSensitiveValues(values); promptRedactor.addSensitiveValues(secrets); } });
   let changed = true;
   const gate = async () => { if (changed) await browser.page.locator('[name=email]').fill('changed@example.test'); return true; };
   const guard = new GuardedSurface(browser, { ...policy, allowedOrigins: [localOrigin] }, gate, undefined, { profile, session: new ControlSession(), deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'update', version: '1.0.0', operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch: () => expect(posted).toBe(0) });
@@ -195,6 +220,9 @@ it('rechecks a real form before approved dispatch and masks dynamic evidence end
     await guard.navigate(`${localOrigin}/members/1/update`);
     const logger = new RunLogger('replay', redactor, temp(), true);
     const first = await logger.screenshot(guard, 'first');
+    expect(promptRedactor.redactString('TOKEN-PRIVATE first@example.test')).not.toContain('TOKEN-PRIVATE');
+    expect(promptRedactor.redactString('TOKEN-PRIVATE first@example.test')).toContain('first@example.test');
+    expect(redactor.redactString('first@example.test')).not.toContain('first@example.test');
     await browser.page.locator('#member').evaluate(e => { e.textContent = 'PRIVATE-OTHER'; });
     await browser.page.locator('[name=email]').fill('other@example.test');
     const second = await logger.screenshot(guard, 'second');
@@ -257,6 +285,20 @@ it('records assertions, resolves credential references privately, and ignores in
   expect(fill.mock.calls[0]?.[1]).toBe('SECRET-LITERAL'); expect(requests.join('')).not.toContain('SECRET-LITERAL'); expect(result.outputs).toEqual({});
 });
 
+it('redacts extracted secrets before sending tool results to discovery', async () => {
+  const requests: string[] = [];
+  const calls = [ { name: 'extract', args: { nameAttr: 'result', outputName: 'result', reason: 'read' } }, { name: 'done', args: { summary: 'done' } } ];
+  const stub = guarded({ readText: async () => ({ text: 'SID PRIVATE-SESSION', report: { strategyUsed: 0, kind: 'nameAttr', matches: 1 } }) });
+  const client = { chat: { completions: { create: async (request: unknown) => {
+    requests.push(JSON.stringify(request)); const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  const result = await runDiscovery('read', `${origin}/signon`, {}, [origin], { surface: stub.surface, logger: new RunLogger('discovery', new Redactor(), temp(), true), openai: client, model: 'fixture', maxSteps: 2, sanitizeObservation: text => text.replaceAll('PRIVATE-SESSION', '[REDACTED]') });
+  expect(result.outputs.result).toBe('SID PRIVATE-SESSION');
+  expect(requests.join('')).not.toContain('PRIVATE-SESSION');
+  expect(requests[1]).toContain('SID [REDACTED]');
+});
+
 it('renders the dashboard and hostile chat strings inertly without storing credentials', async () => {
   const dir = temp(), artifactDir = temp();
   const artifact = JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8'));
@@ -278,3 +320,34 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); journal.close(); }
 }, 15000);
+
+it('extracts a single named value without returning its surrounding session data', () => {
+  expect(extractText('OPR TELLER1 | BR MAIN-001 | SID PRIVATE', 'OPR\\s+(\\S+)')).toBe('TELLER1');
+  expect(extractText('plain legacy output')).toBe('plain legacy output');
+  for (const text of ['no operator', 'OPR ONE OPR TWO']) expect(() => extractText(text, 'OPR\\s+(\\S+)')).toThrow();
+});
+
+it('maps the displayed main-frame label to the actual main frame', () => {
+  expect(hintToDescriptor({ frame: '(main)', nameAttr: 'operator' }, 'fill').frame).toBe('');
+});
+
+it('masks whole sensitive values before their overlapping prefixes', () => {
+  const redactor = new Redactor();
+  redactor.addSensitiveValues(['100234', '100234-S0001']);
+  expect(redactor.redactString('100234-S0001')).toBe('•••redacted•••');
+});
+
+it('requires every server-reference login action before discovery submits sign-on', async () => {
+  const dispatch = vi.fn(async () => ({ strategyUsed: 0, kind: 'role', matches: 1 }));
+  const surface = guarded({ currentUrl: () => `${origin}/signon`, click: dispatch }).surface;
+  const messages: string[] = [];
+  const calls = [{ name: 'click', args: { role: 'button', name: 'Sign On', reason: 'sign on', risk: 'reversible_write' } }, { name: 'done', args: { summary: 'stopped' } }];
+  const client = { chat: { completions: { create: async (request: unknown) => {
+    messages.push(JSON.stringify(request)); const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  await runDiscovery('sign on', `${origin}/signon`, {}, [origin], { surface, logger: new RunLogger('discovery', new Redactor(), temp()), openai: client, model: 'fixture', maxSteps: 2, boundParams: { operator: 'runtime-user', password: 'runtime-secret', branch: 'runtime-branch' } });
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(messages[1]).toContain('Record the explicit server-reference');
+  expect(messages.join('')).not.toContain('runtime-secret');
+});

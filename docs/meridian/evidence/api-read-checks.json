@@ -1,0 +1,41 @@
+{
+  "verifiedAt": "2026-09-04T04:01:37.386Z",
+  "scope": "Authenticated live read-only API replay",
+  "checks": [
+    {
+      "label": "signon",
+      "runId": "0f12c39a-091a-410b-b6ce-dbd927f228fa",
+      "status": "success",
+      "duplicateReturnedSameRun": true
+    },
+    {
+      "label": "number",
+      "runId": "425dad31-70b8-400d-a4d0-29c36fb058f4",
+      "status": "success",
+      "duplicateReturnedSameRun": true,
+      "rowCount": 1
+    },
+    {
+      "label": "name",
+      "runId": "dea7d762-0d8f-44a6-8746-50765ed3a633",
+      "status": "success",
+      "duplicateReturnedSameRun": true,
+      "rowCount": 1
+    },
+    {
+      "label": "ambiguity-0",
+      "runId": "89badaf5-7d1d-499a-8331-e414a15893b4",
+      "status": "success",
+      "duplicateReturnedSameRun": true,
+      "rowCount": 2
+    },
+    {
+      "label": "missing",
+      "runId": "3ec95337-fd5b-49f3-8c0c-856b93581509",
+      "status": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER",
+      "duplicateReturnedSameRun": true
+    }
+  ],
+  "verified": true
+}

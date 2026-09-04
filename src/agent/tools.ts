@@ -70,7 +70,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
       description: 'Read a piece of on-screen text as a named output of the capability (e.g. a balance).',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, outputName: { type: 'string' }, rowSelector: { type: 'string', description: 'CSS selecting data rows within the table; exclude header rows, including legacy td headers' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
+        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'CSS selecting data rows within the table; exclude header rows, including legacy td headers' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
         required: ['outputName', 'reason'],
       },
     },
@@ -129,7 +129,7 @@ export function hintToDescriptor(hint: TargetHint, description: string): TargetD
   if (hint.text) strategies.push({ kind: 'text', text: hint.text, exact: true });
   if (hint.css) strategies.push({ kind: 'css', selector: hint.css });
   if (strategies.length === 0) throw new Error('Target hint needs at least one of: role+name, text, nameAttr, css');
-  return { description, frame: hint.frame, strategies };
+  return { description, frame: hint.frame === '(main)' ? '' : hint.frame || undefined, strategies };
 }
 
 export function systemPrompt(goal: string, params: Record<string, string | number>, origins: string[]): string {

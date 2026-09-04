@@ -94,7 +94,7 @@ export const Step = z.object({
   target: TargetDescriptor.optional(), // click/fill/select/extract
   url: z.string().optional(), // navigate; may contain {{param}}
   value: z.string().optional(), // fill/select; may contain {{param}}
-  extract: z.object({ output: z.string(), columns: z.array(TableColumn).min(1).optional(), rowSelector: z.string().optional() }).optional(),
+  extract: z.object({ output: z.string(), columns: z.array(TableColumn).min(1).optional(), pattern: UrlPattern.optional(), rowSelector: z.string().optional() }).optional(),
   selectBy: z.enum(['label', 'value']).optional(), // extract -> which declared output
   assert: Assertion.optional(), // assert steps = checkpoints
   risk: RiskClass.default('read'),
@@ -270,4 +270,12 @@ export function normalizeParams(artifact: CapabilityArtifact, params: Record<str
     }
   }
   return normalized;
+}
+
+/** Extract one explicitly captured value from shared legacy text, never an entire session footer. */
+export function extractText(text: string, pattern?: string): string {
+  if (!pattern) return text;
+  const matches = [...text.matchAll(new RegExp(UrlPattern.parse(pattern), 'g'))];
+  if (matches.length !== 1 || matches[0]!.length !== 2 || !matches[0]![1]?.trim()) throw new Error('Text extraction requires one match and one nonempty capture');
+  return matches[0]![1]!.trim();
 }

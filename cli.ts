@@ -85,8 +85,9 @@ async function discover(argv: string[]) {
   const { surface, browser, logger, session } = runtime;
   if (record) journal!.update(record.runId, 'running');
   console.log(`discovery run ${logger.runId} → ${logger.dir}`);
+  let candidate: CapabilityArtifact | undefined;
   try {
-  const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord all login steps using server references. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. Never choose the first of ambiguous matches.` : goal;
+  const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. Never choose the first of ambiguous matches.` : goal;
   const result = await runDiscovery(discoveryGoal, entry, params, policy.allowedOrigins, {
     surface,
     logger,
@@ -95,7 +96,7 @@ async function discover(argv: string[]) {
     maxSteps: policy.maxSteps,
     timeoutMs: policy.maxDiscoveryMs,
     boundParams: operator ? { operator: operator.operator, password: operator.password, branch: operator.branch } : undefined,
-    sanitizeObservation: text => runtime.redactor.redactString(text),
+    sanitizeObservation: text => runtime.promptRedactor.redactString(text),
     escalate: headful
       ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
       : undefined,
@@ -119,6 +120,7 @@ async function discover(argv: string[]) {
       },
       result,
     );
+    candidate = artifact;
     if (meridian) artifact = applyMeridianContract(artifact);
     mkdirSync(ARTIFACT_DIR, { recursive: true });
     const path = join(ARTIFACT_DIR, `${name}.v${artifact.version}.json`);
@@ -133,6 +135,12 @@ async function discover(argv: string[]) {
     process.exitCode = 1;
   }
   if (record) journal!.update(record.runId, result.status === 'success' ? 'success' : surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure');
+  } catch (error) {
+    if (candidate) writeFileSync(join(logger.dir, 'rejected-artifact.redacted.json'), JSON.stringify(runtime.redactor.redact(candidate), null, 2), { mode: 0o600 });
+    const code = surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'DISCOVERY_FAILED';
+    logger.writeResult({ status: 'failure', failure: { code } });
+    if (record) journal!.update(record.runId, surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure');
+    throw error;
   } finally { await runtime.close(); journal?.close(); }
 }
 

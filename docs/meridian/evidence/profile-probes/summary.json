@@ -1,0 +1,66 @@
+{
+  "verifiedAt": "2026-09-04T03:39:40.545Z",
+  "scope": "Read-only live profile probes; no LLM discovery, capability replay, or posting",
+  "commit": "89d76a9ffab56c926d4cc5d0e753146b5abad277",
+  "results": [
+    {
+      "kind": "validation",
+      "runId": "9fcf87e8-ca7c-4acf-bb4e-bb8bc4081b4c",
+      "detector": "validation-injected",
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED",
+      "screenshot": "docs/meridian/evidence/profile-probes/validation/002-validation.png",
+      "recovery": "not attempted",
+      "mutationDispatched": false
+    },
+    {
+      "kind": "notfound",
+      "runId": "b57c586e-43f1-435b-9ce1-b5ed900bc9a0",
+      "detector": "notfound",
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER",
+      "screenshot": "docs/meridian/evidence/profile-probes/notfound/002-notfound.png",
+      "recovery": "not attempted",
+      "mutationDispatched": false
+    },
+    {
+      "kind": "permission",
+      "runId": "b74da687-c513-4824-b57c-12269d0f52dd",
+      "detector": "permission",
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED",
+      "screenshot": "docs/meridian/evidence/profile-probes/permission/002-permission.png",
+      "recovery": "not attempted",
+      "mutationDispatched": false
+    },
+    {
+      "kind": "timeout",
+      "runId": "a73ad026-9e11-4e4f-a774-c6b1b74d83f5",
+      "detector": "timeout",
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED",
+      "screenshot": "docs/meridian/evidence/profile-probes/timeout/002-timeout.png",
+      "recovery": "not attempted",
+      "mutationDispatched": false
+    },
+    {
+      "kind": "maintenance",
+      "runId": "e3cb590a-cdf0-4a3a-8ffc-053f691143c1",
+      "detector": "maintenance",
+      "classification": "recoverable",
+      "screenshot": "docs/meridian/evidence/profile-probes/maintenance/002-maintenance.png",
+      "recovery": "notice cleared; returned to menu; operation not resumed",
+      "mutationDispatched": false
+    },
+    {
+      "kind": "server",
+      "runId": "630bb579-1c63-435b-9d95-afc3f16f744a",
+      "detector": "server",
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR",
+      "screenshot": "docs/meridian/evidence/profile-probes/server/002-server.png",
+      "recovery": "not attempted",
+      "mutationDispatched": false
+    }
+  ]
+}

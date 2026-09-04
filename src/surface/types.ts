@@ -14,6 +14,7 @@ export interface FrameObservation {
   // names (no <label>), so the aria snapshot alone leaves them anonymous —
   // this is the reliable handle for them.
   fields: Array<{ name: string; type: string }>;
+  tables?: Array<{ selector: string; headers: string[]; headerCells: string[]; rows: number }>;
 }
 
 export interface Observation {

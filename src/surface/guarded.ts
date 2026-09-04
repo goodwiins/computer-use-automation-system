@@ -22,6 +22,8 @@ export class GuardedSurface implements Surface {
   mutationDispatched = false;
   effectiveRisk: RiskClass = 'read';
   private stepId = '(start)';
+  private started = false;
+  private signOnSubmitted = false;
   setStep(id: string) { this.stepId = id; }
 
   constructor(
@@ -45,6 +47,7 @@ export class GuardedSurface implements Surface {
   private assertAutomation() {
     if (this.runtime?.session.currentOwner === 'human') throw new Error('Human owns this session');
     if (this.runtime && Date.now() >= this.runtime.deadline) throw new Error('Run deadline expired');
+    if (this.runtime && this.signOnSubmitted && new URL(this.inner.currentUrl()).pathname === '/signon') throw new Error('Session ended; start a new invocation');
   }
 
 
@@ -63,6 +66,8 @@ export class GuardedSurface implements Surface {
 
   // Reads are ungated observations; actions are gated.
   async start(entryUrl: string): Promise<void> {
+    if (this.runtime && this.started) throw new Error('A run can start only once');
+    this.started = true;
     this.assertRoute(entryUrl);
     await this.gate('navigate', 'read', entryUrl);
     await this.inner.start(entryUrl);
@@ -106,6 +111,7 @@ export class GuardedSurface implements Surface {
   private assertRoute(url: string) {
     if (!this.runtime) return;
     const parsed = new URL(url, this.policy.allowedOrigins[0]);
+    if (this.signOnSubmitted && parsed.pathname === '/signon') throw new Error('Mid-flow sign-on is not permitted');
     if (!this.runtime.profile.routes?.some(p => new RegExp(p).test(parsed.pathname)) || /\/(post|review)$/.test(parsed.pathname)) {
       throw new Error('Navigation route is not permitted');
     }
@@ -117,6 +123,8 @@ export class GuardedSurface implements Surface {
       if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
       const prepared = await this.inner.prepareClick(t, timeoutMs);
       const live = await prepared.inspect();
+      const signOn = new URL(live.destination).pathname === '/signon';
+      if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
       const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
       this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
       if (rule?.mutation) {
@@ -138,6 +146,7 @@ export class GuardedSurface implements Surface {
       } else {
         await this.gate('click', risk, live.destination);
       }
+      if (signOn && live.submit) this.signOnSubmitted = true;
       const report = await prepared.dispatch(live);
       this.assertStillInBounds('click');
       return report;

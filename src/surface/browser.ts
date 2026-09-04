@@ -32,7 +32,7 @@ export class BrowserSurface implements Surface {
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
   // legacy page can neither be read nor clicked.
-  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[]) => void } = {}) {}
+  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
     const url = frame.url();
@@ -129,7 +129,18 @@ export class BrowserSurface implements Surface {
             }))
             .filter((f) => f.name),
         );
-        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields });
+        const tables = await frame.evaluate(() => Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
+          const parts: string[] = [];
+          let node: Element | null = table;
+          while (node && node.tagName !== 'BODY') {
+            const parent: Element | null = node.parentElement;
+            const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
+            parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+            node = parent;
+          }
+          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: Array.from(table.rows[0]?.cells ?? [], cell => cell.tagName.toLowerCase()), rows: table.rows.length };
+        }));
+        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields, tables });
       } catch {
         // Frameset parent pages have no body; skip silently.
       }
@@ -254,20 +265,22 @@ export class BrowserSurface implements Surface {
   async collectSensitive(): Promise<void> {
     if (!this.opts.profile || !this.page) return;
     for (const frame of this.page.frames()) {
-      const values = await frame.evaluate(() => {
+      const observed = await frame.evaluate(() => {
         const result: string[] = [];
+        const secrets: string[] = [];
         for (const e of document.querySelectorAll('input, textarea, select')) {
           const input = e as HTMLInputElement;
           if (input.type !== 'submit' && input.value) result.push(input.value);
+          if (['password', 'hidden'].includes(input.type) && input.value) secrets.push(input.value);
         }
         for (const e of document.querySelectorAll('td.lbl + td, .box td, table[border="1"] td')) {
           if (e.textContent?.trim()) result.push(e.textContent.trim());
         }
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
-        if (sid) result.push(sid);
-        return result;
+        if (sid) { result.push(sid); secrets.push(sid); }
+        return { values: result, secrets };
       });
-      this.opts.sensitive?.(values);
+      this.opts.sensitive?.(observed.values, observed.secrets);
     }
   }
 
@@ -285,7 +298,7 @@ export class BrowserSurface implements Surface {
         }
         return [col.name, value];
       }))), { cols: columns, rows: rowSelector });
-    this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => c.sensitive).map(c => row[c.name]!)));
+    this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => this.opts.profile?.appId === 'meridian' || c.sensitive).map(c => row[c.name]!)));
     return rows;
   }
 
@@ -340,7 +353,9 @@ export class BrowserSurface implements Surface {
       .filter((f) => f.url() !== 'about:blank' && this.frameInBounds(f));
     if (frameName === undefined) return all;
     if (frameName === '') return [this.page.mainFrame()].filter((f) => this.frameInBounds(f));
-    return all.filter((f) => f.name() === frameName);
+    const matches = all.filter((f) => f.name() === frameName);
+    if (!matches.length) throw new Error('Requested frame does not exist; omit frame for the main page or use a frame name from the observation');
+    return matches;
   }
 
   private buildLocator(frame: Frame, s: TargetStrategy): Locator {

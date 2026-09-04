@@ -26,6 +26,7 @@ export class Redactor {
       const enc = encodeURIComponent(s);
       if (enc !== s && !this.sensitiveValues.includes(enc)) this.sensitiveValues.push(enc);
     }
+    this.sensitiveValues.sort((a, b) => b.length - a.length);
   }
 
   redactString(s: string): string {

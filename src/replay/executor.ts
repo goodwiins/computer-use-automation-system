@@ -11,6 +11,7 @@
 //      attended mode, escalate to a human on the live session.
 
 import {
+  extractText,
   resolveTarget,
   resolveTemplate,
   resolveTemplateForRegex,
@@ -236,8 +237,9 @@ export async function runReplay(
             break;
           }
           const { text, report } = await surface.readText(target!, step.timeoutMs);
-          outputs[step.extract!.output] = artifact.outputs.find(o => o.name === step.extract!.output)?.type === 'number' ? Number(text) : text;
-          logger.log('step.extracted', { stepId: step.id, output: step.extract!.output, value: text, resolution: report });
+          const value = extractText(text, step.extract!.pattern);
+          outputs[step.extract!.output] = artifact.outputs.find(o => o.name === step.extract!.output)?.type === 'number' ? Number(value) : value;
+          logger.log('step.extracted', { stepId: step.id, output: step.extract!.output, value, resolution: report });
           break;
         }
         case 'assert': {

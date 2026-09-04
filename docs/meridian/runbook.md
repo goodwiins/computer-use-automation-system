@@ -1,6 +1,6 @@
 # MERIDIAN demonstration runbook
 
-Status: implementation in progress. The runtime and local checks are available; no live LLM-discovered MERIDIAN artifacts or approved live postings are delivered yet. Do not present the existing CU*NEXUS fixtures as MERIDIAN capabilities.
+Status: implementation in progress. Three live LLM-discovered read artifacts are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads and the separate unknown posting; never retry that posting.
 
 ## Setup
 

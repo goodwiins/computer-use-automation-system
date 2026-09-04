@@ -1,0 +1,2 @@
+{"ts":"2026-09-04T03:39:37.335Z","seq":0,"event":"probe.start","kind":"timeout","code":"READ_ONLY_PROFILE_PROBE_NOT_REPLAY"}
+{"ts":"2026-09-04T03:39:38.312Z","seq":1,"event":"probe.detector","detector":"timeout","classification":"fatal","outcomeCode":"SESSION_EXPIRED"}
