@@ -64,10 +64,35 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   const paramEntries = Object.entries(input.params).sort(
     (a, b) => String(b[1]).length - String(a[1]).length,
   );
-  const templatize = (s: string): string => {
+  const substitute = (s: string, entries: typeof paramEntries): string => {
     let out = s;
-    for (const [name, value] of paramEntries) out = out.split(String(value)).join(`{{${name}}}`);
+    for (const [name, value] of entries) out = out.split(String(value)).join(`{{${name}}}`);
     return out;
+  };
+  const templatize = (s: string): string => substitute(s, paramEntries);
+
+  // CSS selectors are the one place a param value collides with *syntax*: the
+  // discovery prompt asks for `td:nth-of-type(4)`-style anchors, so a 1-3 char
+  // param ("4", "12") templatizes a structural literal and silently re-aims the
+  // selector at another cell on the next replay. Same threshold the redactor
+  // uses for the same reason (redact.ts MIN_SUBSTRING_LEN), opposite handling:
+  // there a short value is matched as a whole token, here there is no token
+  // boundary to lean on — `(4)` looks like one — so short values are left
+  // literal. That trades a silent wrong-cell read for a loud resolution
+  // failure. A *sensitive* short value (a PIN) is the one case with nothing
+  // safe to do: it must not be persisted literal and cannot be templatized
+  // safely, so recording refuses rather than writing the secret into the artifact.
+  const MIN_CSS_PARAM_LEN = 4;
+  const templatizeCss = (s: string): string => {
+    for (const [name, value] of paramEntries) {
+      const v = String(value);
+      if (v.length < MIN_CSS_PARAM_LEN && v.length > 0 && input.sensitiveParams.includes(name) && s.includes(v)) {
+        throw new Error(
+          `Cannot record artifact: sensitive parameter "${name}" is too short to templatize safely and appears literally in css selector "${s}"`,
+        );
+      }
+    }
+    return substitute(s, paramEntries.filter(([, v]) => String(v).length >= MIN_CSS_PARAM_LEN));
   };
 
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
@@ -104,6 +129,11 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       strategies: step.target.strategies.map((s) => {
         if (s.kind === 'text') return { ...s, text: templatize(s.text) };
         if (s.kind === 'role') return { ...s, name: templatize(s.name) };
+        // css too: the model is told to anchor table selectors on a row label
+        // (tools.ts), so a param value can end up inside the selector. Replay
+        // already resolves templates in css (schema.resolveTarget) — without
+        // this the runtime value would be persisted into the artifact.
+        if (s.kind === 'css') return { ...s, selector: templatizeCss(s.selector) };
         return s;
       }),
       snapshot: step.target.snapshot && {

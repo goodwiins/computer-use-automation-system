@@ -23,6 +23,8 @@ import { Policy } from '../src/safety/policy.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { runReplay } from '../src/replay/executor.js';
 import { runDiscovery } from '../src/agent/loop.js';
+import { applyOverlay, TenantOverlay } from '../src/artifact/overlay.js';
+import { recordArtifact } from '../src/artifact/recorder.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface, PolicyViolationError } from '../src/surface/guarded.js';
 import type { Observation, ResolutionReport, Surface } from '../src/surface/types.js';
@@ -621,5 +623,131 @@ describe('brief §3.1/§3.3 gaps closed 2026-09-02', () => {
     expect(result.status).toBe('failure');
     if (result.status !== 'failure') throw new Error('unreachable');
     expect(result.failure.observed).toMatch(/permission-denied/);
+  });
+});
+
+describe('security review 2026-09-03 (G1/G2/G3)', () => {
+  const TSX2 = resolve('node_modules/.bin/tsx');
+  const CLI2 = resolve('cli.ts');
+  const BASE = CapabilityArtifact.parse({
+    schemaVersion: 1, id: 'ov-base', name: 'ov-base', description: 'x', version: '1.0.0', status: 'approved',
+    app: { appId: 'test', entryUrl: 'http://localhost:4173/', allowedOrigins: ['http://localhost:4173'] },
+    parameters: [], outputs: [],
+    steps: [{ id: 's1', intent: 'x', action: 'navigate', url: 'http://localhost:4173/', risk: 'read', timeoutMs: 1000 }],
+    successCondition: { kind: 'urlMatches', pattern: '.*' },
+    detectors: [],
+    provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+  });
+  const overlay = (extra: Record<string, unknown> = {}) =>
+    TenantOverlay.parse({ schemaVersion: 1, tenant: 't', appId: 'test', base: { id: 'ov-base', version: '1.0.0' }, ...extra });
+
+  it('G1: a sensitive value supplied by an overlay default is redacted from stdout', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cu-ovl-'));
+    const origin = 'http://localhost:9'; // discard port: fails in pre-flight, entry URL lands in failure.observed
+    writeFileSync(join(dir, 'policy.json'), JSON.stringify({
+      allowedOrigins: [origin], allowedActions: ['navigate'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
+    }));
+    writeFileSync(join(dir, 'artifact.json'), JSON.stringify({
+      schemaVersion: 1, id: 'ovl-redact', name: 'ovl-redact', description: 'x', version: '1.0.0', status: 'approved',
+      app: { appId: 'test', entryUrl: `${origin}/?pin=OVERLAYSECRET`, allowedOrigins: [origin] },
+      parameters: [{ name: 'pin', type: 'string', description: 'x', required: true, sensitive: true }],
+      outputs: [],
+      steps: [{ id: 's1', intent: 'x', action: 'navigate', url: `${origin}/`, risk: 'read', timeoutMs: 1000 }],
+      successCondition: { kind: 'urlMatches', pattern: '.*' },
+      detectors: [],
+      provenance: { discoveredAt: '2026-01-01T00:00:00Z', model: 'test', discoveryRunId: 'r1', goal: 'x' },
+    }));
+    // The secret exists ONLY in the overlay's paramDefaults — never in --params.
+    writeFileSync(join(dir, 'overlay.json'), JSON.stringify({
+      schemaVersion: 1, tenant: 't', status: 'approved', appId: 'test',
+      base: { id: 'ovl-redact', version: '1.0.0' }, paramDefaults: { pin: 'OVERLAYSECRET' },
+    }));
+    const res = spawnSync(
+      TSX2, [CLI2, 'replay', '--artifact', join(dir, 'artifact.json'), '--overlay', join(dir, 'overlay.json')],
+      { cwd: dir, encoding: 'utf8', env: { ...process.env, POLICY_PATH: join(dir, 'policy.json') } },
+    );
+    expect(res.stdout).toContain('failure');
+    expect(res.stdout).not.toContain('OVERLAYSECRET');
+  }, 60_000);
+
+  it('G2: the recorder templatizes a param value inside a css selector', () => {
+    const artifact = recordArtifact(
+      {
+        name: 'css-tmpl', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
+        params: { memberId: '10042' }, sensitiveParams: ['memberId'],
+        appId: 'test', allowedOrigins: ['http://localhost:4173'], appDetectors: [],
+        model: 'test', discoveryRunId: 'r1',
+      },
+      {
+        status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/10042',
+        trace: [{
+          action: 'click', reason: 'open the row', urlAfter: 'http://localhost:4173/members/10042',
+          descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('10042')) > td:nth-of-type(2)" }] },
+        }],
+      },
+    );
+    const sel = JSON.stringify(artifact.steps[0]!.target!.strategies);
+    expect(sel).not.toContain('10042');       // the raw value must never be persisted
+    expect(sel).toContain('{{memberId}}');
+  });
+
+  // ...but not at any cost: a short value collides with selector syntax, and a
+  // {{param}} substituted into nth-of-type() re-aims the selector at a different
+  // cell on the next replay — a silently wrong extracted value.
+  it('G2: a param too short to distinguish from selector syntax is left literal', () => {
+    const artifact = recordArtifact(
+      {
+        name: 'css-short', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
+        params: { col: '4' }, sensitiveParams: [],
+        appId: 'test', allowedOrigins: ['http://localhost:4173'], appDetectors: [],
+        model: 'test', discoveryRunId: 'r1',
+      },
+      {
+        status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/1',
+        trace: [{
+          action: 'extract', reason: 'read the balance', outputName: 'balance', extractedText: '1.00',
+          urlAfter: 'http://localhost:4173/members/1',
+          descriptor: { description: 'balance cell', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)" }] },
+        }],
+      },
+    );
+    const strategy = artifact.steps[0]!.target!.strategies[0]!;
+    expect(strategy.kind === 'css' && strategy.selector).toBe("tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)");
+  });
+
+  it('G2: a short *sensitive* param inside a css selector refuses to record rather than persist it', () => {
+    expect(() => recordArtifact(
+      {
+        name: 'css-pin', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
+        params: { pin: '123' }, sensitiveParams: ['pin'],
+        appId: 'test', allowedOrigins: ['http://localhost:4173'], appDetectors: [],
+        model: 'test', discoveryRunId: 'r1',
+      },
+      {
+        status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/1',
+        trace: [{
+          action: 'click', reason: 'open the row', urlAfter: 'http://localhost:4173/members/1',
+          descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('123')) > td:nth-of-type(2)" }] },
+        }],
+      },
+    )).toThrow(/sensitive parameter "pin" is too short/);
+  });
+
+  it('G3: a rejected overlay entryUrl is reported without its query string', () => {
+    let msg = '';
+    try { applyOverlay(BASE, overlay({ status: 'approved', entryUrl: 'http://evil.test/login?pin=OVERLAYSECRET' })); }
+    catch (e) { msg = (e as Error).message; }
+    expect(msg).toMatch(/outside the base artifact's allowed origins/);
+    expect(msg).toContain('http://evil.test/login');
+    expect(msg).not.toContain('OVERLAYSECRET');
+  });
+
+  it('G3: an overlay is only as approved as itself, and its entryUrl is bounds-checked', () => {
+    expect(applyOverlay(BASE, overlay()).status).toBe('draft');                         // default: unreviewed
+    expect(applyOverlay(BASE, overlay({ status: 'approved' })).status).toBe('approved');
+    expect(applyOverlay({ ...BASE, status: 'draft' }, overlay({ status: 'approved' })).status).toBe('draft');
+    expect(() => applyOverlay(BASE, overlay({ status: 'approved', entryUrl: 'http://evil.test/' })))
+      .toThrow(/outside the base artifact's allowed origins/);
   });
 });

@@ -1,13 +1,23 @@
 {
   "schemaVersion": 1,
   "tenant": "premier",
+  "status": "approved",
   "appId": "cu-nexus",
-  "base": { "id": "lookup-member-balance", "version": "1.0.0" },
+  "base": {
+    "id": "lookup-member-balance",
+    "version": "1.0.0"
+  },
   "entryUrl": "http://localhost:4173/?tenant=premier",
   "stepOverrides": [
     {
       "stepId": "s1",
-      "prepend": [{ "kind": "role", "role": "link", "name": "Account Inquiry" }]
+      "prepend": [
+        {
+          "kind": "role",
+          "role": "link",
+          "name": "Account Inquiry"
+        }
+      ]
     }
   ]
 }
