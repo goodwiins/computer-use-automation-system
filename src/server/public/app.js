@@ -55,6 +55,7 @@ async function refresh() {
       const article = node('article', ''); article.append(node('h3', `${run.capability} · ${run.kind} · ${run.state}`), node('p', `${run.runId}${run.step ? ` · step ${run.step}` : ''}`));
       if (run.inputs) article.append(node('pre', JSON.stringify({ inputs: run.inputs }, null, 2)));
       if (run.result) article.append(node('pre', JSON.stringify(run.result, null, 2)));
+      if (Number.isFinite(run.elapsedMs) && run.elapsedMs >= 0) article.append(node('p', `Elapsed: ${run.elapsedMs < 1000 ? `${run.elapsedMs} ms` : `${(run.elapsedMs / 1000).toFixed(1)} s`}`));
       if (run.sensitiveValuesUnavailable) article.append(node('p', 'Historical sensitive values are unavailable.'));
       if (run.intervention?.id) {
         const box = node('div', ''); box.className = 'approval'; box.append(node('h4', 'Operator review required'), node('pre', JSON.stringify(run.intervention.action ?? run.intervention.request, null, 2)));

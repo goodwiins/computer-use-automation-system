@@ -1,6 +1,6 @@
 # MERIDIAN live evidence — September 4, 2026
 
-Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The current implementation/test head for this documentation checkpoint is `541d776f85d94097bc1e63fa7966de69da5947de`. Offline fixtures, API routing and read rehearsals do not increase the capability count or establish a write.
+Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The published implementation/test checkpoint for this scoped update is `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`; the dashboard timing repair is on the current branch and its new head awaits controller checks. Offline fixtures, API routing and read rehearsals do not increase the capability count or establish a write.
 
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
 
@@ -23,11 +23,24 @@ These reads are separate from the artifact provenance table. Each result below i
 | Supplied sign-on preflight | `ad12819b-f07a-41ff-9710-bedff1afe1a5` | `7abda4c326260d917795fe75320af99a7233bc6d` | `success` as `TELLER`; 8 attempts; evaluator `pass` |
 | Member inquiry replay | `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` | `4252cb70396b3f30f5c126d2ed2e164054a2bcfe` | `success`; 10 attempts; evaluator `pass` |
 | Member-record replay | `e4850bd4-6c63-42c9-8719-aaefef1c74e4` | `4252cb70396b3f30f5c126d2ed2e164054a2bcfe` | `success`; 10 attempts; evaluator `pass` |
+| Dashboard chat/read | `288d7cae-c486-4f08-b810-c1e4aa1d4afe` | `ca5d99a21e7274445eb119a71bc8c61f548fa9a7` | HTTP `202`, visible `running` → `success`, 24 rows, selected-member and decimal-balance checks true; evaluator `pass`, 10 attempts, 0 mutation intents and 0 risk disagreements |
 | Caller chat/API/runtime member-record read | `ff5fda32-db07-443f-930d-db2d65461dc0` | `541d776f85d94097bc1e63fa7966de69da5947de` | HTTP `202`, terminal `success`, 24 rows, selected-member and decimal-balance checks true; evaluator `pass` |
+
+The dashboard row above is the genuine UI read described below. The caller API row remains a separate API/runtime source and did not exercise dashboard UI.
 
 The last row used the real chat-to-API invocation path with caller authority. Repeating the identical chat body with its saved request key returned HTTP `202` and the same run ID; caller history grew by exactly one run. The dashboard UI was not exercised. The sanitized metadata/result projection is preserved in [fresh-read-summary.json](evidence/fresh-read-summary.json). It contains no member, share, balance, contact, credential, token, cookie, session or raw DOM values, and no new screenshot is included; existing masked evidence remains separately linked below.
 
 The read controls were observed as sign-on `operator` (text), `password` (password) and `branch` (select) followed by the sign-on POST; inquiry `by` (select), `q` (text) and GET `Search`; and record GET `Select` followed by shares-table extraction excluding its header row. These read controls did not require a transaction token. No selected member, share, balance or status value is copied into tracked evidence.
+
+## Dashboard UI read and restart check
+
+The genuine dashboard chat/read run `288d7cae-c486-4f08-b810-c1e4aa1d4afe` used source `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`. A fresh browser context connected through the native caller login form, cleared the credential input, showed 3 approved caller capabilities and no caller write capability, role selector or operator action. One explicit chat request returned HTTP `202`; the visible card progressed from `running` to `success`, showed its result step and 24 rows, and its safe projection recorded `selectedMemberMatches=true` and `decimalBalances=true`. The evaluator passed with 10 attempts, 0 mutation intents, 0 risk disagreements, no violations and no incomplete checks.
+
+The original live card omitted elapsed time even though its authenticated `/runs` response contained finite `elapsedMs=2476`. Task9d now renders finite nonnegative elapsed values, including true zero; the focused local browser fixture covers `2.5 s`, `0 ms` and omission for a historical card. That fixture is a display regression check, not another live rehearsal, and it does not retroactively test the earlier card. The initial request key and body remain private harness identity; they are neither a recording nor a posting approval.
+
+The accepted round1 controller evidence observed Refresh focused and activated by Enter after a real `/runs` GET `200`, and Tab from the chat textarea reached the exact Send control. The authenticated `View result.json` control returned `200` and appended the evidence view. These are read-only checks; the original focus-derived keyboard flag alone is not used as activation evidence. Reload cleared the credential, hid the workspace and left local/session storage empty. Reconnecting as caller kept the role selector and operator actions hidden. Reconnecting as operator after the controlled restart showed the fresh run and the preserved unknown run with operator context controls; no approval, retry, abort or supervisor action was clicked.
+
+The independent post-restart projection recorded historical sensitive values as unavailable, 26 run IDs before and after with no new run, and an unchanged signed `POST_OUTCOME_UNKNOWN` envelope. The controller stopped its owned service cleanly and left the journal locks absent. These checks preserve the historical unknown state; they do not establish a write, same-browser repair or approval/handoff keyboard operation.
 
 ## Acceptance ledger
 
@@ -47,7 +60,7 @@ The artifact approval below is promotion approval, not transaction approval. A d
 
 [API check results](evidence/api-read-checks.json) preserve earlier authenticated HTTP checks for sign-on, number/name lookup, ambiguous results without automatic selection, a missing-member `NO_SUCH_MEMBER` business outcome and same-key run identity. Their raw names, member numbers, credentials and account values remain omitted.
 
-[Live chat results](evidence/dashboard-chat-read.json) preserve an earlier caller dashboard request that received HTTP `202` and invoked `meridian-member-record`, then stopped at `SESSION_EXPIRED` during sign-on. This is routing and failure presentation evidence, not a successful dashboard balance rehearsal. [The UI check](evidence/dashboard-ui-checks.json) verifies the post-fix hidden operator selector, cleared credential field and empty browser storage; [dashboard-fixed.png](evidence/dashboard-fixed.png) is the existing masked screenshot. The current `ff5fda32-db07-443f-930d-db2d65461dc0` read did not exercise this UI.
+[Live chat results](evidence/dashboard-chat-read.json) preserve an earlier caller dashboard request that received HTTP `202` and invoked `meridian-member-record`, then stopped at `SESSION_EXPIRED` during sign-on. This remains routing and failure presentation evidence, not a successful dashboard balance rehearsal. The later `288d7cae-c486-4f08-b810-c1e4aa1d4afe` row above is the separate genuine UI read. [The UI check](evidence/dashboard-ui-checks.json) verifies the post-fix hidden operator selector, cleared credential field and empty browser storage; [dashboard-fixed.png](evidence/dashboard-fixed.png) is the existing masked screenshot. The current `ff5fda32-db07-443f-930d-db2d65461dc0` read remains API/runtime evidence and did not exercise this UI.
 
 ## Manual form observation
 
@@ -74,4 +87,4 @@ Its journal is terminal `POST_OUTCOME_UNKNOWN`; [the backup status and log](evid
 
 ## Open acceptance gates
 
-Funds transfer, open share, contact update and supervisor hold still require fresh discovery and separately approved replay operations, review and final-post inspection, actual result verification and sanitized evidence. The remaining operation-specific unhappy paths include natural and injected business rejection, absent member, teller/supervisor restriction, timeout or expiry, maintenance, server failure and missing/stale token handling. A successful dashboard/chat/API rehearsal, same-browser repair, reload reauthentication, keyboard checks and final same-head hosted CI/delivery remain open. All new PRs target `dev`; `master` is production and remains untouched.
+Funds transfer, open share, contact update and supervisor hold still require fresh discovery and separately approved replay operations, review and final-post inspection, actual result verification and sanitized evidence. The remaining operation-specific unhappy paths include natural and injected business rejection, absent member, teller/supervisor restriction, timeout or expiry, maintenance, server failure and missing/stale token handling. An integrated dashboard/chat/API rehearsal with a separately approved write, same-browser repair, approval/handoff keyboard operation, and final same-head hosted CI/delivery remain open. The read-only reload, Refresh/Send keyboard, evidence-view, caller/operator visibility and post-restart historical checks above do not close those gates. All new PRs target `dev`; `master` is production and remains untouched.

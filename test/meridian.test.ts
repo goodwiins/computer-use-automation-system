@@ -794,10 +794,19 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
   server.on('request', createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: address.port }));
   const browser = await chromium.launch(); const page = await browser.newPage();
   try {
+    await page.route('**/runs', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify([
+      { runId: 'known-run', kind: 'replay', capability: artifact.id, state: 'success', elapsedMs: 2476, evidence: [], result: { status: 'success', outputs: {} } },
+      { runId: 'zero-run', kind: 'replay', capability: artifact.id, state: 'success', elapsedMs: 0, evidence: [], result: { status: 'success', outputs: {} } },
+      { runId: 'historical-run', kind: 'replay', capability: artifact.id, state: 'success', sensitiveValuesUnavailable: true, evidence: [], result: { status: 'success', outputs: {} } },
+    ]) }));
     await page.goto(`http://127.0.0.1:${address.port}`); await page.locator('#credential').fill('o'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
     expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
+    expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 2.5 s' }).count()).toBe(1);
+    expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 0 ms' }).count()).toBe(1);
+    const historical = page.locator('#runs article').filter({ hasText: 'Historical sensitive values are unavailable.' });
+    expect(await historical.count()).toBe(1); expect(await historical.getByText(/Elapsed:/).count()).toBe(0);
     await page.route('**/chat', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: '<img src=x onerror=alert(1)>' }) }));
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.locator('#messages p').first().waitFor(); expect(await page.locator('#messages img').count()).toBe(0);

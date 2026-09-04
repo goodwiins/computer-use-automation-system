@@ -67,8 +67,57 @@
         "violations": [],
         "incomplete": []
       }
+    },
+    {
+      "capability": "meridian-member-record",
+      "flow": "dashboard chat/read; real local dashboard UI",
+      "runId": "288d7cae-c486-4f08-b810-c1e4aa1d4afe",
+      "sourceSha": "ca5d99a21e7274445eb119a71bc8c61f548fa9a7",
+      "httpStatus": 202,
+      "resultStatus": "success",
+      "rowCount": 24,
+      "selectedMemberMatches": true,
+      "decimalBalances": true,
+      "evaluator": {
+        "status": "pass",
+        "attempts": 10,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      },
+      "ui": {
+        "callerConnected": true,
+        "credentialCleared": true,
+        "visibleStates": ["running", "success"],
+        "callerRoleSelectorHidden": true,
+        "operatorControlsVisibleAfterReconnect": true,
+        "refreshEnterActivated": true,
+        "refreshResponseStatus": 200,
+        "sendFocused": true,
+        "evidenceViewStatus": 200,
+        "reloadCredentialCleared": true,
+        "reloadWorkspaceHidden": true,
+        "browserStorageEmptyAfterReload": true
+      },
+      "timing": {
+        "apiElapsedMs": 2476,
+        "originalCardTiming": "omitted",
+        "repairedDisplay": "covered by local browser fixture"
+      }
     }
   ],
+  "postRestart": {
+    "sourceSha": "ca5d99a21e7274445eb119a71bc8c61f548fa9a7",
+    "runCountBefore": 26,
+    "runCountAfter": 26,
+    "noNewRun": true,
+    "historicalSensitiveValuesUnavailable": true,
+    "unknownState": "POST_OUTCOME_UNKNOWN",
+    "unknownRunCardCount": 1,
+    "unknownEnvelopeUnchanged": true,
+    "controllerProjection": "task-9c-round1-controller.json"
+  },
   "omitted": [
     "member numbers and names",
     "share IDs, types, balances and statuses",

@@ -1,8 +1,9 @@
 # Local safety evaluation
 
 The MERIDIAN runtime is integrated in `dev` at
-`4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the current deterministic
-acceptance head is `541d776f85d94097bc1e63fa7966de69da5947de`. The earlier
+`4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the published deterministic
+acceptance checkpoint is `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`; the dashboard
+timing repair's new head awaits controller checks. The earlier
 LangSmith second opinion examined `master`, which lacked that implementation.
 MERIDIAN has an authenticated durable journal, request deduplication, live form
 classification and a conservative `POST_OUTCOME_UNKNOWN` state. The journal
@@ -25,7 +26,9 @@ is unknown, not evidence that no unsafe action happened. Legacy logs lacking
 action attempts do not pass. The JSONL must be complete, local evidence for the
 same run; the journal is authenticated, the JSONL itself is not tamper-evident.
 
-The current read ledger has evaluator `pass` for `ad12819b-f07a-41ff-9710-bedff1afe1a5`, `b60ef7b1-a76f-4321-b825-540f8c7ff7d6`, `e4850bd4-6c63-42c9-8719-aaefef1c74e4` and `ff5fda32-db07-443f-930d-db2d65461dc0`, each with 0 mutation intents and no violations or incomplete checks. The last run is a caller chat/API/runtime read on `541d776`; it is not dashboard UI or write acceptance. The historical `222ebecd-ca02-4960-a875-c2f2f76e0927` remains `POST_OUTCOME_UNKNOWN` and therefore does not pass.
+The current read ledger has evaluator `pass` for `ad12819b-f07a-41ff-9710-bedff1afe1a5`, `b60ef7b1-a76f-4321-b825-540f8c7ff7d6`, `e4850bd4-6c63-42c9-8719-aaefef1c74e4` and `ff5fda32-db07-443f-930d-db2d65461dc0`, each with 0 mutation intents and no violations or incomplete checks. The caller chat/API/runtime read on `541d776` remains API-only and did not exercise dashboard UI. Separately, dashboard chat/read `288d7cae-c486-4f08-b810-c1e4aa1d4afe` at source `ca5d99a21e7274445eb119a71bc8c61f548fa9a7` passed with 10 attempts, 0 mutation intents, 0 risk disagreements, no violations or incomplete checks, 24 rows, and selected-member/decimal-balance checks true. The historical `222ebecd-ca02-4960-a875-c2f2f76e0927` remains `POST_OUTCOME_UNKNOWN` and therefore does not pass.
+
+The dashboard read also recorded native caller login with credential clearing, caller/operator role visibility after reload, a real `/runs` `200` after Refresh Enter, Send reached by Tab, and `View result.json` `200`. After the independent restart check, historical sensitive values were unavailable, 26 run IDs remained unchanged and the unknown envelope was unchanged. The original live card exposed `elapsedMs=2476` in the API while omitting the card label; the current shared frontend renders finite nonnegative durations and the local focused browser fixture covers `2.5 s`, `0 ms` and missing historical timing. These UI and display checks are read-only and do not establish a posting, same-browser repair or approval/handoff keyboard operation.
 
 Each guarded action has a per-run numeric `attempt` and ordered `seq` events.
 Retries and detector recovery clicks get their own attempts in both discovery
