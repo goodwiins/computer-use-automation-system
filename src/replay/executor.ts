@@ -25,7 +25,7 @@ import {
 import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
 import type { RunLogger } from '../evidence/logger.js';
 import { originAllowed, type Policy } from '../safety/policy.js';
-import { PolicyViolationError } from '../surface/guarded.js';
+import { PolicyViolationError, RunAbortedError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
 import { checkDetectors, matchDetector } from './detectors.js';
 import type { ReplayResult, StepFailure } from './outcomes.js';
@@ -71,6 +71,7 @@ export async function runReplay(
   try {
     await surface.start(resolveTemplate(artifact.app.entryUrl, params));
   } catch (err) {
+    if (err instanceof RunAbortedError) return aborted('(pre-flight)');
     return fail({
       stepId: '(pre-flight)',
       intent: 'open the capability entry URL',
@@ -85,6 +86,10 @@ export async function runReplay(
     const result: ReplayResult = { status: 'failure', failure, escalated, ...base };
     logger.writeResult(result);
     return result;
+  }
+
+  function aborted(stepId: string): ReplayResult {
+    return fail({ code: 'RUN_ABORTED', stepId, intent: 'authorize action', expected: 'operator approval', observed: 'Run aborted by operator' });
   }
 
   // Returns null to continue, or a terminal result.
@@ -138,6 +143,7 @@ export async function runReplay(
           { stepId, intent: 'pass runtime-condition checks', expected: 'no fatal condition', observed: `${d.id}: ${d.description}`, screenshot: shot },
         );
       } catch (err) {
+        if (err instanceof RunAbortedError) return aborted(stepId);
         const message = err instanceof Error ? err.message : String(err);
         return await failOrEscalate({
           stepId,
@@ -264,6 +270,7 @@ export async function runReplay(
       return null;
     } catch (err) {
       if (surface.mutationDispatched) return fail({ stepId: step.id, intent: step.intent, expected: 'verified posting completion', observed: 'POST_OUTCOME_UNKNOWN' });
+      if (err instanceof RunAbortedError) return aborted(step.id);
       noteDialogs(step.id);
       // The dialog that explains this failure often fired on an EARLIER step
       // that "succeeded" (the click happened; the navigation it should have

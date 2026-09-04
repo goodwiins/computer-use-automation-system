@@ -52,5 +52,13 @@ export async function executeReplay(artifact: CapabilityArtifact, params: Record
   runtime: ReturnType<typeof createRuntime>, policy: Policy,
   escalate?: (request: InterventionRequest) => Promise<InterventionDecision>) {
   try { return await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy, escalate }); }
-  finally { await runtime.close(); }
+  finally { await closeRuntime(runtime); }
+}
+
+export async function closeRuntime(runtime: ReturnType<typeof createRuntime>) {
+  try { await runtime.close(); }
+  catch {
+    // Cleanup and its diagnostics must not replace a verified result or the original error.
+    try { runtime.logger.log('evidence.warning', { code: 'RUNTIME_CLEANUP_FAILED' }); } catch { /* evidence unavailable */ }
+  }
 }

@@ -9,6 +9,7 @@ import { extractText, Assertion, RiskClass, TableColumn, type TargetDescriptor, 
 import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
 import type { RunLogger } from '../evidence/logger.js';
 import type { Surface } from '../surface/types.js';
+import { RunAbortedError } from '../surface/guarded.js';
 import { DISCOVERY_TOOLS, hintToDescriptor, systemPrompt, type TargetHint } from './tools.js';
 
 export interface TraceEntry {
@@ -221,6 +222,7 @@ export async function runDiscovery(
       consecutiveFailures = 0;
     } catch (err) {
       if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
+      if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED');
       consecutiveFailures++;
       const message = err instanceof Error ? err.message : String(err);
       logger.log('discovery.action_error', { turn, error: message, consecutiveFailures });
