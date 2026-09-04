@@ -686,6 +686,23 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.run.dispatch).toHaveBeenCalledOnce();
     expect(harness.run.surface.mutationDispatched).toBe(true);
   });
+
+  it.each([
+    ['with a transfer binding', { transfer: { expected: request, memberTable: meridianTransferMemberTable } }],
+    ['without a transfer binding', {}],
+  ])('refuses another operation for a funds-transfer run %s', async (_case, transferContext) => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-funds-transfer', ...transferContext });
+    run.change({
+      destination: `${origin}/members/9001/update`, method: 'POST', control: 'Save Changes', submit: true,
+    });
+
+    await expect(run.surface.click(target)).rejects.toThrow(/transfer/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.surface.mutationDispatched).toBe(false);
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
 });
 
 it('stops discovery with unknown outcome when completion details fail after intent', async () => {
