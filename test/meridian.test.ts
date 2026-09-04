@@ -119,6 +119,72 @@ it('does not spend the click budget while waiting for human approval', async () 
   expect(remaining).toBeLessThanOrEqual(50);
 });
 
+it('blocks a profile read dispatch after an absolute deadline expires during approval', async () => {
+  vi.useFakeTimers();
+  const live: LiveControl = { ...control, url: `${origin}/members`, destination: `${origin}/members`, method: 'GET', control: 'Search', submit: false };
+  const report = { strategyUsed: 0, kind: 'nameAttr' as const, matches: 1 };
+  const inspect = vi.fn(async () => structuredClone(live));
+  const dispatch = vi.fn(async () => report);
+  const inner = {
+    start: async () => {}, navigate: async () => {}, observe: async () => ({ url: live.url, title: '', frames: [] }),
+    currentUrl: () => live.url, frameUrls: () => [live.url], click: dispatch, fill: dispatch, select: dispatch,
+    readText: async () => ({ text: 'ok', report }), isTextVisible: async () => false, describeTarget: async (t: unknown) => t,
+    screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect, dispatch }),
+  } as unknown as Surface;
+  const gate = vi.fn(async () => {
+    vi.setSystemTime(Date.now() + 50);
+    return true;
+  });
+  const beforeDispatch = vi.fn();
+  const events: string[] = [];
+  const approvalPolicy = Policy.parse({ ...policy, riskHandling: { ...policy.riskHandling, read: 'escalate' } });
+  const surface = new GuardedSurface(inner, approvalPolicy, gate, undefined, {
+    profile, session: new ControlSession(), deadline: Date.now() + 20, runId: randomUUID(), artifact: 'hold',
+    version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+  }, event => events.push(event));
+  const pending = surface.click(target, 500, 'read');
+  const rejected = expect(pending).rejects.toThrow(/Run deadline expired/);
+  for (let i = 0; i < 10 && !gate.mock.calls.length; i++) await Promise.resolve();
+  expect(gate).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(50);
+  await rejected;
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(beforeDispatch).not.toHaveBeenCalled();
+  expect(events).not.toContain('mutation.intent');
+});
+
+it('blocks a profile mutation intent and dispatch after revalidation crosses the absolute deadline', async () => {
+  vi.useFakeTimers();
+  const inspect = vi.fn(async () => {
+    if (inspect.mock.calls.length === 2) vi.setSystemTime(Date.now() + 50);
+    return structuredClone(control);
+  });
+  const report = { strategyUsed: 0, kind: 'nameAttr' as const, matches: 1 };
+  const dispatch = vi.fn(async () => report);
+  const inner = {
+    start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }),
+    currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch,
+    readText: async () => ({ text: 'ok', report }), isTextVisible: async () => false, describeTarget: async (t: unknown) => t,
+    screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect, dispatch }),
+  } as unknown as Surface;
+  const gate = vi.fn(async () => true);
+  const beforeDispatch = vi.fn();
+  const events: string[] = [];
+  const surface = new GuardedSurface(inner, policy, gate, undefined, {
+    profile, session: new ControlSession(), deadline: Date.now() + 20, runId: randomUUID(), artifact: 'hold',
+    version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+  }, event => events.push(event));
+  const pending = surface.click(target, 500, 'read');
+  const rejected = expect(pending).rejects.toThrow(/Run deadline expired/);
+  for (let i = 0; i < 10 && inspect.mock.calls.length < 2; i++) await Promise.resolve();
+  expect(inspect).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(50);
+  await rejected;
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(beforeDispatch).not.toHaveBeenCalled();
+  expect(events).not.toContain('mutation.intent');
+});
+
 describe('durable request identity', () => {
   it('deduplicates after restart, detects changed context, and never resumes dispatch', () => {
     const dir = temp(); let journal = new Journal(dir, key);

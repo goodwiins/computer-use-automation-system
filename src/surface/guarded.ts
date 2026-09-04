@@ -192,13 +192,16 @@ export class GuardedSurface implements Surface {
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
+          this.assertAutomation();
           this.runtime.beforeDispatch(context);
+          this.assertAutomation();
           this.mutationDispatched = true;
           // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.
           this.emit('mutation.intent', { effectiveRisk: 'irreversible' });
         } else {
           await outsideBudget(() => this.gate('click', risk, live.destination));
         }
+        this.assertAutomation();
         if (signOn && live.submit) this.signOnSubmitted = true;
         const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
