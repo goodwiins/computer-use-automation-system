@@ -185,12 +185,16 @@ export class GuardedSurface implements Surface {
     this.requireTransferRoute(url);
   }
 
-  private advanceTransferState(url: string): void {
+  private advanceTransferState(url: string, expectedFrame?: FrameContext): void {
     const binding = this.runtime?.transfer;
     const route = this.transferStage(url);
     if (!binding || !route || route.member !== binding.expected.member) return this.transferFrameFailed();
     const state = this.transferEligibility;
-    if (!state) return this.transferFrameFailed();
+    if (!state) {
+      if (route.stage === 'member') return;
+      return this.transferFrameFailed();
+    }
+    if (expectedFrame && !this.sameFrameRevision(expectedFrame, state.frame)) return this.transferFrameFailed();
     const current = this.currentTransferFrame();
     if (this.path(current.url) !== this.path(url) || !this.sameFrame(current, state.frame)) return this.transferFrameFailed();
     const validTransition = state.stage === route.stage
@@ -209,7 +213,15 @@ export class GuardedSurface implements Surface {
     const before = this.currentTransferFrame();
     if (this.path(before.url) !== this.path(memberPath)) return this.transferFrameFailed();
     const target = { ...binding.memberTable.target, frame: before.name };
-    const rows = await this.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    // Eligibility is part of the member-selection click. Keep the extract
+    // policy and bounds checks, but avoid readTable()'s public action wrapper:
+    // nesting it here would reuse this.attempt and corrupt click evidence.
+    this.preserveTransferState(this.inner.currentUrl());
+    await this.gate('extract', 'read');
+    this.assertStillInBounds('extract');
+    const rows = await this.inner.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    this.assertStillInBounds('extract');
+    this.preserveTransferState(this.inner.currentUrl());
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.currentTransferFrame();
     if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.transferFrameFailed();
@@ -229,7 +241,8 @@ export class GuardedSurface implements Surface {
     if (!this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url) || this.path(current.url) !== this.path(live.url)) return this.transferFrameFailed();
     const state = this.transferEligibility;
     if (!state) {
-      if (route.stage === 'member') return;
+      const destination = this.transferStage(live.destination);
+      if (route.stage === 'member' && (!destination || destination.stage === 'member')) return;
       return this.transferFrameFailed();
     }
     if (state.stage !== route.stage || !this.sameFrameRevision(state.frame, live.frame)) return this.transferFrameFailed();
@@ -352,12 +365,14 @@ export class GuardedSurface implements Surface {
       };
       if (this.runtime) {
         this.assertStillInBounds('click');
+        if (this.runtime.transfer) this.preserveTransferState(this.inner.currentUrl());
         if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
         const prepared = await this.inner.prepareClick(t, remaining());
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
-        if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
+        const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
+        if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
@@ -402,7 +417,7 @@ export class GuardedSurface implements Surface {
         this.assertStillInBounds('click');
         if (this.mutationDispatched) this.transferEligibility = undefined;
         else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
-        else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl());
+        else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl(), live.frame);
         this.preserveTransferState(this.inner.currentUrl());
         return report;
       }

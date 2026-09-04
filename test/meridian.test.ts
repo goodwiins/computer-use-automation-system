@@ -40,10 +40,10 @@ const origin = 'https://web-sample.interface-hiring.com';
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
 const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
-function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>) {
+function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>) {
   let live = structuredClone(control);
   const dispatch = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
-  const surface: Surface = { start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }), currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch, readText: async () => ({ text: 'ok', report: await dispatch() }), isTextVisible: async text => text === 'done', describeTarget: async t => t, screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect: async () => structuredClone(live), dispatch: async expected => { await onDispatch?.(expected); return dispatch(); } }), ...overrides };
+  const surface: Surface = { start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }), currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch, readText: async () => ({ text: 'ok', report: await dispatch() }), isTextVisible: async text => text === 'done', describeTarget: async t => t, screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect: async () => { await onInspect?.(); return structuredClone(live); }, dispatch: async expected => { await onDispatch?.(expected); return dispatch(); } }), ...overrides };
   const session = new ControlSession();
   const beforeDispatch = vi.fn();
   return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
@@ -504,7 +504,7 @@ describe('MERIDIAN guarded transfer path', () => {
     { shareId: '9001-C', type: 'S0001', balance: '9.00', status: 'OPEN' },
   ];
 
-  function transferHarness(rows = eligibleRows, facts = validReviewFacts) {
+  function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void) {
     let url = `${origin}/members`;
     let navigation = 0;
     let frameId = 'transfer-workarea';
@@ -515,26 +515,28 @@ describe('MERIDIAN guarded transfer path', () => {
     const postUrl = `${origin}/members/9001/transfer/post`;
     const frame = () => ({ id: frameId, name: 'workarea', url: frameUrl, navigation });
     const gate = vi.fn(async () => true);
+    let onInspect: (() => void | Promise<void>) | undefined;
     const run = guarded({
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
       frameUrls: () => [`${origin}/frameset`, url],
       readTable: async () => rows,
-    }, gate, { transfer: { expected: request, memberTable: meridianTransferMemberTable } }, undefined, async expected => {
+    }, gate, { transfer: { expected: request, memberTable: meridianTransferMemberTable } }, onAction, async expected => {
       if (expected.destination === memberUrl) url = memberUrl;
       else if (expected.destination === transferUrl) url = transferUrl;
       else if (expected.destination === reviewUrl) url = reviewUrl;
       else if (expected.destination === postUrl) url = postUrl;
       frameUrl = url;
       navigation++;
-    });
+    }, async () => onInspect?.());
     return {
       run,
       gate,
       setLive(next: Partial<LiveControl>) { run.change({ ...next, frame: next.frame ?? frame() }); },
       setUrl(next: string) { url = next; frameUrl = next; navigation++; },
       setFrame(next: { id?: string; url?: string }) { if (next.id) frameId = next.id; if (next.url) frameUrl = next.url; },
+      setInspect(next: () => void | Promise<void>) { onInspect = next; },
       memberUrl,
       transferUrl,
       reviewUrl,
@@ -572,6 +574,50 @@ describe('MERIDIAN guarded transfer path', () => {
     await expect(harness.run.surface.click(target)).rejects.toThrow(/transfer facts failed validation/i);
     expect(harness.run.dispatch).toHaveBeenCalledOnce();
     expect(harness.gate).not.toHaveBeenCalled();
+  });
+
+  it('keeps member eligibility extraction inside the member-selection action lifecycle', async () => {
+    const logger = new RunLogger('replay', new Redactor(), temp(), true);
+    const harness = transferHarness(eligibleRows, validReviewFacts, (event, data) => logger.log(event, data));
+    await harness.run.surface.start(`${origin}/members`);
+    harness.setUrl(harness.memberUrl);
+    harness.setLive({ url: harness.memberUrl, destination: harness.memberUrl, method: 'GET', control: 'Select member', submit: false, facts: {} });
+    await harness.run.surface.click(target);
+    const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; attempt: number });
+    const starts = events.filter(event => event.event === 'action.start');
+    const ends = events.filter(event => event.event === 'action.end');
+    expect(ends.map(event => event.attempt)).toEqual(starts.map(event => event.attempt));
+  });
+
+  it('invalidates eligibility after an out-of-band page and rejects a direct transfer link', async () => {
+    const harness = transferHarness();
+    await harness.run.surface.start(`${origin}/members`);
+    harness.setUrl(harness.memberUrl);
+    harness.setLive({ url: harness.memberUrl, destination: harness.memberUrl, method: 'GET', control: 'Select member', submit: false, facts: {} });
+    await harness.run.surface.click(target);
+    harness.run.dispatch.mockClear();
+    harness.setUrl(`${origin}/menu`);
+    harness.setLive({ url: `${origin}/menu`, destination: harness.transferUrl, method: 'GET', control: 'Transfer', submit: false, facts: {} });
+    await expect(harness.run.surface.click(target)).rejects.toThrow(/transfer/i);
+    expect(harness.gate).not.toHaveBeenCalled();
+    expect(harness.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(harness.run.dispatch).not.toHaveBeenCalled();
+    expect(harness.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('does not advance transfer state when the working frame navigates during inspection', async () => {
+    const harness = transferHarness();
+    await harness.run.surface.start(`${origin}/members`);
+    harness.setUrl(harness.memberUrl);
+    harness.setLive({ url: harness.memberUrl, destination: harness.memberUrl, method: 'GET', control: 'Select member', submit: false, facts: {} });
+    await harness.run.surface.click(target);
+    harness.run.dispatch.mockClear();
+    harness.setLive({ url: harness.memberUrl, destination: harness.transferUrl, method: 'GET', control: 'Transfer', submit: false, facts: {} });
+    harness.setInspect(async () => { harness.setUrl(harness.transferUrl); harness.setUrl(harness.memberUrl); });
+    await expect(harness.run.surface.click(target)).rejects.toThrow(/frame/i);
+    expect(harness.gate).not.toHaveBeenCalled();
+    expect(harness.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(harness.run.dispatch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -941,12 +987,16 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 
 it('scopes transfer review facts to its form table and rejects duplicate labels', async () => {
   const app = express();
-  const review = (variant: 'duplicate' | 'nested' | 'clean' = 'clean') => {
+  const review = (variant: 'duplicate' | 'nested' | 'hidden-table' | 'hidden-row' | 'clean' = 'clean') => {
     const duplicate = variant === 'duplicate';
+    const tableStyle = variant === 'hidden-table' ? ' style="display:none"' : '';
+    const rowStyle = variant === 'hidden-row' ? ' style="display:none"' : '';
+    const row = (label: string, value: string) => `<tr${rowStyle}><td class="lbl">${label}</td><td>${value}</td></tr>`;
     const nested = variant === 'nested' ? '<tr><td colspan="2"><table id="nested-decoy"><tr><td class="lbl">Member:</td><td>9001 - Decoy</td></tr><tr><td class="lbl">From:</td><td>9001-A ($99.00)</td></tr><tr><td class="lbl">To:</td><td>9001-B ($0.00)</td></tr><tr><td class="lbl">Amount:</td><td>$99.00</td></tr><tr><td class="lbl">Memo:</td><td>decoy</td></tr></table></td></tr>' : '';
-    return `<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><table id="actual-review"><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">From:</td><td>9001-A ($2.00)</td></tr><tr><td class="lbl">To:</td><td>9001-B ($0.00)</td></tr><tr><td class="lbl">Amount:</td><td>$1.00</td></tr><tr><td class="lbl">Memo:</td><td>fixture</td></tr>${duplicate ? '<tr><td class="lbl">Memo:</td><td>conflicting</td></tr>' : ''}${nested}<tr><td><input type="submit" value="Post Transfer"></td></tr></table></form><table><tr><td class="lbl">Member:</td><td>unrelated</td></tr></table>`;
+    const rows = [row('Member:', '9001 - Fixture Member'), row('From:', '9001-A ($2.00)'), row('To:', '9001-B ($0.00)'), row('Amount:', '$1.00'), row('Memo:', 'fixture')].join('');
+    return `<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><table id="actual-review"${tableStyle}>${rows}${duplicate ? '<tr><td class="lbl">Memo:</td><td>conflicting</td></tr>' : ''}${nested}</table><input type="submit" value="Post Transfer"></form><table><tr><td class="lbl">Member:</td><td>unrelated</td></tr></table>`;
   };
-  app.get('/members/9001/transfer/review', (req, res) => res.send(review(req.query.duplicate === '1' ? 'duplicate' : req.query.nested === '1' ? 'nested' : 'clean')));
+  app.get('/members/9001/transfer/review', (req, res) => res.send(review(req.query.duplicate === '1' ? 'duplicate' : req.query.nested === '1' ? 'nested' : req.query.hiddenTable === '1' ? 'hidden-table' : req.query.hiddenRow === '1' ? 'hidden-row' : 'clean')));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
@@ -968,15 +1018,37 @@ it('scopes transfer review facts to its form table and rejects duplicate labels'
     await browser.navigate(`${localOrigin}/members/9001/transfer/review?duplicate=1`);
     const duplicate = await browser.prepareClick(post);
     await expect(duplicate.inspect()).rejects.toThrow(/Duplicate form fact/);
+    await browser.navigate(`${localOrigin}/members/9001/transfer/review?hiddenTable=1`);
+    const hiddenTable = await browser.prepareClick(post);
+    await expect(hiddenTable.inspect()).rejects.toThrow(/ambiguous/);
+    await browser.navigate(`${localOrigin}/members/9001/transfer/review?hiddenRow=1`);
+    const hiddenRow = await browser.prepareClick(post);
+    await expect(hiddenRow.inspect()).rejects.toThrow(/ambiguous/);
+  } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}, 15000);
+
+it('allows a native Continue form before the transfer review page', async () => {
+  const app = express();
+  app.get('/members/9001/transfer', (_req, res) => res.send('<form method="post" action="/members/9001/transfer/review"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><input type="submit" value="Continue"></form>'));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
+  const continueTarget = { description: 'Continue', strategies: [{ kind: 'role' as const, role: 'button', name: 'Continue' }] };
+  try {
+    await browser.start(`${localOrigin}/members/9001/transfer`);
+    const prepared = await browser.prepareClick(continueTarget);
+    await expect(prepared.inspect()).resolves.toMatchObject({ facts: { member: '9001', from: '9001-A', to: '9001-B', amount: '1.00', memo: 'fixture' } });
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
 it('keeps a legitimate transfer control bound to its workarea frame in a frameset', async () => {
   const app = express();
-  const form = '<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><table><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">From:</td><td>9001-A ($2.00)</td></tr><tr><td class="lbl">To:</td><td>9001-B ($0.00)</td></tr><tr><td class="lbl">Amount:</td><td>$1.00</td></tr><tr><td class="lbl">Memo:</td><td>fixture</td></tr><tr><td><input type="submit" value="Post Transfer"></td></tr></table></form>';
+  let posted = 0;
+  const form = '<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><table><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">From:</td><td>9001-A ($2.00)</td></tr><tr><td class="lbl">To:</td><td>9001-B ($0.00)</td></tr><tr><td class="lbl">Amount:</td><td>$1.00</td></tr><tr><td class="lbl">Memo:</td><td>fixture</td></tr></table><input type="submit" value="Post Transfer"></form>';
   app.get('/frameset', (_req, res) => res.type('html').send('<frameset cols="20%,80%"><frame name="nav" src="/nav"><frame name="workarea" src="/members/9001/transfer/review"></frameset>'));
   app.get('/nav', (_req, res) => res.send('<p>Navigation</p>'));
   app.get('/members/9001/transfer/review', (_req, res) => res.send(form));
+  app.post('/members/9001/transfer/post', (_req, res) => { posted++; res.send('<p>posted</p>'); });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
@@ -988,6 +1060,8 @@ it('keeps a legitimate transfer control bound to its workarea frame in a framese
     const live = await prepared.inspect();
     expect(live.frame).toMatchObject({ name: 'workarea', url: `${localOrigin}/members/9001/transfer/review`, navigation: expect.any(Number) });
     expect(browser.currentFrame()).toEqual(live.frame);
+    await prepared.dispatch(live, 3000);
+    expect(posted).toBe(1);
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 

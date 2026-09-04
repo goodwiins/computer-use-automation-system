@@ -406,7 +406,7 @@ export class BrowserSurface implements Surface {
         if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
         try {
           await Promise.all([
-            this.page.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
+            frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
             handle.evaluate(inspectControl, { ...args, expected: expectedState, body: approvedBody }),
           ]);
           await this.verifySignon();
@@ -576,6 +576,11 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
     facts[name] = value;
   };
+  const isRendered = (node: Element | null): node is Element => {
+    if (!node || node.getClientRects().length === 0) return false;
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
@@ -584,17 +589,19 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     }
     const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
     const ownLabels = (table: HTMLTableElement) => Array.from(table.querySelectorAll('tr'))
-      .filter(row => row.closest('table') === table)
-      .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl')));
+      .filter(row => row.closest('table') === table && isRendered(row))
+      .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl') && isRendered(cell) && isRendered(cell.nextElementSibling)));
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
     ])) as HTMLTableElement[];
-    const transferReview = /^\/members\/\d+\/transfer\/(?:review|post)$/.test(new URL(destination).pathname);
+    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
+      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
     let reviewTable: HTMLTableElement | null;
     let reviewLabels: Element[];
     if (transferReview) {
       const candidates = tables.map(table => ({ table, labels: ownLabels(table) }))
+        .filter(candidate => isRendered(candidate.table))
         .filter(candidate => candidate.labels.some(label => transferLabels.has((label.textContent ?? '').trim())));
       const complete = candidates.filter(candidate => {
         const labels = candidate.labels.map(label => (label.textContent ?? '').trim());
