@@ -5,7 +5,8 @@
 //   validate — re-apply the current risk floor to every saved artifact; exit 1 on drift
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeLLMClient } from './src/agent/client.js';
 import { createRuntime, operatorContext } from './src/runtime/run.js';
 import { Journal, RequestError, validateIdempotencyKey, type JournalRecord } from './src/runtime/journal.js';
@@ -78,6 +79,18 @@ function replayFailure(runtime: ReturnType<typeof createRuntime>, uncertain: boo
     evidenceDir: runtime.logger.dir,
     recoveries: [],
   };
+}
+
+function replayOutput(runtime: ReturnType<typeof createRuntime>, result: ReplayResult): unknown {
+  if (runtime.logger.strict && result.status === 'failure') {
+    return {
+      status: 'failure',
+      outcomeCode: undefined,
+      sensitiveValuesUnavailable: true,
+      failure: { code: result.failure.code ?? 'RUN_FAILED' },
+    };
+  }
+  return runtime.redactor.redact(result);
 }
 
 async function closeRuntime(runtime: ReturnType<typeof createRuntime> | undefined): Promise<void> {
@@ -284,8 +297,8 @@ async function replay(argv: string[]) {
       const output = result.status === 'failure' && uncertain && result.failure.code !== 'POST_OUTCOME_UNKNOWN'
         ? { ...result, failure: { ...result.failure, code: 'POST_OUTCOME_UNKNOWN', observed: 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' } }
         : result;
-      if (output !== result) runtime.logger.writeResult(output);
-      console.log(JSON.stringify(runtime.redactor.redact(output), null, 2));
+      if (output !== result || (runtime.logger.strict && output.status === 'failure')) runtime.logger.writeResult(output);
+      console.log(JSON.stringify(replayOutput(runtime, output), null, 2));
       if (output.status === 'failure') process.exitCode = 1;
       updateJournal(journal, record?.runId, output.status === 'failure' && uncertain ? 'POST_OUTCOME_UNKNOWN' : output.status);
     } catch {
@@ -294,7 +307,7 @@ async function replay(argv: string[]) {
       if (runtime) {
         const result = replayFailure(runtime, uncertain);
         try { runtime.logger.writeResult(result); } catch { /* preserve journal and cleanup */ }
-        try { console.log(JSON.stringify(runtime.redactor.redact(result), null, 2)); } catch { /* preserve exit status */ }
+        try { console.log(JSON.stringify(replayOutput(runtime, result), null, 2)); } catch { /* preserve exit status */ }
       }
       updateJournal(journal, record?.runId, uncertain ? 'POST_OUTCOME_UNKNOWN' : 'failure');
     } finally { await closeRuntime(runtime); }
@@ -351,18 +364,22 @@ function validate() {
   if (drift) process.exit(1);
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
-try {
-  if (cmd === 'serve') { const { flags } = parseArgs(rest); await serve(typeof flags.profile === 'string' ? flags.profile : 'meridian'); }
-  else if (cmd === 'discover') await discover(rest);
-  else if (cmd === 'replay') await replay(rest);
-  else if (cmd === 'list') list();
-  else if (cmd === 'validate') validate();
-  else {
-    console.log('usage: cli.ts <discover|replay|list|validate|serve> [flags]');
-    process.exit(1);
+export async function runCli(argv = process.argv.slice(2)): Promise<void> {
+  const [cmd, ...rest] = argv;
+  try {
+    if (cmd === 'serve') { const { flags } = parseArgs(rest); await serve(typeof flags.profile === 'string' ? flags.profile : 'meridian'); }
+    else if (cmd === 'discover') await discover(rest);
+    else if (cmd === 'replay') await replay(rest);
+    else if (cmd === 'list') list();
+    else if (cmd === 'validate') validate();
+    else {
+      console.log('usage: cli.ts <discover|replay|list|validate|serve> [flags]');
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error(error instanceof RequestError ? `error: ${error.message}` : 'error: Request failed; inspect safe run evidence or server configuration');
+    process.exitCode = 1;
   }
-} catch (error) {
-  console.error(error instanceof RequestError ? `error: ${error.message}` : 'error: Request failed; inspect safe run evidence or server configuration');
-  process.exitCode = 1;
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await runCli();
