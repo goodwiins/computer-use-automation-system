@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 const RecordSchema = z.object({
+  kind: z.enum(['discovery', 'replay']).default('replay'),
   runId: z.string().uuid(), caller: z.string(), capability: z.string(), version: z.string(),
   request: z.string(), identity: z.string(), createdAt: z.string(),
   state: z.enum(['reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN']),
@@ -75,10 +76,10 @@ export class Journal {
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');
     return { existing, identity, digest };
   }
-  reserve(caller: string, key: string, capability: string, version: string, request: unknown) {
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown, kind: 'discovery' | 'replay' = 'replay') {
     const { existing, identity, digest } = this.lookup(caller, key, request);
     if (existing) return existing;
-    const record: JournalRecord = { runId: randomUUID(), caller, capability, version, request: digest, identity, createdAt: new Date().toISOString(), state: 'reserved' };
+    const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity, createdAt: new Date().toISOString(), state: 'reserved' };
     this.persist(record); return record;
   }
   update(runId: string, state: JournalRecord['state']) {

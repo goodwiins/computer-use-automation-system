@@ -70,7 +70,7 @@ async function discover(argv: string[]) {
     const existing = journal.lookup('operator', key, request).existing;
     if (existing) { console.log(`Existing discovery run: ${existing.runId} (${existing.state})`); journal.close(); return; }
   }
-  const record = journal?.reserve('operator', key, name, '1.0.0', request);
+  const record = journal?.reserve('operator', key, name, '1.0.0', request, 'discovery');
   const headful = meridian || !!flags.headful;
   const runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, params, sensitive, operator, headful,
     runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,

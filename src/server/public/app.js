@@ -43,7 +43,7 @@ $('chat').onsubmit = async e => {
   if (pendingChat?.content !== content) pendingChat = { content, key: crypto.randomUUID(), messages: [...messages, { role: 'user', content }].slice(-20) };
   try {
     const data = await api('/chat', { method: 'POST', headers: { 'Idempotency-Key': pendingChat.key }, body: JSON.stringify({ messages: pendingChat.messages }) });
-    messages = [...pendingChat.messages, { role: 'assistant', content: data.message }].slice(-18); pendingChat = undefined;
+    messages = [...pendingChat.messages, { role: 'assistant', content: data.result ? `${data.message} ${JSON.stringify(data.result)}` : data.message }].slice(-18); pendingChat = undefined;
     $('messages').replaceChildren(...messages.map(m => node('p', `${m.role}: ${m.content}`))); $('message').value = ''; await refresh();
   } catch (e) { error(e); }
 };
@@ -52,7 +52,8 @@ async function refresh() {
   try {
     const runs = await api('/runs');
     $('runs').replaceChildren(...runs.reverse().map(run => {
-      const article = node('article', ''); article.append(node('h3', `${run.capability} · ${run.state}`), node('p', `${run.runId}${run.step ? ` · step ${run.step}` : ''}`));
+      const article = node('article', ''); article.append(node('h3', `${run.capability} · ${run.kind} · ${run.state}`), node('p', `${run.runId}${run.step ? ` · step ${run.step}` : ''}`));
+      if (run.inputs) article.append(node('pre', JSON.stringify({ inputs: run.inputs }, null, 2)));
       if (run.result) article.append(node('pre', JSON.stringify(run.result, null, 2)));
       if (run.sensitiveValuesUnavailable) article.append(node('p', 'Historical sensitive values are unavailable.'));
       if (run.intervention?.id) {

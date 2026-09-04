@@ -8,6 +8,7 @@ import { meridianContracts } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams } from '../src/artifact/schema.js';
+import * as clients from '../src/agent/client.js';
 import { runDiscovery } from '../src/agent/loop.js';
 import { recordArtifact } from '../src/artifact/recorder.js';
 import { toToolSchema } from '../src/artifact/tools.js';
@@ -27,7 +28,7 @@ import { request as httpRequest, createServer } from 'node:http';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'meridian-')); dirs.push(dir); return dir; };
-afterEach(() => { vi.useRealTimers(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const key = 'hmac-test-key-with-at-least-32-characters';
 const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
@@ -141,6 +142,17 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect((await request(`/runs/${run.runId}`, caller)).status).toBe(403);
     expect((await request('/capabilities', { ...caller, Origin: 'https://evil.test' })).status).toBe(403);
     expect((await request(`/runs/${run.runId}/decision`, caller, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'approve' }))).status).toBe(403);
+    const fixture = CapabilityArtifact.parse(JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8')));
+    vi.spyOn(service, 'catalog').mockReturnValue([{ id: fixture.id, version: fixture.version, description: fixture.description, parameters: fixture.parameters, outputs: fixture.outputs, tools: toToolSchema(fixture) }]);
+    let tool = 'run_status';
+    const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ function: { name: tool, arguments: JSON.stringify({ runId: run.runId }) } }] } }] }));
+    vi.spyOn(clients, 'makeLLMClient').mockReturnValue({ model: 'fixture', openai: { chat: { completions: { create } } } as unknown as ReturnType<typeof clients.makeLLMClient>['openai'] });
+    const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
+    const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
+    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
+    tool = 'approve';
+    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
+    expect(journal.records.size).toBe(1);
     const response = await request('/capabilities', caller); expect(response.status).toBe(200); expect(response.headers.get('content-security-policy')).toContain("object-src 'none'");
   } finally { await new Promise<void>(r => server.close(() => r())); journal.close(); }
 });

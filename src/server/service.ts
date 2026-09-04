@@ -16,7 +16,7 @@ import type { Policy } from '../safety/policy.js';
 export type Principal = 'caller' | 'operator';
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
-  readonly live = new Map<string, { state: string; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; close?: () => Promise<void> }>();
+  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; close?: () => Promise<void> }>();
   private active?: string;
   private completion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
@@ -61,7 +61,7 @@ export class InvocationService {
       const live = this.live.get(record.runId);
       if (live) live.state = approval.pending ? 'awaiting-human' : 'running';
     }, Date.now() + 600_000);
-    const state = { state: 'running', started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
+    const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
     this.live.set(record.runId, state);
     const runtime = createRuntime({ kind: 'replay', artifact: id, version: artifact.version, policy: this.policy,
       profile: this.profile, params, sensitive: artifact.parameters.filter(p => p.sensitive).map(p => p.name), operator: context,
@@ -110,7 +110,7 @@ export class InvocationService {
     const historyResult = !live && existsSync(join(dir, 'result.json')) ? JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8')) : undefined;
     const result = live?.result;
     const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
-    return { runId, capability: record.capability, version: record.version, createdAt: record.createdAt,
+    return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: live?.state ?? record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       intervention: principal === 'operator' ? live?.approval.pending : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
       result: safeResult, sensitiveValuesUnavailable: !live, evidence };
