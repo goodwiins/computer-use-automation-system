@@ -97,12 +97,20 @@ export async function runDiscovery(
     messages.push({ role: 'user', content: deps.sanitizeObservation?.(obsText) ?? obsText });
     logger.log('discovery.observe', { turn, url: obs.url, screenshot: shot });
 
+    const started = performance.now();
+    logger.log('llm.start', { turn });
     const completion = await openai.chat.completions.create({
       model,
       messages,
       tools: DISCOVERY_TOOLS,
       tool_choice: 'required',
-    }, { timeout: Math.max(1, deadline - Date.now()), maxRetries: 0 });
+    }, { timeout: Math.max(1, deadline - Date.now()), maxRetries: 0 }).then(result => {
+      logger.log('llm.end', { turn, status: 'success', ms: performance.now() - started });
+      return result;
+    }, error => {
+      logger.log('llm.end', { turn, status: 'failure', ms: performance.now() - started });
+      throw error;
+    });
     const msg = completion.choices[0]?.message;
     const call = msg?.tool_calls?.[0];
     if (!msg || !call) {

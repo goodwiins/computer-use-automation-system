@@ -114,6 +114,7 @@ export async function runReplay(
             // Recovery actions come from config, not the reviewed step list —
             // pass an explicit risk so they go through the policy gate like
             // any other state-touching click instead of riding a silent default.
+            surface.setStep?.(stepId);
             await surface.click(d.recovery.target, undefined, 'reversible_write');
           }
           // Recovery is bounded to one attempt: re-check only THIS detector's

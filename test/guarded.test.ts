@@ -65,3 +65,18 @@ describe('GuardedSurface post-action bounds verification', () => {
     await expect(guarded.navigate('/members/1')).resolves.toBeUndefined();
   });
 });
+
+
+it('applies the live element risk floor before discovery dispatch and rejects invalid labels', async () => {
+  let clicked = false;
+  const surface = makeStubSurface({
+    describeTarget: async hint => ({ ...hint, snapshot: { tag: 'button', text: 'Open Account' } }),
+    click: async () => { clicked = true; return okReport; },
+  });
+  const guard = new GuardedSurface(surface, policy, async () => false);
+  const target = { description: 'read', strategies: [{ kind: 'css' as const, selector: 'button' }] };
+  await expect(guard.click(target, 100, 'read')).rejects.toThrow(PolicyViolationError);
+  expect(guard.effectiveRisk).toBe('irreversible'); expect(clicked).toBe(false);
+  await expect(guard.click(target, 100, 'invented' as 'read')).rejects.toThrow();
+  expect(clicked).toBe(false);
+});

@@ -1,3 +1,4 @@
+import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile } from '../runtime/profile.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
@@ -5,7 +6,7 @@ import type { ControlSession } from '../escalation/session.js';
 // discovery, the deterministic replayer, a future caller — goes through the
 // same gate, so no code path can act outside the allowlist.
 
-import type { RiskClass, TargetDescriptor, TableColumn } from '../artifact/schema.js';
+import { RiskClass, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ResolutionReport, Surface } from './types.js';
 
@@ -22,8 +23,10 @@ export class GuardedSurface implements Surface {
   mutationDispatched = false;
   effectiveRisk: RiskClass = 'read';
   private stepId = '(start)';
+  private attempt = 0;
   private started = false;
   private signOnSubmitted = false;
+  get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
   constructor(
@@ -42,7 +45,28 @@ export class GuardedSurface implements Surface {
       runId: string; artifact: string; version: string; operator: string; branch: string; role: string;
       beforeDispatch: (context: ActionContext) => void;
     },
+    private readonly onAction?: (event: string, data: Record<string, unknown>) => void,
   ) {}
+
+  private emit(event: string, data: Record<string, unknown> = {}) {
+    this.onAction?.(event, { stepId: this.stepId, attempt: this.attempt, ...data });
+  }
+
+  private async action<T>(action: string, risk: RiskClass, execute: () => Promise<T>): Promise<T> {
+    RiskClass.parse(risk);
+    this.attempt++;
+    this.effectiveRisk = risk;
+    const started = performance.now();
+    this.emit('action.start', { action, requestedRisk: risk });
+    try {
+      const result = await execute();
+      this.emit('action.end', { action, effectiveRisk: this.effectiveRisk, status: 'success', ms: performance.now() - started });
+      return result;
+    } catch (error) {
+      this.emit('action.end', { action, effectiveRisk: this.effectiveRisk, status: 'failure', ms: performance.now() - started });
+      throw error;
+    }
+  }
 
   private assertAutomation() {
     if (this.runtime?.session.currentOwner === 'human') throw new Error('Human owns this session');
@@ -58,6 +82,7 @@ export class GuardedSurface implements Surface {
     if (v.verdict === 'allow') return;
     if (v.verdict === 'needs_human') {
       const approved = await this.humanGate(action, risk, v.reason);
+      this.emit('approval.result', { approved, effectiveRisk: risk });
       if (approved) return;
       throw new PolicyViolationError({ verdict: 'deny', reason: `Human declined: ${v.reason}` }, action);
     }
@@ -66,12 +91,14 @@ export class GuardedSurface implements Surface {
 
   // Reads are ungated observations; actions are gated.
   async start(entryUrl: string): Promise<void> {
-    if (this.runtime && this.started) throw new Error('A run can start only once');
-    this.started = true;
-    this.assertRoute(entryUrl);
-    await this.gate('navigate', 'read', entryUrl);
-    await this.inner.start(entryUrl);
-    this.assertStillInBounds('start'); // a redirect could land outside the allowlist
+    return this.action('navigate', 'read', async () => {
+      if (this.runtime && this.started) throw new Error('A run can start only once');
+      this.started = true;
+      this.assertRoute(entryUrl);
+      await this.gate('navigate', 'read', entryUrl);
+      await this.inner.start(entryUrl);
+      this.assertStillInBounds('start'); // a redirect could land outside the allowlist
+    });
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
   currentUrl(): string { return this.inner.currentUrl(); }
@@ -103,10 +130,12 @@ export class GuardedSurface implements Surface {
   }
 
   async navigate(url: string): Promise<void> {
-    this.assertRoute(url);
-    await this.gate('navigate', 'read', url);
-    await this.inner.navigate(url);
-    this.assertStillInBounds('navigate');
+    return this.action('navigate', 'read', async () => {
+      this.assertRoute(url);
+      await this.gate('navigate', 'read', url);
+      await this.inner.navigate(url);
+      this.assertStillInBounds('navigate');
+    });
   }
   private assertRoute(url: string) {
     if (!this.runtime) return;
@@ -117,65 +146,83 @@ export class GuardedSurface implements Surface {
     }
   }
   async click(t: TargetDescriptor, timeoutMs?: number, risk: RiskClass = 'read'): Promise<ResolutionReport> {
-    this.assertAutomation();
-    if (this.runtime) {
-      this.assertStillInBounds('click');
-      if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
-      const prepared = await this.inner.prepareClick(t, timeoutMs);
-      const live = await prepared.inspect();
-      const signOn = new URL(live.destination).pathname === '/signon';
-      if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
-      const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
-      this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
-      if (rule?.mutation) {
-        if (this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: repeat dispatch refused');
-        if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
-        const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
-          destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: live.role,
-          facts: live.facts, tokenPresent: live.tokenPresent, control: live.control };
-        // Profile mutation rules require approval even when policy/model says allow.
-        const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');
-        if (verdict.verdict === 'deny') throw new PolicyViolationError(verdict, 'click');
-        this.onDecision?.({ action: 'click', url: live.destination, risk: 'irreversible', verdict: 'needs_human' });
-        if (!await this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context)) throw new Error('Submission aborted');
-        this.assertAutomation();
-        const refreshed = await prepared.inspect();
-        if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
-        this.runtime.beforeDispatch(context);
-        this.mutationDispatched = true;
-      } else {
-        await this.gate('click', risk, live.destination);
+    return this.action('click', risk, async () => {
+      this.assertAutomation();
+      if (this.runtime) {
+        this.assertStillInBounds('click');
+        if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
+        const prepared = await this.inner.prepareClick(t, timeoutMs);
+        const live = await prepared.inspect();
+        const signOn = new URL(live.destination).pathname === '/signon';
+        if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
+        const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
+        this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
+        this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
+        if (rule?.mutation) {
+          if (this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: repeat dispatch refused');
+          if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
+          const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
+            destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: live.role,
+            facts: live.facts, tokenPresent: live.tokenPresent, control: live.control };
+          // Profile mutation rules require approval even when policy/model says allow.
+          const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');
+          if (verdict.verdict === 'deny') throw new PolicyViolationError(verdict, 'click');
+          this.onDecision?.({ action: 'click', url: live.destination, risk: 'irreversible', verdict: 'needs_human' });
+          const approved = await this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context);
+          this.emit('approval.result', { approved, effectiveRisk: 'irreversible' });
+          if (!approved) throw new Error('Submission aborted');
+          this.assertAutomation();
+          const refreshed = await prepared.inspect();
+          if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
+          this.runtime.beforeDispatch(context);
+          this.mutationDispatched = true;
+          // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.
+          this.emit('mutation.intent', { effectiveRisk: 'irreversible' });
+        } else {
+          await this.gate('click', risk, live.destination);
+        }
+        if (signOn && live.submit) this.signOnSubmitted = true;
+        const report = await prepared.dispatch(live);
+        this.assertStillInBounds('click');
+        return report;
       }
-      if (signOn && live.submit) this.signOnSubmitted = true;
-      const report = await prepared.dispatch(live);
+      const live = await this.inner.describeTarget(t);
+      const floor = riskFloorFor(live);
+      this.effectiveRisk = floor && RISK_RANK[floor] > RISK_RANK[risk] ? floor : risk;
+      this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk });
+      await this.gate('click', this.effectiveRisk);
+      const report = await this.inner.click(t, timeoutMs);
       this.assertStillInBounds('click');
       return report;
-    }
-    await this.gate('click', risk);
-    this.effectiveRisk = risk;
-    const report = await this.inner.click(t, timeoutMs);
-    this.assertStillInBounds('click');
-    return report;
+    });
   }
   async fill(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
-    await this.gate('fill', risk);
-    const report = await this.inner.fill(t, value, timeoutMs);
-    this.assertStillInBounds('fill'); // change handlers can navigate in legacy apps
-    return report;
+    return this.action('fill', risk, async () => {
+      await this.gate('fill', risk);
+      const report = await this.inner.fill(t, value, timeoutMs);
+      this.assertStillInBounds('fill'); // change handlers can navigate in legacy apps
+      return report;
+    });
   }
   async select(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write', selectBy?: 'label' | 'value'): Promise<ResolutionReport> {
-    await this.gate('select', risk);
-    const report = await this.inner.select(t, value, timeoutMs, risk, selectBy);
-    this.assertStillInBounds('select'); // onchange submits are a legacy staple
-    return report;
+    return this.action('select', risk, async () => {
+      await this.gate('select', risk);
+      const report = await this.inner.select(t, value, timeoutMs, risk, selectBy);
+      this.assertStillInBounds('select'); // onchange submits are a legacy staple
+      return report;
+    });
   }
   async readTable(t: TargetDescriptor, columns: TableColumn[], timeoutMs?: number, rowSelector?: string) {
-    await this.gate('extract', 'read');
-    if (!this.inner.readTable) throw new Error('Table extraction unavailable');
-    return this.inner.readTable(t, columns, timeoutMs, rowSelector);
+    return this.action('extract', 'read', async () => {
+      await this.gate('extract', 'read');
+      if (!this.inner.readTable) throw new Error('Table extraction unavailable');
+      return this.inner.readTable(t, columns, timeoutMs, rowSelector);
+    });
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
-    await this.gate('extract', 'read');
-    return this.inner.readText(t, timeoutMs);
+    return this.action('extract', 'read', async () => {
+      await this.gate('extract', 'read');
+      return this.inner.readText(t, timeoutMs);
+    });
   }
 }
