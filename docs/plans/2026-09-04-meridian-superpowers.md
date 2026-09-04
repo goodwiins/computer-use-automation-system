@@ -4,18 +4,20 @@
 
 **Goal:** Complete and demonstrate all seven MERIDIAN capabilities through the existing discovery, replay, API, chat, and operator approval workflow.
 
-**Architecture:** Reuse the implementation in PR #34 and safety evaluation in PR #35. One Express process owns one active browser run, guarded actions, approvals, and the durable filesystem journal. Complete the missing live recordings and validation; do not rebuild those subsystems.
+**Architecture:** Reuse the implementation in PR #34 and safety evaluation in PR #35. For this demo, one Express process owns one active browser run, guarded actions, approvals, and the durable filesystem journal. Complete the missing live recordings and validation; do not rebuild those subsystems.
 
-**Tech Stack:** Node 22, TypeScript, Express, Playwright, Zod, OpenAI/Azure, Vitest, static HTML/CSS/JavaScript; no new dependency.
+**Tech Stack:** Node 22, TypeScript, Express, Playwright, Zod, OpenAI/Azure, Vitest, and the current static HTML/CSS/JavaScript runtime/dashboard; no new dependency during capability work. The user-selected [assistant-ui](https://www.assistant-ui.com/) chat is a deferred final-phase exception.
 
 **Spec:** [MERIDIAN CORE adaptation — replacement plan](2026-09-03-meridian-adaptation.md). Read it alongside this document. Its requirements remain authoritative; this document replaces its outdated implementation sequence and production-branch starting point.
 
-**Execution status:** Resumed by the user on September 4, 2026, with a separate PR against `dev` for each major task. Tasks 5a–5b are delivered for review in [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39), using isolated branch `codex/meridian-transfer-runtime` from `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`. Preserve the earlier acceptance worktree and its draft artifact. Each live posting still requires its own approval on current facts; implementation authorization does not reuse an earlier posting decision.
+**Execution status:** Resumed by the user on September 4, 2026, with a separate PR against `dev` for each major task. Tasks 5a–5b are integrated through [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39), and the terminal-lifecycle repairs are integrated through PR #41; the current runtime baseline is `aa90387244be07b9955b8b5b83eacf4b9f3058a1`. Preserve the earlier acceptance worktree and its draft artifact. Each live posting still requires its own approval on current facts; implementation authorization does not reuse an earlier posting decision.
+
+**Assignment §2 supplement:** The [target-application implementation plan](2026-09-04-meridian-target-application.md) maps all seven functions and exceptional states to existing PRs and remaining work. After #37/#39 integration, complete its Task A in a separate runtime PR before Task 5c: PR #39 safely rejects underfunding but still reports a generic failure. The supplement specifies a terminal `INSUFFICIENT_FUNDS` business result for discovery/replay before intent, without changing post-intent uncertainty. It is planned work, not an implemented fix.
 
 ## Global Constraints
 
 - “All seven required functions must work, including approved posting.”
-- “One server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript frontend.”
+- Current demo decision: one server process, one active run, one visible browser per run, filesystem persistence, and a plain HTML/CSS/JavaScript runtime/dashboard, with a concurrency ceiling. This keeps the demo low complexity; it is not a general concurrency requirement.
 - “Three working days is the target, including integration and rehearsal.” This was the original estimate, not three additional days or a promise of completion despite target failures.
 - “No automatic privilege upgrade or mid-flow login recovery.”
 - “Use validated decimal strings for money and integer cents for comparisons.”
@@ -30,6 +32,10 @@
 - User delivery rule: each major task gets its own PR against `dev`, including its relevant tests and documentation. Do not combine the remaining implementation into one delivery PR; use the boundaries below.
 - Preserve the dirty primary checkout. Use an isolated worktree and a `codex/` branch from `origin/dev`.
 - Each posting requires a separate human decision on current live facts. Artifact promotion is not transaction approval. Do not synthesize approvals in a terminal or dashboard.
+
+### Assignment requirements versus plan decisions
+
+The assignment requires all seven functions, approved posting, the existing safety boundaries and honest live evidence. The one-process/run/journal shape above is a low-complexity plan decision with a concurrency ceiling. The six canonical transfer columns are the existing validator design, not a mandated physical DOM shape: adapt the contract and extractor minimally to the observed layout while preserving input/result binding and provenance. Separate PR boundaries follow the user's review preference for reviewability, with the integration cost stated above.
 
 ---
 
@@ -47,7 +53,7 @@ These are inspected historical snapshots, not authorization to merge. Refresh re
 
 Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`) on `def4b38a2f906f725813f5c89563f3fe82e31140`, and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the resulting trees are equal. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
 
-The acceptance worktree delivered [PR #37](https://github.com/goodwiins/computer-use-automation-system/pull/37) at `745ef645ae48730e769e6fc639ec4f71739d23e8`; it is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`, with passing hosted CI. [PR #38](https://github.com/goodwiins/computer-use-automation-system/pull/38) previously merged at `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`. [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39) was reviewed at `b093b6503a39339399f57c2d59a3d5f5b417c18d`; its transfer runtime is being reconciled onto the merged read baseline with the operation-binding blocker fixed. The transfer draft, catalog-test edit and local evidence remain outside this runtime branch; preserve them for later artifact work.
+The acceptance worktree delivered [PR #37](https://github.com/goodwiins/computer-use-automation-system/pull/37) at reviewed head `745ef645ae48730e769e6fc639ec4f71739d23e8`; it is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`, whose workflow `33919679746` / producer `101174884826` passed. [PR #38](https://github.com/goodwiins/computer-use-automation-system/pull/38) previously merged at `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`. [PR #39](https://github.com/goodwiins/computer-use-automation-system/pull/39) was repaired at `05f0647`, reviewed at final head `64c9b11`, and integrated into `dev` at `fcd87f7fb8d573c8d44d43436310cce07baae06a`; head workflow `33920737879` / producer `101178214101` and merge workflow `33920922815` / producer `101178797950` passed, with 257 local tests. [PR #41](https://github.com/goodwiins/computer-use-automation-system/pull/41) repaired the three terminal-lifecycle findings at `3aacfac`, passed scoped review and 269 local tests at final head `ec5f6a1ea421c7d4b5b345c4d83614eb513d3ec9`, and is integrated into `dev` at `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; head workflow `33921302067` / producer `101180000937` passed, while merge CI remains tracked separately. These runtime integrations do not promote the transfer draft, accept a write capability, or raise live coverage above `3/7`. The transfer draft, catalog-test edit and local evidence remain outside the runtime branches; preserve them for later artifact work.
 
 ### Current repair and integration status
 
@@ -83,12 +89,12 @@ This is a completion plan for one demo, with separately reviewable deliverables.
 | 3 | `src/surface/{types,browser,guarded}.ts`, `src/replay/executor.ts`, `src/server/service.ts`, `test/{meridian,guarded}.test.ts` — unresolved review checks | Current #34/#35 candidate; resolve during 1 |
 | 4 | `test/meridian-artifacts.test.ts`, `docs/meridian/live-evidence.md` — artifact acceptance check and live readiness | 2, 3 |
 | 5 | Shared transfer validation and its focused regressions; transfer draft, catalog test and evidence, as detailed in 5a–5d | 4; resumed in a separate runtime PR |
-| 6 | `artifacts/meridian-open-share.v1.0.0.json`, its evidence directory | 5d; separate explicit new operation |
-| 7 | `artifacts/meridian-update-member.v1.0.0.json`, its evidence directory | 6; apply the same bound-fact review gates |
-| 8 | `artifacts/meridian-place-hold.v1.0.0.json`, its evidence directory | 7; supervisor operator |
+| 6 | Open-share artifact, its capability-specific contract/guard/completion checks and evidence | 5d; separate explicit new operation |
+| 7 | Member-update artifact, its capability-specific contract/guard/completion checks and evidence | 6; apply the same bound-fact review gates |
+| 8 | Account-hold artifact, its capability-specific contract/guard/completion checks and evidence | 7; supervisor operator |
 | 9 | `test/meridian.test.ts`, `docs/meridian/{live-evidence,runbook,report,evaluation}.md`, sanitized evidence, `README.md`, `docs/README.md` — acceptance and delivery | 5–8 |
 
-Profile and contract corrections reuse `config/app-profiles/meridian.json`, `src/runtime/contracts.ts` and the existing shared execution paths identified in Task 5, with focused regressions in existing tests. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone. Permission to consider assistant-ui is not part of this transfer repair's scope.
+Profile and contract corrections reuse `config/app-profiles/meridian.json`, `src/runtime/contracts.ts` and the existing shared execution paths identified in Task 5, with focused regressions in existing tests. Only change observed rules; do not add another browser runner, API, UI framework, job queue, telemetry backend, or MERIDIAN clone. Keep the current static dashboard during capability work; the selected assistant-ui chat is a final-phase exception described below, not part of this transfer repair.
 
 ### Required PR boundaries
 
@@ -102,6 +108,7 @@ These are planned deliverables, not existing GitHub PR numbers. Keep PR #37 scop
 | Member-update capability | 7 | Its artifact, required scoped runtime fixes/tests and verified persistence evidence |
 | Account-hold capability | 8 | Its artifact, required scoped runtime fixes/tests, teller-denial and supervisor-success evidence |
 | Remaining integrated acceptance and delivery | Remaining 9 | Missing exception/integration regressions, rehearsal evidence and final runbook/report/setup updates; reuse accepted capability evidence |
+| Final chat UI | After capability/runtime/API acceptance | Ask the user for direction before assistant-ui work; preserve auth/operator controls and reuse accepted evidence/request identity |
 
 Use a separate isolated `codex/` branch from updated `origin/dev` for each PR. Include only that deliverable's changes. Keep the current draft and pending transfer catalog-test entry in the artifact work, outside the runtime PR; preserve them without weakening the approved-status gate. The runtime PR must pass its own complete checks from its isolated checkout. A blocked artifact may stay in a draft PR with the failed/incomplete gate stated explicitly; it is not ready to merge.
 
@@ -337,6 +344,18 @@ node --env-file=.env --import tsx scripts/evaluate-run.ts "$EVIDENCE_DIR" "$RUN_
 
 Set `RUN_ID` from that command's actual output and `EVIDENCE_DIR` to the configured run root, not its `journal` subdirectory. Success requires safety pass **and** the expected business result. Preserve a failing or unknown result faithfully. Copy only inspected sanitized evidence into `docs/meridian/evidence/`; never copy the private journal, `.env`, cookies or full raw output.
 
+### Capability-specific validation for Tasks 6–8
+
+The transfer comparators are deliberately request-bound and are not a generic completion framework. Before recording any remaining write, inspect retained/read-only evidence and the actual target's form, review and completion/result state. Record the facts and available result fields that are genuinely observed; do not invent selectors, outputs or a result relationship. Implement the smallest comparator and guard changes in that capability's own PR, reusing `DiscoveryDeps.validateCompletion`, the existing replay final-output validation path and `GuardedSurface` request/review checks. Run the same comparator on actual accumulated outputs before `discovery.finish('success')` and before `replay.success`; a generic nonempty output or success text is insufficient. Add one passing fixture and the listed negative regression in both discovery and replay paths before that capability's live recording/replay.
+
+- **Open share:** Bind the exact member route/review facts, selected `shareType` value and positive `deposit`. Before success, require the extracted `shareId` to be nonempty and to match a newly observed share for that member with the requested type and deposit, where the target exposes those facts. A wrong or stale member/share/type/deposit in the review must stop before approval and dispatch; a preexisting, other-member or otherwise stale `shareId` must fail completion, emit no success, and after dispatch intent remain `POST_OUTCOME_UNKNOWN` with one dispatch and no retry or repair. If the target does not expose enough resulting state to bind the ID, stop and document the limitation.
+- **Member update:** Bind the exact member and each filled email, phone and address in the live form and dashboard review. Before success, require `saved` to be backed by a fresh read of that same member showing the requested fields; a generic “saved” message is not evidence. A wrong/stale member or changed contact fact must invalidate approval before dispatch; a stale result or old/other-member contact state must fail completion with no success and, after dispatch intent, `POST_OUTCOME_UNKNOWN`, one dispatch and no retry or repair.
+- **Account hold:** Bind the exact member, share, reason, notes and authenticated supervisor role in the review and native form. Before success, require `heldShare` to be backed by a fresh read showing HOLD on that requested share (and any observed confirmation or reason relationship). A wrong/stale member/share or teller context must stop before approval and dispatch; a stale/other-share hold result must fail completion with no success and, after dispatch intent, `POST_OUTCOME_UNKNOWN`, one dispatch and no retry or repair. Preserve a teller denial as its own pre-intent permission outcome.
+
+Each capability PR must keep these checks capability-specific and request-bound; do not add a generic validator or defer the implementation until after a live artifact exists. If a result cannot be bound from observed target facts, leave the artifact gate incomplete rather than promise discovery or replay success.
+
+Before recording open share or account hold, make an explicit observed decision about a separate completion confirmation. Inspect retained/read-only evidence and the actual target result when it is available; record `present` with its observed relationship, or record `absent` with the evidence and limitation. If present, coordinate the minimal changes in that capability PR to `meridianContracts`/`applyMeridianContract`, the artifact output declaration and extract, the request-bound completion comparator, discovery/replay wiring and the catalog test; `applyMeridianContract` currently requires the exact declared outputs and rejects extras. If absent, document that fact and keep the current public outputs `shareId` or `heldShare`. Do not change the contract now from the specification alone, invent a selector, or post solely to inspect a result.
+
 ## Task 5: Clear the four transfer findings before promotion and replay
 
 **Existing deliverable:** A genuine 22-step draft from discovery `a06406ce-c425-4cfb-bb61-4e23b73f8845` at source `745ef645ae48730e769e6fc639ec4f71739d23e8`. Frozen draft SHA256: `65a54c76307356d1bedaf0ab228c0ace8eae4000d09b28c6b102d70741e026e4`. Independent review found four Important issues and no Critical issue. Schema, server references, sensitive metadata, irreversible post classification and supplied run/hash alignment passed that review; they do not clear the four semantic findings.
@@ -366,6 +385,13 @@ Set `RUN_ID` from that command's actual output and `EVIDENCE_DIR` to the configu
 - [x] Mapped the observed member route, share ID/status/balance columns, native inputs, visible review labels/formats and confirmation label/value adjacency. Runtime uses invariant structural selectors and exact TypeScript comparisons; parameter-dependent CSS remains rejected.
 - [x] Recorded the evidence boundary: transaction result labels, order, header shape and confirmation/detail relationship are unverified. General `td`-header guidance does not prove that table's shape. Task 5c must establish this mapping through genuine observations; never post merely to inspect a table.
 - [x] Used the verified member/input/review map for runtime comparisons and defined the typed output contract below without guessing physical result selectors. Task 5c requires a new complete recording; submitted parameters cannot stand in for extracted outputs.
+
+### Transfer result extraction feasibility gate
+
+Before another transfer posting is requested, inspect the frozen draft, retained/read-only evidence and any available unsubmitted or previously captured result structure. `Surface.readTable` extracts each declared column from descendants of each selected row; it does not join labels or values across rows. The six canonical transaction columns are the validator's output design, not a physical DOM mandate: use an observed single-row shape or an explicitly reviewed minimal extractor/contract change supported by evidence, including confirmation relationship and header handling.
+
+- [ ] Record whether retained/read-only observations establish that one supported `readTable` target can produce exactly one row with `member`, `sourceShare`, `destinationShare`, `amount`, `memo` and `confirmation`. Do not guess selectors or infer the layout from the contract.
+- [ ] If the physical result is unsupported or the feasibility evidence is absent, stop the artifact sequence before posting and make only a reviewed minimal contract/extractor adjustment from actual evidence, with its focused regression; otherwise leave the artifact blocked. Never ask an operator to post solely to inspect the result, backfill a selector or provenance, or promise that a selected operation will produce a valid artifact. If the operator separately chooses and approves a write while this gate is unresolved, label that limitation up front and treat any resulting observation as unaccepted until the gate is reviewed.
 
 ### Task 5b: Enforce the semantics in the shared runtime, offline first
 
@@ -429,12 +455,13 @@ git diff --check
 
 Expected: focused behavioral checks pass after the fixes. The catalog test still rejects the unapproved transfer draft. Do not replace these regressions with assertion counts or checks of contract literals written by the same constructor. Independent review covered all four runtime findings and the shared call paths; all reported findings are closed. Live artifact review remains separate.
 
-- [x] Delivered Tasks 5a–5b in the separate transfer-runtime PR #39 against `dev`, with the code, regression and independent review gates above. Confirm its final hosted checks before integration. Keep the pending artifact/catalog changes in their own worktree. Begin Task 5c on the resulting reviewed `dev` baseline after integration; no live posting is authorized by the runtime merge.
+- [x] Delivered Tasks 5a–5b through transfer-runtime PR #39 at merge `fcd87f7fb8d573c8d44d43436310cce07baae06a`, with the code, regression, independent review and hosted head/merge gates recorded in the integration ledger. Keep the pending artifact/catalog changes in their own worktree. Begin Task 5c only after the separate Task A outcome fix on the reviewed `aa90387244be07b9955b8b5b83eacf4b9f3058a1` baseline; no live posting is authorized by the runtime merge.
 
 ### Task 5c: Resolve provenance, review the exact candidate, then promote
 
 **Files:** `artifacts/meridian-funds-transfer.v1.0.0.json`, `test/meridian-artifacts.test.ts`, `docs/meridian/live-evidence.md`, `docs/meridian/evidence/funds-transfer/`. Preserve the frozen original privately and maintain the same named public contract.
 
+- [ ] Pass the transfer result extraction feasibility gate above using retained/read-only observations before requesting another posting. If it cannot be established before the selected operation, record the limitation and keep the artifact unpromised and blocked unless the operator separately chooses and approves that write with the limitation understood.
 - [ ] Require a new complete recording after runtime hardening because the typed transaction contract changes extraction semantics; do not reuse or promote the frozen field/value draft. This remains gated on an explicitly requested new operation, not automatic execution. Preserve the old successful discovery and label all new checks with their new source SHA; the old run did not execute them.
 - [ ] If required recorded steps/targets/row selectors change, or genuine observations are missing, require a new complete discovery. Preserve `a06406ce-c425-4cfb-bb61-4e23b73f8845` as the successful original; the replacement has its own run ID and source SHA. No manual JSON insertion or human-repair capture may masquerade as original discovery provenance.
 - [ ] Prepare any necessary replacement discovery only after the operator chooses a genuinely new operation and requests it. Use selected inputs rather than fixed amount/memo defaults, a separately saved discovery key, explicit `{{operator}}`, `{{password}}`, `{{branch}}` references, all four verified semantic gates and a separate human approval at the actual posting gate. If another posting is not wanted, leave the artifact blocked. Never reuse the previous consent or request key as permission for a new operation.
@@ -450,7 +477,7 @@ Expected: promotion changes artifact approval status without posting; the unchan
 
 ### Task 5d: Separately approved replay and transfer acceptance
 
-- [ ] Stop CLI discovery before starting the existing server. Through real caller chat→API→operator dashboard, request an explicitly selected new transfer with current member/share/balance facts and its saved replay key. Require a separate human decision on the exact review facts, then verify that run's output correspondence and fresh resulting-state deltas. Do not reuse the discovery's balance change as replay evidence.
+- [ ] Stop CLI discovery before starting the existing server. Through the existing caller API/operator controls (the final assistant-ui chat remains deferred), request an explicitly selected new transfer with current member/share/balance facts and its saved replay key. Require a separate human decision on the exact review facts, then verify that run's output correspondence and fresh resulting-state deltas. Do not reuse the discovery's balance change as replay evidence.
 - [ ] Repeat only the same API invocation/key to confirm the original replay run ID returns without another browser or mutation. Preserve any unknown outcome and investigate with a read; changing the key is a new operation, not a repair.
 - [ ] Evaluate the actual replay and whichever discovery produced the accepted artifact. Update the sanitized ledger with source SHA, artifact version/hash, original/superseding discovery distinction, replay ID, separate approvals, all four findings' closure evidence and resulting-state verification. Omit concrete member/share/contact/amount/balance/token/session values from tracked documentation.
 - [ ] Only then count funds transfer as accepted (`4/7` if the three reads remain valid). Deliver Tasks 5c–5d through the separate funds-transfer artifact/acceptance PR against `dev`, with its catalog, local and exact-head hosted checks. Tasks 6–8 each get their own PR in order; preserve their independent approvals and capability-specific result checks.
@@ -462,6 +489,7 @@ Expected: promotion changes artifact approval status without posting; the unchan
 **Interfaces:** Inputs `{member, shareType, deposit}`; output `shareId`. This is a new explicitly chosen operation, never a retry of `222ebecd-ca02-4960-a875-c2f2f76e0927`.
 
 - [ ] Add `'meridian-open-share'` to the test's `ids`; run `npx vitest run test/meridian-artifacts.test.ts -t meridian-open-share`. Expected: missing-artifact failure.
+- [ ] Before live discovery, complete the open-share validation in this PR from observed target facts: guard the exact member, `shareType` and deposit before approval, and bind the extracted `shareId` to a newly observed row for that member with the requested type and deposit before discovery or replay can report success. Add one passing fixture plus wrong/stale member, share ID, type and deposit mutations through both existing completion paths; pre-intent mutations dispatch zero times, and post-intent result failures produce one dispatch and `POST_OUTCOME_UNKNOWN` with no retry or repair.
 - [ ] Operator chooses the new operation, confirms current member/share state, share type `S0001` and deposit `5.00`, and saves its request key. If a second new share is not wanted, do not use replay merely to satisfy a checkbox; leave the live gate incomplete.
 - [ ] Discover with all three explicit server login references:
 
@@ -473,6 +501,7 @@ cu discover --profile meridian --name meridian-open-share \
 ```
 
 - [ ] Approve current facts interactively; verify the resulting share ID against a fresh member record. A model message is insufficient. On any post-intent ambiguity, preserve unknown and stop.
+- [ ] Record the observed separate confirmation decision before this recording. If the target supplies one, use the coordinated contract/output/comparator/catalog changes above; if it does not, document the absence and retain the `shareId` contract.
 - [ ] Review and promote, then run the targeted contract check:
 
 ```sh
@@ -489,6 +518,7 @@ npx vitest run test/meridian-artifacts.test.ts -t meridian-open-share
 **Interfaces:** Inputs `{member, email, phone, address}`; output `saved`. The native form posts directly to `/members/:id/update`; the dashboard supplies the review of live filled facts before Save Changes.
 
 - [ ] Add `'meridian-update-member'` to the test's `ids`; run `npx vitest run test/meridian-artifacts.test.ts -t meridian-update-member`. Expected: missing-artifact failure.
+- [ ] Before live discovery, complete the member-update validation in this PR from observed target facts: guard the exact member and all filled contact fields in the live form and dashboard review, and require a fresh read of that member with the requested values before either discovery or replay can report `saved`. Add one passing fixture plus wrong/stale member, changed contact fields and stale/other-member result mutations through both existing completion paths; pre-intent mutations dispatch zero times, and post-intent result failures produce one dispatch and `POST_OUTCOME_UNKNOWN` with no retry or repair.
 - [ ] Choose synthetic contact values and a member explicitly. Before dispatch, verify the approval view contains the actual email, phone and address from the filled form. Test abort first on a separate undispatched run: no Save POST may occur.
 - [ ] Discover the explicitly requested update:
 
@@ -516,6 +546,7 @@ npx vitest run test/meridian-artifacts.test.ts -t meridian-update-member
 **Interfaces:** Inputs `{member, share, reason, notes}`; output `heldShare`. Invocation requires the authenticated operator principal selecting supervisor context. Caller/chat cannot obtain that context.
 
 - [ ] Add `'meridian-place-hold'` to the test's `ids`; run `npx vitest run test/meridian-artifacts.test.ts -t meridian-place-hold`. Expected: missing-artifact failure.
+- [ ] Before live discovery, complete the account-hold validation in this PR from observed target facts: guard the exact member, share, reason, notes and supervisor role, and bind `heldShare` to a fresh read showing HOLD on that requested share before either discovery or replay can report success. Add one passing fixture plus wrong/stale member, share, role and result mutations through both existing completion paths; pre-intent mutations dispatch zero times, and post-intent result failures produce one dispatch and `POST_OUTCOME_UNKNOWN` with no retry or repair.
 - [ ] Select an eligible current synthetic share for this new hold. Verify role before writing. Retain a natural teller-denial example without elevating that run or replaying its failed mutation.
 - [ ] Discover the explicitly requested supervisor operation:
 
@@ -526,7 +557,7 @@ cu discover --profile meridian --operator SUPERVISOR --name meridian-place-hold 
   --sensitive member --sensitive share --sensitive notes --idempotency-key "$HOLD_DISCOVERY_KEY"
 ```
 
-- [ ] Approve only after role and share facts match. Verify HOLD on that share through a fresh read. Review/promote and check:
+- [ ] Record the observed separate confirmation decision before this recording. If the target supplies one, use the coordinated contract/output/comparator/catalog changes above; if it does not, document the absence and retain the `heldShare` contract. Approve only after role and share facts match. Verify HOLD on that share through a fresh read. Review/promote and check:
 
 ```sh
 cu replay --artifact artifacts/meridian-place-hold.v1.0.0.json --approve
@@ -571,19 +602,28 @@ This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947
 | Exact transfer eligibility, review facts, completion details, table headers — runtime reviewed; artifact pending | Task 5a–5c regression and review gates pass; no wrong member/share/amount/memo accepted; no header returned as transaction data |
 | Hostile message/HTML, unauthorized evidence path | Inert UI text; denied evidence access; no credential in URL/storage |
 
-- [ ] Exercise six per-request scenarios on the actual operation route using runbook `--inject`/`--fault-route`, with new test requests and operator-selected inputs. Do not loop live mutation commands blindly. Verify the target's actual response and run classification:
+- [ ] Exercise each applicable per-request scenario on the actual operation route with a new request and operator-selected inputs. Use `--inject <kind> --fault-route <observed operation-entry GET path>` only when that exact path and injection behavior are observed; the fault hook is for that exact operation-entry navigation only and excludes `/review`, `/post` and every POST request. Otherwise record the native method and form action and exercise the target response without forcing a route. Do not loop live mutation commands blindly. For every run, record the observed method/path, whether the condition occurred before or after the durable journal transition to `dispatching`, the terminal run and journal states, and the exact dispatch count. Use offline fixtures for after-intent simulated errors; do not claim that the live route-injection hook covers a post-intent response.
 
-| Scenario | Expected decision |
-| --- | --- |
-| validation, bad contact fields, insufficient funds | Business rejection; no claimed successful posting |
-| not-found / absent member | Business outcome; never choose another member automatically |
-| permission / teller hold | Stop; no automatic supervisor substitution |
-| timeout / natural expiry | Stop; no mid-flow login |
-| maintenance | At most supported bounded recovery; Continue→menu alone is not completion |
-| server | Explicit stop or known safe behavior; never retry a submitted mutation |
-| missing/stale hidden token | Fail closed or target rejection recorded; token value never persisted |
+For the status column, record discovery and replay separately (`D` and `R` below): a pre-intent discovery stop or escalation is `D: stopped` or `escalated` with journal `failure`; a pre-intent replay business detector is `R: business_outcome` with journal `business_outcome`; a pre-intent replay fatal or policy/validation failure is `R: failure(<code>)` with journal `failure`; and post-intent discovery is `D: stopped(POST_OUTCOME_UNKNOWN)` while post-intent replay is `R: failure(POST_OUTCOME_UNKNOWN)`, with journal `POST_OUTCOME_UNKNOWN` in both cases. After the §2 supplement's Task A lands, a validated underfunded request also terminates discovery and replay as `business_outcome / INSUFFICIENT_FUNDS`, with journal `business_outcome`. A post-intent run with verified completion remains success; the unknown branch applies only to a failed or unverified completion.
 
-- [ ] After Task 5c promotion, use Task 5d's separately authorized transfer replay as the real chat→API→dashboard write rehearsal; retain the existing successful balance-read evidence. Do not post another transfer solely to duplicate this checkbox. Repeat that same replay request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
+`Dispatch count` below means durable mutation-intent count: the `beforeDispatch` journal transition to `dispatching`, not proof that an HTTP POST reached the target. Record observed native POST attempts separately as `0`, `1` or `unknown` when browser or network evidence cannot establish delivery, and preserve that uncertainty.
+
+| Scenario | Injection method/path or observed route decision | Phase relative to durable dispatch intent | Expected terminal run / journal status | Dispatch count |
+| --- | --- | --- | --- | --- |
+| validation | `--inject validation --fault-route <observed operation-entry GET path>`, or native `POST <observed form action>` if the target only rejects the submitted form | Detector or target rejection before intent is pre-intent; a rejection visible only in the POST response is post-intent | Pre-intent: `D stopped`/`escalated` → journal `failure`; `R business_outcome` → journal `business_outcome`. Post-intent: `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → journal `POST_OUTCOME_UNKNOWN` | 0 pre-intent; 1 post-intent |
+| bad contact fields | Native `POST <observed member-update form action>` with explicitly chosen invalid values; no guessed fault route | Classify from the observed response; do not call a post-intent response a verified business outcome | Pre-intent: `D stopped`/`escalated` → journal `failure`; `R business_outcome` → journal `business_outcome`. Post-intent: `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → journal `POST_OUTCOME_UNKNOWN` | 0 pre-intent; 1 post-intent |
+| insufficient funds | Freshly observe a valid underfunded source; complete §2 supplement Task A before acceptance. If the target itself supplies a native rejection, record its observed `POST <form action>` rather than forcing an injection | Guard result is pre-intent only after identity, row, status and money checks; a native rejection visible only after mutation intent is post-intent | Required after Task A: pre-intent `D business_outcome(INSUFFICIENT_FUNDS)` and `R business_outcome(INSUFFICIENT_FUNDS)` → journal `business_outcome`. Current #39 still gives a generic guard failure; do not mark this gate complete on that behavior. Post-intent: `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → journal `POST_OUTCOME_UNKNOWN` | 0 pre-intent; 1 post-intent |
+| not-found / absent member | Fresh read-only `GET <observed member/search path>` or exact member route; do not inject a mutation path or choose another member | Pre-intent read/business result | Discovery `stopped`/`escalated` → journal `failure`; replay `business_outcome` → journal `business_outcome`, with no claimed write | 0 |
+| permission / teller hold | Teller context on the observed hold route, or `--inject permission --fault-route <observed hold-entry GET path>`; never substitute supervisor context | Pre-intent authority/detector check | `D stopped`/`escalated` → journal `failure`; `R failure(PERMISSION_DENIED)` → journal `failure` (or an explicitly observed pre-intent target business outcome) | 0 |
+| timeout / natural expiry | `--inject timeout --fault-route <observed operation-entry GET path>`, or record the natural expiry route and timing | Pre-intent expiry stops; if expiry is observed only after intent, treat it as unknown | Pre-intent: `D stopped`/`escalated` → `failure`; `R failure(SESSION_EXPIRED)` → `failure`. Post-intent: `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → `POST_OUTCOME_UNKNOWN` | 0 pre-intent; 1 post-intent |
+| maintenance | `--inject maintenance --fault-route <observed operation-entry GET path>`; record the observed Continue destination before attempting one recovery | Pre-intent only; same-browser repair may clear a known maintenance condition once, and menu/Continue alone is not completion | If not cleared or not reverified: `D stopped`/`escalated` → `failure`, `R failure` → `failure`; if a later approved post occurs, classify its result by its own phase. Post-intent maintenance is `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → `POST_OUTCOME_UNKNOWN` | 0 unless an explicitly approved post occurs; 1 for that post |
+| server | `--inject server --fault-route <observed operation-entry GET path>`, or native `POST <observed form action>` if the target emits the error only after submission | Pre-intent application error is a stop; post-intent response is unknown | Pre-intent: `D stopped`/`escalated` → journal `failure`; `R failure(APPLICATION_ERROR)` → journal `failure`. Post-intent: `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → `POST_OUTCOME_UNKNOWN` | 0 pre-intent; 1 post-intent |
+| missing hidden token | Remove or observe absence of the token before approval/dispatch on the exact inspected form; do not persist its value | Pre-intent client/guard refusal | `D stopped`/`escalated` → journal `failure`; `R failure` → journal `failure`; no server rejection is claimed | 0 |
+| stale token rejected by server | Inspect a present token, then record the target's actual native `POST <observed form action>` response if it rejects after submission | Post-intent if the durable intent was recorded before the POST | `D stopped(POST_OUTCOME_UNKNOWN)` and `R failure(POST_OUTCOME_UNKNOWN)` → journal `POST_OUTCOME_UNKNOWN`; preserve the target text only as sanitized evidence | 1 |
+
+`business_outcome` is valid only for an observed pre-intent detector/target rejection or, after §2 Task A lands, the typed insufficient-funds result derived from validated current facts. The existing executor skips detectors after intent and maps unverified completion to `POST_OUTCOME_UNKNOWN`, even when the response text resembles a business rejection. After intent, do not retry, skip, run detector recovery or repair in the same browser. Same-browser repair is limited to an observed, profile-approved pre-intent recoverable condition such as maintenance; session expiry, permission and server failure do not permit repair or role change. Any allowed repair must revalidate the checkpoint before a new approval or dispatch.
+
+- [ ] After Task 5c promotion, use Task 5d's separately authorized transfer replay through the existing API/operator controls as the integrated write rehearsal; retain the existing successful balance-read evidence. The final assistant-ui chat rehearsal is deferred to the final UI phase, where it reuses the accepted request identity/evidence. Do not post another transfer solely to duplicate either checkbox. Repeat the same replay request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
 - [x] Reauthenticate after reload and verify caller/operator visibility, read-only keyboard usability, status/result presentation, evidence view, elapsed time and historical `sensitiveValuesUnavailable` behavior after restart through the scoped Task 9c read and Task 9d local display check. Approval/handoff controls were not clicked; their keyboard operation, same-browser repair and integrated write rehearsal remain open.
 - [ ] Update the evidence ledger with capability/version, discovery ID, replay ID, source SHA, approval, actual verified state, safety evaluation, evidence path and any limitation. If one of those facts is absent, mark the gate incomplete. Remove outdated completion claims, not adverse evidence. Update the 1–2 page report and exact setup/discovery/replay/demo commands.
 - [ ] Run final repository gates and inspect hosted CI on the same final PR head:
@@ -597,6 +637,12 @@ gh pr checks --required
 
 If no required checks are configured, inspect `gh pr view --json headRefOid,statusCheckRollup` and the producer jobs explicitly. A missing workflow is not a pass. Open the separate remaining-acceptance PR against `dev`; the capability PRs must already have delivered their own work. After merge, verify the resulting dev SHA and its CI separately. No production deployment is included.
 
+### Final UI phase and labeled demo contingency
+
+After Tasks 5–8 and non-UI Task 9 API/operator work are accepted, ask the user for direction before implementing [assistant-ui](https://www.assistant-ui.com/) in a final chat-only phase. Preserve the existing auth/operator gate and static dashboard; do not infer a dashboard rewrite. Reuse accepted evidence and request identity for the final end-to-end chat rehearsal; a genuine new post still needs its own human approval and no post exists solely for a UI checkbox.
+
+Full completion remains seven live capabilities. When live acceptance is blocked, the runbook's **live**, **offline fixture**, and **recorded evidence** modes are demo contingencies; neither fallback mode increases the `3/7` live count. A model outage may use the existing API/operator path to replay an already approved artifact with a fresh idempotency key for each genuinely new replay while chat/discovery is unavailable; reuse a key only for a transport retry of that exact invocation. A hosted/browser outage may show sanitized evidence and run the offline fixture only if a browser is available; with no browser, show evidence only. Never switch modes during a live write, retry an unknown posting, or rewrite an unknown run's preserved request key or terminal outcome.
+
 ## Coverage and completion boundary
 
 | Replacement design section | Execution coverage |
@@ -608,7 +654,7 @@ If no required checks are configured, inspect `gh pr view --json headRefOid,stat
 | Three-day scope, live evidence, delivery | Task 9; report elapsed work and incomplete gates honestly |
 | Issues and deferrals | Preserve the replacement design's issue map; no automatic issue closures |
 
-Done means seven reviewed artifacts with real discovery and separately approved replay evidence, all required exceptional paths, working dashboard/chat rehearsal, sanitized backup, runbook/report, and passing final local/hosted gates. Passing offline checks alone is not done. A target outage or unknown posting leaves the corresponding task incomplete with evidence and a concrete next read-only investigation.
+Done means seven reviewed artifacts with real discovery and separately approved replay evidence, all required exceptional paths, working dashboard/chat rehearsal, sanitized backup, runbook/report, and passing final local/hosted gates. Passing offline checks or recorded evidence alone is not done. A target outage or unknown posting leaves the corresponding task incomplete with evidence and a concrete next read-only investigation.
 
 ## Plan self-review
 

@@ -2,6 +2,8 @@
 
 Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The read/dashboard acceptance baseline is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; its hosted CI passed. Offline fixtures, API routing and read rehearsals do not increase the capability count or establish a write.
 
+The current runtime baseline after PRs #39 and #41 is `aa90387244be07b9955b8b5b83eacf4b9f3058a1`. It retains the read baseline and adds reviewed transfer and terminal-lifecycle protections; it did not execute a new live run, promote the transfer draft, or change any producing source SHA below.
+
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
 
 ## Reviewed artifacts

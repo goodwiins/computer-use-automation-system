@@ -1,9 +1,10 @@
 # Local safety evaluation
 
-The MERIDIAN runtime is integrated in `dev` at
-`4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the published deterministic
-acceptance checkpoint is `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`; the dashboard
-timing repair's new head awaits controller checks. The earlier
+The MERIDIAN runtime through PRs #37, #39 and #41 is integrated in `dev` at
+`aa90387244be07b9955b8b5b83eacf4b9f3058a1`; the published deterministic
+acceptance checkpoint remains `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`.
+Those source-specific results are historical evidence, not fresh runs on the
+integrated source. The earlier
 LangSmith second opinion examined `master`, which lacked that implementation.
 MERIDIAN has an authenticated durable journal, request deduplication, live form
 classification and a conservative `POST_OUTCOME_UNKNOWN` state. The journal
@@ -60,6 +61,13 @@ nonblocking work; the runtime does not create an exporter or an unbounded queue.
 Evidence write failures still stop execution, and durable journal failures block
 posting. Terminal journal state cannot be reset to resume an old operation.
 The API reports terminal journal state even when its in-memory view is stale.
+
+The integrated runtime fixes the reviewed operation-binding, setup-finalization,
+cleanup and cancellation defects. It does not promote the transfer draft or
+increase live acceptance above `3/7`. Valid current-fact underfunding before
+dispatch intent still requires the separate Task A typed
+`business_outcome / INSUFFICIENT_FUNDS`; malformed or wrong-account facts remain
+failures, and an unverified outcome after intent remains `POST_OUTCOME_UNKNOWN`.
 
 No LangSmith SDK, OpenAI wrapper, OTel collector, or network export is enabled.
 If export is added later, consume only this metadata projection, use a bounded
