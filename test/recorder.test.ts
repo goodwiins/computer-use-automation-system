@@ -161,9 +161,22 @@ describe('recordArtifact regex parameterization', () => {
     expect(() => recordArtifact(sensitiveInput, traceForPattern('extract', pattern))).toThrow(/pattern/);
   });
 
+  it.each([
+    { value: '.', pattern: '[.]' },
+    { value: '.', pattern: '[\\.]' },
+    { value: 'é', pattern: '[é]' },
+  ])('rejects singleton encoded value $value in $pattern', ({ value, pattern }) => {
+    const singletonInput = { ...sensitiveInput, params: { member: value } };
+    expect(() => recordArtifact(singletonInput, traceForPattern('assert', pattern))).toThrow(/pattern/);
+    expect(() => recordArtifact(singletonInput, traceForPattern('extract', pattern))).toThrow(/pattern/);
+  });
+
   it('keeps safe generic captures and supported parameter placeholders', () => {
     const generic = recordArtifact(sensitiveInput, traceForPattern('extract', 'OPR\\s+(\\S+)'));
     expect(generic.steps[0]!.extract?.pattern).toBe('OPR\\s+(\\S+)');
+
+    const unrelatedLiteral = recordArtifact(sensitiveInput, traceForPattern('extract', 'label 1: (\\S+)'));
+    expect(unrelatedLiteral.steps[0]!.extract?.pattern).toBe('label 1: (\\S+)');
 
     const placeholder = recordArtifact(sensitiveInput, traceForPattern('assert', '^/members/{{member}}$'));
     expect(placeholder.steps[0]!.assert).toEqual({ kind: 'urlMatches', pattern: '^/members/{{member}}$' });

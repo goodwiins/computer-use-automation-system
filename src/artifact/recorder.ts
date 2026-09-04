@@ -92,9 +92,16 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       throw new Error('Cannot record parameter-dependent regex patterns with an unterminated class');
     };
     const exactClass = (body: string): string | undefined => {
-      if (/^[A-Za-z0-9]$/.test(body)) return body;
-      const range = /^([A-Za-z0-9])-\1$/.exec(body);
-      return range?.[1];
+      if (body.startsWith('^')) return undefined;
+      const chars = Array.from(body);
+      if (chars.length === 1) return chars[0];
+      if (chars.length === 2 && chars[0] === '\\') {
+        if (literalEscapes.includes(chars[1]!)) return chars[1];
+        if (Object.hasOwn(controlEscapes, chars[1]!)) return controlEscapes[chars[1]!];
+        if (chars[1] === 'b') return '\b';
+      }
+      if (chars.length === 3 && chars[1] === '-' && chars[0] === chars[2]) return chars[0];
+      return undefined;
     };
     // A class with more than one possible character is generic for this
     // boundary. Singleton classes and equal-character ranges are handled by
@@ -183,6 +190,7 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
     for (const [name, value] of paramEntries) {
       const v = String(value);
       if (!v) continue;
+      const valueChars = Array.from(v);
       const hasSafeRawOccurrence = (startAt: number): boolean => {
         for (let start = pattern.indexOf(v, startAt); start >= 0; start = pattern.indexOf(v, start + 1)) {
           const end = start + v.length;
@@ -191,9 +199,9 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
         return false;
       };
       const hasSafeLiteralOccurrence = hasSafeRawOccurrence(0);
-      for (let start = 0; start <= projection.length - v.length; start++) {
-        const run = projection.slice(start, start + v.length);
-        if (run.length !== v.length || run.some((part) => !part) || run.map((part) => (part as Exclude<Projection, null>).char).join('') !== v) continue;
+      for (let start = 0; start <= projection.length - valueChars.length; start++) {
+        const run = projection.slice(start, start + valueChars.length);
+        if (run.length !== valueChars.length || run.some((part) => !part) || run.map((part) => (part as Exclude<Projection, null>).char).join('') !== v) continue;
         const rawStart = (run[0] as Exclude<Projection, null>).start;
         const rawEnd = (run.at(-1) as Exclude<Projection, null>).end;
         if (pattern.slice(rawStart, rawEnd) !== v) {
@@ -206,7 +214,13 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
       // Keep direct raw occurrences usable, but fail closed on any such
       // fragment rather than allowing a partial secret to remain in the
       // artifact.
-      if (!hasSafeLiteralOccurrence && projection.some(part => part !== null && v.includes(part.char))) {
+      const deterministic = projection.filter((part): part is Exclude<Projection, null> => part !== null).map(part => part.char);
+      let valueIndex = 0;
+      for (const char of deterministic) if (char === valueChars[valueIndex]) valueIndex++;
+      const isDeterministicValue = deterministic.length >= valueChars.length &&
+        deterministic.every(char => valueChars.includes(char)) &&
+        valueIndex === valueChars.length;
+      if (!hasSafeLiteralOccurrence && isDeterministicValue) {
         throw new Error(`Cannot record parameter-dependent regex pattern containing encoded parameter "${name}"`);
       }
     }
