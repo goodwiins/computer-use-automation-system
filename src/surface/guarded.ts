@@ -121,9 +121,9 @@ export class GuardedSurface implements Surface {
       this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
       if (rule?.mutation) {
         if (this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: repeat dispatch refused');
-        if (live.error || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== this.runtime.role)) throw new Error('Target authority or review state invalid');
+        if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
         const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
-          destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: this.runtime.role,
+          destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: live.role,
           facts: live.facts, tokenPresent: live.tokenPresent, control: live.control };
         // Profile mutation rules require approval even when policy/model says allow.
         const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');

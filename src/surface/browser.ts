@@ -25,7 +25,8 @@ export class BrowserSurface implements Surface {
   private browser!: Browser;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
-  private submission?: { url: string; method: string };
+  private submission?: { url: string; method: string; body: string };
+  private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
 
   // When allowedOrigins is set, frames outside it are invisible to observation
@@ -73,7 +74,9 @@ export class BrowserSurface implements Surface {
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
       if (!['GET', 'HEAD'].includes(request.method())) {
-        const allowed = this.submission?.url === url.href && this.submission.method === request.method();
+        const allowed = this.submission?.url === url.href && this.submission.method === request.method()
+          && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
+          && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
         this.submission = undefined;
         return allowed ? route.continue() : route.abort();
       }
@@ -92,6 +95,7 @@ export class BrowserSurface implements Surface {
       d.dismiss().catch(() => {});
     });
     await this.page.goto(entryUrl, { waitUntil: 'load' });
+    await this.verifySignon();
   }
 
   drainDialogs(): Array<{ type: string; message: string }> {
@@ -135,6 +139,7 @@ export class BrowserSurface implements Surface {
 
   async navigate(url: string): Promise<void> {
     await this.page.goto(url, { waitUntil: 'load' });
+    await this.verifySignon();
   }
 
   async click(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<ResolutionReport> {
@@ -284,19 +289,39 @@ export class BrowserSurface implements Surface {
     return rows;
   }
 
+  private async verifySignon() {
+    if (!this.opts.profile || new URL(this.page.url()).pathname !== '/menu') return;
+    const body = await this.page.locator('body').innerText();
+    const role = body.match(/Signed on as[^\n]*\((TELLER|SUPERVISOR)\)/)?.[1];
+    const operator = body.match(/OPR\s+(\S+)/)?.[1];
+    const branch = body.match(/BR\s+(\S+)/)?.[1];
+    const sid = body.match(/SID\s+(\S+)/)?.[1];
+    this.identity = role && operator && branch && sid ? { role, operator, branch, sid } : undefined;
+  }
+
   async prepareClick(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT) {
     const { locator, report } = await this.resolve(target, timeoutMs);
     const handle = await locator.elementHandle({ timeout: timeoutMs });
     if (!handle) throw new Error('Control disappeared');
+    const args = { identity: this.identity, detectors: this.opts.profile?.detectors ?? [] };
+    // Native form data stays private, including sign-on credentials and CSRF tokens.
+    let approvedBody: string | undefined;
     return {
-      inspect: () => handle.evaluate(inspectControl, undefined),
+      inspect: async () => {
+        const snapshot = await handle.evaluate(inspectControl, args);
+        if (approvedBody !== undefined && approvedBody !== snapshot.body) throw new Error('Approval invalidated by changed form data');
+        approvedBody = snapshot.body;
+        return snapshot.live;
+      },
       dispatch: async (expected: LiveControl) => {
-        if (expected.submit) this.submission = { url: expected.destination, method: expected.method };
+        if (approvedBody === undefined) throw new Error('Control was not inspected');
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
         try {
           await Promise.all([
             this.page.waitForNavigation({ waitUntil: 'load', timeout: timeoutMs }),
-            handle.evaluate(inspectControl, expected),
+            handle.evaluate(inspectControl, { ...args, expected, body: approvedBody }),
           ]);
+          await this.verifySignon();
           return report;
         } finally { this.submission = undefined; await handle.dispose(); }
       },
@@ -437,7 +462,11 @@ export class BrowserSurface implements Surface {
 }
 
 // Recheck and dispatch in the same browser task, using the same DOM element.
-function inspectControl(element: Element, expected?: LiveControl): LiveControl {
+interface TargetIdentity { operator: string; branch: string; role: string; sid: string }
+function canonicalForm(entries: Iterable<[string, string]>) {
+  return JSON.stringify(Array.from(entries, ([k, v]) => [k.replace(/\r?\n|\r/g, '\r\n'), v.replace(/\r?\n|\r/g, '\r\n')]).sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0));
+}
+function inspectControl(element: Element, args: { identity?: TargetIdentity; detectors: AppProfile['detectors']; expected?: LiveControl; body?: string }): { live: LiveControl; body: string } {
   if (!element.isConnected) throw new Error('Control is detached');
   const input = element as HTMLInputElement;
   const form = input.form;
@@ -463,14 +492,33 @@ function inspectControl(element: Element, expected?: LiveControl): LiveControl {
   }
   const tokens = form?.querySelectorAll('input[type=hidden][name="_token"]');
   const tokenPresent = tokens?.length === 1 && !!(tokens[0] as HTMLInputElement).value;
+  const operator = body.match(/OPR\s+(\S+)/)?.[1] ?? '';
+  const branch = body.match(/BR\s+(\S+)/)?.[1] ?? '';
+  const sid = body.match(/SID\s+(\S+)/)?.[1];
+  const role = args.identity && args.identity.sid === sid && args.identity.operator === operator && args.identity.branch === branch ? args.identity.role : '';
+  const conditions = args.detectors.filter(d => d.match.kind === 'textVisible' ? body.includes(d.match.text) : new RegExp(d.match.pattern).test(location.href)).map(d => d.id);
+  const fields = submit ? Array.from(form!.elements).filter(e => {
+    const field = e as HTMLInputElement;
+    return field.name && !field.matches(':disabled') && (field.type !== 'submit' || e === element);
+  }).map(e => {
+    const field = e as HTMLInputElement;
+    if (['file', 'checkbox', 'radio', 'image', 'reset', 'button', 'select-multiple'].includes(field.type)) throw new Error('Unsupported form field');
+    return [field.name.replace(/\r?\n|\r/g, '\r\n'), field.value.replace(/\r?\n|\r/g, '\r\n')];
+  }) : [];
+  const entries = submit ? Array.from(new FormData(form!, input).entries(), ([k, v]) => {
+    if (typeof v !== 'string') throw new Error('File form submissions are not supported');
+    return [k.replace(/\r?\n|\r/g, '\r\n'), v.replace(/\r?\n|\r/g, '\r\n')];
+  }) : [];
+  const formBody = JSON.stringify(entries.sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0));
+  if (formBody !== JSON.stringify(fields.sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0))) throw new Error('Native form data differs from inspected fields');
   const state: LiveControl = {
     url: location.href, destination, method, submit, control: input.type === 'submit' ? input.value : element.textContent?.trim() ?? '',
-    operator: body.match(/OPR\s+(\S+)/)?.[1] ?? '', branch: body.match(/BR\s+(\S+)/)?.[1] ?? '', facts, tokenPresent,
+    operator, branch, role, conditions, facts, tokenPresent,
     error: !!document.querySelector('ul li') && !!document.querySelector('.err'),
   };
-  if (expected) {
-    if (JSON.stringify(expected) !== JSON.stringify(state)) throw new Error('Approval invalidated by changed page state');
+  if (args.expected) {
+    if (args.body !== formBody || JSON.stringify(args.expected) !== JSON.stringify(state)) throw new Error('Approval invalidated by changed page state');
     (element as HTMLElement).click();
   }
-  return state;
+  return { live: state, body: formBody };
 }

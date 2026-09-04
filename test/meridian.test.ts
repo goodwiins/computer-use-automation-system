@@ -33,7 +33,7 @@ const key = 'hmac-test-key-with-at-least-32-characters';
 const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
-const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
+const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
 function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}) {
   let live = structuredClone(control);
@@ -82,7 +82,7 @@ describe('single-use interventions and live controls', () => {
     await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/aborted/);
     expect(gate).toHaveBeenCalledOnce(); expect(run.dispatch).not.toHaveBeenCalled(); expect(run.beforeDispatch).not.toHaveBeenCalled();
   });
-  it.each(['facts', 'operator', 'destination', 'tokenPresent'] as const)('invalidates changed %s before dispatch', async field => {
+  it.each(['facts', 'operator', 'destination', 'tokenPresent', 'role'] as const)('invalidates changed %s before dispatch', async field => {
     const run = guarded({}, async () => { run.change({ [field]: field === 'facts' ? { share: 'CHANGED' } : field === 'tokenPresent' ? false : 'CHANGED' }); return true; });
     await expect(run.surface.click(target)).rejects.toThrow(/invalidated/); expect(run.dispatch).not.toHaveBeenCalled();
   });
@@ -159,6 +159,7 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
 
 it('extracts typed rows and blocks unsolicited browser POSTs through the real surface', async () => {
   const app = express(); let posted = 0;
+  app.get('/menu', (_req, res) => res.send('<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p><p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>'));
   app.get('/members', (_req, res) => res.send('<table id="shares"><tr><th>Share</th><th>Balance</th></tr><tr><td>A</td><td>$12.30</td></tr></table><select name="share"><option value="A">A ($12.30)</option><option value="B">B ($3.00)</option></select>'));
   app.post('/members/1/update', (_req, res) => { posted++; res.end('saved'); });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r)); const address = server.address() as { port: number };
@@ -178,18 +179,20 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 
 it('rechecks a real form before approved dispatch and masks dynamic evidence end to end', async () => {
   const app = express(); let posted = 0;
-  app.get('/members/1/update', (_req, res) => res.send('<p>OPR SUPER1 | BR MAIN-001</p><div class="box" style="width:500px;height:180px"><span id="member">PRIVATE-FIRST</span><form method="post" action="/members/1/update"><input type="hidden" name="_token" value="TOKEN-PRIVATE"><input name="email" value="first@example.test"><input name="phone" value="5550001111"><input name="address" value="PRIVATE STREET"><input type="submit" value="Save Changes"></form></div>'));
+  app.get('/menu', (_req, res) => res.send('<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p><p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>'));
+  app.get('/members/1/update', (_req, res) => res.send('<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p><div class="box" style="width:500px;height:180px"><span id="member">PRIVATE-FIRST</span><form method="post" action="/members/1/update"><input type="hidden" name="_token" value="TOKEN-PRIVATE"><input name="email" value="first@example.test"><input name="phone" value="5550001111"><input name="address" value="PRIVATE STREET"><input type="submit" value="Save Changes"></form></div>'));
   app.post('/members/1/update', (_req, res) => { posted++; res.end('<h1>Saved</h1>'); });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r)); const address = server.address() as { port: number };
   const localOrigin = `http://127.0.0.1:${address.port}`;
   const redactor = new Redactor();
-  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: { ...profile, maskSelectors: ['.box', 'input', 'textarea', 'select'] }, sensitive: values => redactor.addSensitiveValues(values) });
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: { ...profile, maskSelectors: ['.box', 'p', 'input', 'textarea', 'select'] }, sensitive: values => redactor.addSensitiveValues(values) });
   let changed = true;
   const gate = async () => { if (changed) await browser.page.locator('[name=email]').fill('changed@example.test'); return true; };
   const guard = new GuardedSurface(browser, { ...policy, allowedOrigins: [localOrigin] }, gate, undefined, { profile, session: new ControlSession(), deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'update', version: '1.0.0', operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch: () => expect(posted).toBe(0) });
   const button = { description: 'Save Changes', strategies: [{ kind: 'role' as const, role: 'button', name: 'Save Changes' }] };
   try {
-    await guard.start(`${localOrigin}/members/1/update`);
+    await guard.start(`${localOrigin}/menu`);
+    await guard.navigate(`${localOrigin}/members/1/update`);
     const logger = new RunLogger('replay', redactor, temp(), true);
     const first = await logger.screenshot(guard, 'first');
     await browser.page.locator('#member').evaluate(e => { e.textContent = 'PRIVATE-OTHER'; });
@@ -203,6 +206,36 @@ it('rechecks a real form before approved dispatch and masks dynamic evidence end
     await guard.click(button, 3000, 'read'); expect(posted).toBe(1); expect(guard.mutationDispatched).toBe(true);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
 }, 15000);
+
+it.each(['role', 'session', 'detector', 'token', 'submit-handler', 'formdata-handler'] as const)('refuses a real posting after %s changes', async scenario => {
+  const app = express(); let posted = 0;
+  app.get('/menu', (_req, res) => res.send(`<p>Signed on as J. OPERATOR (${scenario === 'role' ? 'TELLER' : 'SUPERVISOR'})</p><p>OPR SUPER1 | BR MAIN-001 | SID session-one</p>`));
+  app.get('/members/1/update', (_req, res) => res.send('<p id="identity">OPR SUPER1 | BR MAIN-001 | SID session-one</p><form method="post"><input type="hidden" name="_token" value="private-token"><input name="email" value="approved@example.test"><input type="submit" value="Save Changes"></form>'));
+  app.post('/members/1/update', (_req, res) => { posted++; res.end('Saved'); });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+  const beforeDispatch = vi.fn();
+  const gate = vi.fn(async () => {
+    await browser.page.evaluate(kind => {
+      if (kind === 'session') document.querySelector('#identity')!.textContent = 'OPR SUPER1 | BR MAIN-001 | SID session-two';
+      if (kind === 'detector') document.body.append('YOUR SESSION HAS TIMED OUT');
+      if (kind === 'token') (document.querySelector('[name=_token]') as HTMLInputElement).value = 'replacement-token';
+      if (kind === 'submit-handler') document.querySelector('form')!.addEventListener('submit', () => { (document.querySelector('[name=email]') as HTMLInputElement).value = 'unapproved@example.test'; });
+      if (kind === 'formdata-handler') document.querySelector('form')!.addEventListener('formdata', e => { e.formData.set('email', 'unapproved@example.test'); });
+    }, scenario);
+    return true;
+  });
+  const guard = new GuardedSurface(browser, { ...policy, allowedOrigins: [localOrigin] }, gate, undefined, { profile, session: new ControlSession(), deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'update', version: '1.0.0', operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch });
+  try {
+    await guard.start(`${localOrigin}/menu`); await guard.navigate(`${localOrigin}/members/1/update`);
+    await expect(guard.click({ description: 'save', strategies: [{ kind: 'role', role: 'button', name: 'Save Changes' }] }, 1000)).rejects.toThrow();
+    expect(posted).toBe(0);
+    expect(beforeDispatch).toHaveBeenCalledTimes(scenario === 'submit-handler' ? 1 : 0);
+    expect(guard.mutationDispatched).toBe(scenario === 'submit-handler');
+    if (scenario === 'role') expect(gate).not.toHaveBeenCalled();
+  } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+});
 
 it('records assertions, resolves credential references privately, and ignores invented done outputs', async () => {
   const calls = [

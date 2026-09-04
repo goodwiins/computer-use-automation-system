@@ -87,6 +87,8 @@ cu serve --profile meridian
 
 Open `http://127.0.0.1:4180` exactly (the Host check rejects other aliases). Enter the caller or operator API token; it stays in page memory and a reload signs out. Choose a capability and enter its public inputs, or use chat. Chat always uses caller authority, including when an operator is logged into the page.
 
+The runtime verifies the operator role on the signed-on menu and binds it to the current target session identity. Posting rechecks that identity, profile detectors, review facts, and the current token. The outgoing native URL-encoded POST must exactly match the inspected form data; JavaScript changes during submission are refused. Unsupported form encodings or field types fail closed. Token values and session identifiers remain private in memory.
+
 The dashboard displays progress, recovery, results, safe evidence, and pending interventions. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum.
 
 ## API

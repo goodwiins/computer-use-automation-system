@@ -16,7 +16,7 @@ export function loadProfile(name = 'cu-nexus') {
 }
 export interface LiveControl {
   url: string; destination: string; method: string; control: string; submit: boolean;
-  operator: string; branch: string; facts: Record<string, string>; tokenPresent: boolean;
+  operator: string; branch: string; role: string; conditions: string[]; facts: Record<string, string>; tokenPresent: boolean;
   error: boolean;
 }
 export function classify(profile: AppProfile, control: LiveControl, origins: string[]) {
