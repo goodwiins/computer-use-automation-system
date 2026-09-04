@@ -13,6 +13,11 @@ export type JournalRecord = z.infer<typeof RecordSchema>;
 export class RequestError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
+export function validateIdempotencyKey(key: string): void {
+  if (!/^[\x21-\x7e]{1,200}$/.test(key)) {
+    throw new RequestError(400, 'A valid Idempotency-Key is required');
+  }
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
@@ -78,7 +83,7 @@ export class Journal {
     this.records.set(record.runId, record);
   }
   lookup(caller: string, key: string, request: unknown) {
-    if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new RequestError(400, 'A valid Idempotency-Key is required');
+    validateIdempotencyKey(key);
     const identity = this.mac({ caller, key }), digest = this.mac(request);
     const existing = [...this.records.values()].find(r => r.identity === identity);
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');

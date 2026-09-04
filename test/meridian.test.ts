@@ -2,7 +2,7 @@ import { evaluateRun } from '../src/evidence/evaluate.js';
 import { hintToDescriptor } from '../src/agent/tools.js';
 import { extractText } from '../src/artifact/schema.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -117,6 +117,33 @@ describe('single-use interventions and live controls', () => {
     const result = await runReplay(artifact, {}, { surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp()), policy, escalate });
     expect(result.status === 'failure' && result.failure.code).toBe('POST_OUTCOME_UNKNOWN'); expect(escalate).not.toHaveBeenCalled();
   });
+});
+
+it.each([
+  ['pre-dispatch', false],
+  ['post-intent', true],
+] as const)('finalizes a replay journal after a thrown %s failure', async (phase, intent) => {
+  const dir = temp(); const journal = new Journal(join(dir, 'journal'), key);
+  const record = journal.reserve('operator', `cli-${phase}`, 'hold', '1.0.0', {});
+  const logger = new RunLogger('replay', new Redactor(), dir, true, record.runId);
+  const beforeDispatch = vi.fn(() => { if (intent) journal.update(record.runId, 'dispatching'); else throw new Error('raw pre-dispatch detail'); });
+  const dispatch = vi.fn(async () => { throw new Error('raw post-intent detail'); });
+  const run = guarded({ prepareClick: async () => ({ inspect: async () => control, dispatch }) }, async () => true,
+    { runId: record.runId, beforeDispatch });
+  const artifact = CapabilityArtifact.parse({ schemaVersion: 2, id: 'hold', name: 'hold', description: 'hold', version: '1.0.0', status: 'approved', app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] }, parameters: [], outputs: [], steps: [{ id: 'post', action: 'click', intent: 'post', target, risk: 'read' }], successCondition: { kind: 'textVisible', text: 'done' }, provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' } });
+  try {
+    journal.update(record.runId, 'running');
+    const result = await runReplay(artifact, {}, { surface: run.surface, logger, policy });
+    const state = result.status === 'failure' && (intent || run.surface.mutationDispatched) ? 'POST_OUTCOME_UNKNOWN' : result.status;
+    journal.update(record.runId, state);
+    expect(result.status).toBe('failure');
+    expect(result.status === 'failure' && result.failure.code).toBe(intent ? 'POST_OUTCOME_UNKNOWN' : undefined);
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledTimes(intent ? 1 : 0);
+    expect(readFileSync(join(logger.dir, 'result.json'), 'utf8')).not.toMatch(/raw pre-dispatch detail|raw post-intent detail/);
+    expect(journal.records.get(record.runId)?.state).toBe(intent ? 'POST_OUTCOME_UNKNOWN' : 'failure');
+  } finally { journal.close(); }
+  expect(existsSync(join(dir, 'journal', 'server.lock'))).toBe(false);
 });
 
 it('validates decimal money and output types without exposing server inputs', () => {
