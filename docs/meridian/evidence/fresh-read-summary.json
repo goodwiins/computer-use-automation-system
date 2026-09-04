@@ -1,0 +1,128 @@
+{
+  "kind": "sanitized_fresh_read_backup",
+  "sensitiveValuesUnavailable": true,
+  "source": "controller-supplied metadata/result projections",
+  "runs": [
+    {
+      "capability": "meridian-sign-on",
+      "runId": "ad12819b-f07a-41ff-9710-bedff1afe1a5",
+      "sourceSha": "7abda4c326260d917795fe75320af99a7233bc6d",
+      "resultStatus": "success",
+      "role": "TELLER",
+      "evaluator": {
+        "status": "pass",
+        "attempts": 8,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      }
+    },
+    {
+      "capability": "meridian-member-inquiry",
+      "runId": "b60ef7b1-a76f-4321-b825-540f8c7ff7d6",
+      "sourceSha": "4252cb70396b3f30f5c126d2ed2e164054a2bcfe",
+      "resultStatus": "success",
+      "evaluator": {
+        "status": "pass",
+        "attempts": 10,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      }
+    },
+    {
+      "capability": "meridian-member-record",
+      "runId": "e4850bd4-6c63-42c9-8719-aaefef1c74e4",
+      "sourceSha": "4252cb70396b3f30f5c126d2ed2e164054a2bcfe",
+      "resultStatus": "success",
+      "evaluator": {
+        "status": "pass",
+        "attempts": 10,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      }
+    },
+    {
+      "capability": "meridian-member-record",
+      "flow": "caller chat/API/runtime read; dashboard not exercised",
+      "runId": "ff5fda32-db07-443f-930d-db2d65461dc0",
+      "sourceSha": "541d776f85d94097bc1e63fa7966de69da5947de",
+      "httpStatus": 202,
+      "resultStatus": "success",
+      "rowCount": 24,
+      "selectedMemberMatches": true,
+      "decimalBalances": true,
+      "duplicateHttpStatus": 202,
+      "sameRunId": true,
+      "callerRunIncrease": 1,
+      "evaluator": {
+        "status": "pass",
+        "attempts": 10,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      }
+    },
+    {
+      "capability": "meridian-member-record",
+      "flow": "dashboard chat/read; real local dashboard UI",
+      "runId": "288d7cae-c486-4f08-b810-c1e4aa1d4afe",
+      "sourceSha": "ca5d99a21e7274445eb119a71bc8c61f548fa9a7",
+      "httpStatus": 202,
+      "resultStatus": "success",
+      "rowCount": 24,
+      "selectedMemberMatches": true,
+      "decimalBalances": true,
+      "evaluator": {
+        "status": "pass",
+        "attempts": 10,
+        "mutationIntents": 0,
+        "riskDisagreements": 0,
+        "violations": [],
+        "incomplete": []
+      },
+      "ui": {
+        "callerConnected": true,
+        "credentialCleared": true,
+        "visibleStates": ["running", "success"],
+        "callerRoleSelectorHidden": true,
+        "operatorControlsVisibleAfterReconnect": true,
+        "refreshEnterActivated": true,
+        "refreshResponseStatus": 200,
+        "sendFocused": true,
+        "evidenceViewStatus": 200,
+        "reloadCredentialCleared": true,
+        "reloadWorkspaceHidden": true,
+        "browserStorageEmptyAfterReload": true
+      },
+      "timing": {
+        "apiElapsedMs": 2476,
+        "originalCardTiming": "omitted",
+        "repairedDisplay": "covered by local browser fixture"
+      }
+    }
+  ],
+  "postRestart": {
+    "sourceSha": "ca5d99a21e7274445eb119a71bc8c61f548fa9a7",
+    "runCountBefore": 26,
+    "runCountAfter": 26,
+    "noNewRun": true,
+    "historicalSensitiveValuesUnavailable": true,
+    "unknownState": "POST_OUTCOME_UNKNOWN",
+    "unknownRunCardCount": 1,
+    "unknownEnvelopeUnchanged": true,
+    "controllerProjection": "task-9c-round1-controller.json"
+  },
+  "omitted": [
+    "member numbers and names",
+    "share IDs, types, balances and statuses",
+    "contact values",
+    "credentials, tokens, cookies, session IDs and raw DOM"
+  ],
+  "screenshots": "omitted; existing masked evidence remains separately linked"
+}

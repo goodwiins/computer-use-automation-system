@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
 import { applyMeridianContract, meridianContracts } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
+import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams } from '../src/artifact/schema.js';
 import * as clients from '../src/agent/client.js';
@@ -207,6 +208,35 @@ describe('durable request identity', () => {
     const path = join(dir, `${first.runId}.json`); writeFileSync(path, readFileSync(path, 'utf8').replace('interrupted', 'success'));
     expect(() => new Journal(dir, key)).toThrow(/authentication failed/);
   });
+
+  it('returns an existing service run before creating another runtime', () => {
+    const names = ['MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
+    const previous = new Map(names.map(name => [name, process.env[name]]));
+    const dir = temp();
+    const journal = new Journal(join(dir, 'journal'), key);
+    const createRuntime = vi.spyOn(runtime, 'createRuntime');
+    process.env.MERIDIAN_TELLER_OPERATOR = 'TELLER-ONE';
+    process.env.MERIDIAN_TELLER_PASSWORD = 'TELLER-PASSWORD';
+    process.env.MERIDIAN_SUPERVISOR_OPERATOR = 'SUPERVISOR-ONE';
+    process.env.MERIDIAN_SUPERVISOR_PASSWORD = 'SUPERVISOR-PASSWORD';
+    process.env.MERIDIAN_BRANCH = 'MAIN-001';
+    try {
+      const service = new InvocationService(journal, policy, profile, temp(), ['meridian-member-record'], 'artifacts');
+      const request = { mode: 'replay', capability: 'meridian-member-record', version: '1.0.0', args: { member: '123' }, context: { operator: 'TELLER-ONE', branch: 'MAIN-001', role: 'TELLER' } };
+      const record = journal.reserve('operator', 'same-key', 'meridian-member-record', '1.0.0', request);
+      expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER').runId).toBe(record.runId);
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER')).toThrow(/another request/);
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR')).toThrow(/another request/);
+      expect(createRuntime).not.toHaveBeenCalled();
+    } finally {
+      journal.close();
+      for (const name of names) {
+        const value = previous.get(name);
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
 });
 
 describe('single-use interventions and live controls', () => {
@@ -232,6 +262,42 @@ describe('single-use interventions and live controls', () => {
     expect(session.currentOwner).toBe('human'); approval.decide(id, 'abort');
     expect(await pending).toBe('abort'); expect(() => approval.decide(id, 'retry')).toThrow(/Stale/);
     const expired = approval.wait(request); await vi.advanceTimersByTimeAsync(300000); expect(await expired).toBe('abort'); expect(session.currentOwner).toBe('automation');
+  });
+
+  it('allows one approved mutation and blocks wrong, stale, and aborted approval before dispatch', async () => {
+    const waitForApproval = async (approval: Approval) => {
+      for (let i = 0; i < 50 && !approval.pending; i++) await Promise.resolve();
+      expect(approval.pending).toBeDefined();
+      return approval.pending!.id;
+    };
+    const makeRun = () => {
+      const approval = new Approval(new ControlSession(), () => {}, Date.now() + 600_000);
+      const gate = vi.fn(async () => {
+        const pending = approval.wait({ kind: 'risk_approval', capability: 'hold', goal: 'apply hold', reason: 'apply hold', url: origin });
+        return (await pending) === 'approve';
+      });
+      return { approval, run: guarded({}, gate) };
+    };
+
+    const blocked = makeRun();
+    const rejected = expect(blocked.run.surface.click(target, 1000, 'read')).rejects.toThrow(/aborted/);
+    const blockedId = await waitForApproval(blocked.approval);
+    expect(() => blocked.approval.decide(randomUUID(), 'abort')).toThrow(/Stale/);
+    expect(() => blocked.approval.decide(blockedId, 'retry')).toThrow(/does not match/);
+    blocked.approval.decide(blockedId, 'abort');
+    await rejected;
+    expect(() => blocked.approval.decide(blockedId, 'abort')).toThrow(/Stale/);
+    expect(blocked.run.dispatch).not.toHaveBeenCalled();
+    expect(blocked.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const approved = makeRun();
+    const dispatched = approved.run.surface.click(target, 1000, 'read');
+    const approvedId = await waitForApproval(approved.approval);
+    approved.approval.decide(approvedId, 'approve');
+    await dispatched;
+    expect(approved.run.dispatch).toHaveBeenCalledTimes(1);
+    expect(approved.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(approved.run.surface.mutationDispatched).toBe(true);
   });
   it('requires approval for a down-labelled post even if policy allows it', async () => {
     const gate = vi.fn(async () => false); const run = guarded({}, gate);
@@ -450,8 +516,21 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
     const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
     expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
-    tool = 'approve';
-    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
+    for (tool of ['approve', 'select_supervisor']) expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
+
+    const session = new ControlSession();
+    const approval = new Approval(session, () => {}, Date.now() + 600_000);
+    const pending = approval.wait({ kind: 'replay_stuck', capability: 'hold', goal: 'apply hold', reason: 'stuck', url: origin });
+    service.live.set(run.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval });
+    const operator = { Authorization: `Bearer ${'o'.repeat(32)}` };
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'retry' }))).status).toBe(409);
+    const approvalId = approval.pending!.id;
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'approve' }))).status).toBe(409);
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'abort' }))).status).toBe(200);
+    expect(await pending).toBe('abort');
+    expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'retry' }))).status).toBe(409);
+    expect((await request(`/runs/${run.runId}/evidence/missing.json`, caller)).status).toBe(403);
+    expect((await request(`/runs/${run.runId}/evidence/missing.json`, operator)).status).toBe(404);
     expect(journal.records.size).toBe(1);
     const response = await request('/capabilities', caller); expect(response.status).toBe(200); expect(response.headers.get('content-security-policy')).toContain("object-src 'none'");
   } finally { await new Promise<void>(r => server.close(() => r())); journal.close(); }
@@ -551,6 +630,57 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
     await browser.page.evaluate(() => fetch('/members/1/update', { method: 'POST' }).catch(() => {})); expect(posted).toBe(0);
     const dir = temp(); const logger = new RunLogger('replay', new Redactor(), dir, true); logger.log('error', { password: 'PRIVATE', params: { member: 'PRIVATE' }, observed: 'PRIVATE' }); logger.writeResult({ status: 'success', outputs: { name: 'PRIVATE' } });
     expect(readdirSync(logger.dir).map(f => readFileSync(join(logger.dir, f), 'utf8')).join('')).not.toContain('PRIVATE');
+  } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('stops replay with no target POST when the browser closes before intervention', async () => {
+  const app = express();
+  let posted = 0;
+  app.get('/start', (_req, res) => res.send('<form method="post" action="/mutate"><input type="submit" value="Mutate"></form>'));
+  app.post('/mutate', (_req, res) => { posted++; res.end('mutated'); });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
+  const start = browser.start.bind(browser);
+  browser.start = async entryUrl => { await start(entryUrl); await browser.page.close(); };
+  const logger = new RunLogger('replay', new Redactor(), temp());
+  const session = new ControlSession();
+  const escalated = vi.fn(async request => new OperatorConsole(browser.page, logger, session).intervene(request));
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 1, id: 'closed-browser', name: 'closed-browser', description: 'closed browser fixture', version: '1.0.0', status: 'approved',
+    app: { appId: 'fixture', entryUrl: `${localOrigin}/start`, allowedOrigins: [localOrigin] }, parameters: [], outputs: [],
+    steps: [{ id: 'mutate', intent: 'submit mutation', action: 'click', target: { description: 'Mutate', strategies: [{ kind: 'role', role: 'button', name: 'Mutate' }] }, risk: 'read' }],
+    successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+  try {
+    const result = await runReplay(artifact, {}, { surface: browser, logger, policy: Policy.parse({ ...policy, allowedOrigins: [localOrigin] }), escalate: escalated });
+    expect(result.status).toBe('failure');
+    if (result.status === 'failure') expect(result.escalated).toBe(true);
+    expect(escalated).toHaveBeenCalledOnce();
+    expect(session.currentOwner).toBe('automation');
+    expect(browser.page.isClosed()).toBe(true);
+    expect(posted).toBe(0);
+  } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('downgrades an unknown-page screenshot to metadata-only evidence', async () => {
+  const app = express();
+  app.get('/known', (_req, res) => res.send('<main>known</main>'));
+  app.get('/unknown', (_req, res) => res.send('<main>unknown</main>'));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const localProfile = { ...profile, entryUrl: `${localOrigin}/known`, routes: ['^/known$', '^/unknown$'], maskSelectors: ['body'] };
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: localProfile });
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  try {
+    await browser.start(`${localOrigin}/known`);
+    await browser.navigate(`${localOrigin}/unknown`);
+    localProfile.routes = ['^/known$'];
+    expect(await logger.screenshot(browser, 'unknown-page')).toBe('(metadata-only evidence)');
+    expect(readFileSync(join(logger.dir, 'log.jsonl'), 'utf8')).toContain('evidence.warning');
+    expect(readFileSync(join(logger.dir, 'log.jsonl'), 'utf8')).not.toContain('/unknown');
+    expect(readdirSync(logger.dir).some(file => file.endsWith('.png'))).toBe(false);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
 }, 15000);
 
@@ -664,10 +794,19 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
   server.on('request', createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: address.port }));
   const browser = await chromium.launch(); const page = await browser.newPage();
   try {
+    await page.route('**/runs', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify([
+      { runId: 'known-run', kind: 'replay', capability: artifact.id, state: 'success', elapsedMs: 2476, evidence: [], result: { status: 'success', outputs: {} } },
+      { runId: 'zero-run', kind: 'replay', capability: artifact.id, state: 'success', elapsedMs: 0, evidence: [], result: { status: 'success', outputs: {} } },
+      { runId: 'historical-run', kind: 'replay', capability: artifact.id, state: 'success', sensitiveValuesUnavailable: true, evidence: [], result: { status: 'success', outputs: {} } },
+    ]) }));
     await page.goto(`http://127.0.0.1:${address.port}`); await page.locator('#credential').fill('o'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
     expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
+    expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 2.5 s' }).count()).toBe(1);
+    expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 0 ms' }).count()).toBe(1);
+    const historical = page.locator('#runs article').filter({ hasText: 'Historical sensitive values are unavailable.' });
+    expect(await historical.count()).toBe(1); expect(await historical.getByText(/Elapsed:/).count()).toBe(0);
     await page.route('**/chat', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: '<img src=x onerror=alert(1)>' }) }));
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.locator('#messages p').first().waitFor(); expect(await page.locator('#messages img').count()).toBe(0);

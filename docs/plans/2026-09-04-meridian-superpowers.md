@@ -38,7 +38,24 @@
 | PR #34 | `cd3ec9e7c5141d8e69a6c9a13043d0c433016113` | Draft implementation; base is currently `master`; hosted Typecheck and tests succeeded |
 | PR #35 | `338734d16e7fc4d0f30f239886660e0f1af30a6c` | Safety/evaluation follow-up stacked on #34; hosted Typecheck and tests succeeded |
 
-These are inspected snapshots, not authorization to merge. Refresh refs, reviews, and checks at execution. The #34/#35 code paths below are absent from current `dev` until integrated.
+These are inspected historical snapshots, not authorization to merge. Refresh refs, reviews, and checks at execution; the current integrated baseline is recorded below.
+
+## Current integrated baseline — September 4, 2026
+
+Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`) on `def4b38a2f906f725813f5c89563f3fe82e31140`, and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the resulting trees are equal. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
+
+### Current repair and integration status
+
+- Task 1 — complete: reviewed PR #34 repairs were integrated into `dev` at `4252cb7`; both the reviewed PR head and the resulting dev SHA passed their respective hosted CI checks above.
+- Task 2 — complete: CLI journal/resource and terminal-outcome repairs landed through `9a3e24d` after the scoped review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
+- Task 3 — complete: click-budget and trusted-step-reporting repairs landed through `47537d2` after the final deadline review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
+- Task 4 — complete for the read baseline: the three approved artifact checks and fresh sign-on, member-inquiry and member-record reads passed their recorded evaluator checks; the separate unsubmitted-form inspection recorded native POST destinations, controls and hidden-token presence. Chosen write review transitions and final posting facts remain open.
+- Task 9a — complete for deterministic/offline acceptance at `541d776f85d94097bc1e63fa7966de69da5947de`: the reviewed dispatch, browser-closure, authority, identity, evidence and typed-output checks passed. This does not establish live target, posting, dashboard or hosted final-head acceptance.
+- Task 9b — complete for the scoped documentation and sanitized metadata backup at `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`; its source-specific local and hosted checks passed. This did not change runtime behavior or establish a live write.
+- Task 9c — complete for the scoped real dashboard read, reload, evidence, role and keyboard checks. The accepted run `288d7cae-c486-4f08-b810-c1e4aa1d4afe` and independent post-restart projection preserve the `3/7` boundary, historical redaction and unknown state. The missing elapsed-time display was assigned to Task 9d.
+- Task 9d — complete for the scoped shared elapsed-time renderer, focused browser assertion and current read documentation alignment on this branch. The new head awaits independent controller review and hosted checks; this does not close the write or whole-Task-9 gates.
+- Tasks 5–8 and the remaining live portions of Task 9 remain pending: new write discoveries/replays, separate current-fact approvals, result verification, operation-specific unhappy paths, integrated dashboard/chat rehearsal, same-browser repair, approval/handoff keyboard operation and final delivery gates are not inferred from the read or offline evidence.
+- Controller ordering ruling: Task 9a, Task 9b, Task 9c and Task 9d may proceed while Tasks 5–8 await fresh live choices and approvals; a read or artifact promotion does not authorize a write, and the historical `222ebecd-ca02-4960-a875-c2f2f76e0927` operation remains `POST_OUTCOME_UNKNOWN`.
 
 Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/34), [PR #35](https://github.com/goodwiins/computer-use-automation-system/pull/35), and their `docs/meridian/live-evidence.md`. Existing evidence reports:
 
@@ -46,7 +63,7 @@ Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/3
 - Four write artifacts and approved replays remain incomplete.
 - Open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` is terminal `POST_OUTCOME_UNKNOWN`. A model completion message did not establish success; compilation failed after dispatch. Never repeat this request, delete its journal record, or reconstruct its missing provenance.
 - Six injected-error probes are read-only probes; they do not prove complete write replay or successful recovery.
-- Dashboard/chat invoked a read but ended in `SESSION_EXPIRED`. Successful integrated rehearsal remains open.
+- Dashboard/chat previously invoked a read but ended in `SESSION_EXPIRED`; a later caller chat/API/runtime read at `541d776f85d94097bc1e63fa7966de69da5947de` (`ff5fda32-db07-443f-930d-db2d65461dc0`) returned `202` and success with evaluator pass, and an exact-key duplicate returned the same run ID. Task 9c separately recorded genuine dashboard UI read `288d7cae-c486-4f08-b810-c1e4aa1d4afe` at source `ca5d99a21e7274445eb119a71bc8c61f548fa9a7`, including reload, role, evidence and accepted Refresh/Send keyboard checks. The successful integrated write rehearsal and same-browser repair remain open.
 - PR #35's evaluator checks local event ordering and journal consistency. It is not a business-result verifier, and older incomplete event logs must not be relabelled as passing.
 
 ## Task map and file ownership
@@ -232,7 +249,7 @@ Expected: regressions now pass; existing approval, mutation-intent, observer iso
 
 **Interfaces:** `CapabilityArtifact.parse(unknown)`, `applyMeridianContract(artifact)` and `meridianContracts` are existing exports. The test below is a contract gate, not proof of live behavior.
 
-- [ ] Add this complete test file. Initially include only the three already recorded IDs. Tasks 5–8 each add their ID before recording, making that task fail until its artifact exists and passes the shared contract.
+- [x] Add `test/meridian-artifacts.test.ts` with only the three already recorded IDs. Tasks 5–8 each add their ID before recording, making that task fail until its artifact exists and passes the shared contract.
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -263,17 +280,19 @@ it.each(ids)('%s is reviewed and satisfies the recorded contract', id => {
 });
 ```
 
-- [ ] Run `npx vitest run test/meridian-artifacts.test.ts`. Expected: all three read artifacts pass on the integrated head. If an existing artifact violates the design, fix it from its real provenance or re-record; do not loosen the contract to make the test green.
-- [ ] Follow `docs/meridian/runbook.md` setup. Keep secrets in ignored `.env` with mode 600 and a stable journal key. Define the existing CLI wrapper:
+- [x] Run `npx vitest run test/meridian-artifacts.test.ts`: 3 tests passed on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Existing approved artifacts satisfy the shared contract; no contract was loosened.
+- [x] Follow the read-only portion of `docs/meridian/runbook.md` setup. The ignored `.env` is mode 600 with a stable journal key, and the existing CLI wrapper was used. Write-task member/share/contact choices were intentionally not established because this task authorizes no posting.
 
 ```sh
 cu() { node --env-file=.env --import tsx cli.ts "$@"; }
 ```
 
 Stop `cu serve` before any CLI discovery/replay. Use an interactive terminal for discovery's approval gate. Choose current synthetic member/share/contact inputs with the operator and set `MEMBER`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, and `ADDRESS` locally. These are selected operation facts, not inferred defaults; values must be known before a write can be proposed for approval.
-- [ ] Run one fresh sign-on and member inquiry/record. Record run IDs and target outcome. If sign-on immediately encounters an injected error or session expiry again, stop this live session and record the blocker. Do not alter global injection settings, auto-login repeatedly, or use another posting as a health probe.
-- [ ] Inspect unsubmitted forms and review transitions. Verify current control labels, native action/method, session role, token presence (never its value), available shares and operation constraints. Verify the historical unknown operation only with a separate read. Preserve its original terminal state regardless of what that read finds.
-- [ ] Commit the artifact check and sanitized readiness note. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
+- [x] Run the supplied fresh sign-on preflight at source `7abda4c326260d917795fe75320af99a7233bc6d` (`ad12819b-f07a-41ff-9710-bedff1afe1a5`, `TELLER`, evaluator pass) without repeating it, then run fresh member inquiry `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` and member record `e4850bd4-6c63-42c9-8719-aaefef1c74e4` reads at source `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Both reads succeeded with evaluator pass, 10 attempts, 0 mutation intents, and no violations or incomplete checks.
+- [x] Inspect the sanitized read transitions: sign-on operator/password/branch fields and POST, inquiry by/q fields and GET Search, and record GET Select plus shares-table extraction. No write form was submitted, and no review transition or posting control was clicked; write-route token/role checks and concrete eligible-share choices remain incomplete gates. The historical unknown operation stayed terminal `POST_OUTCOME_UNKNOWN` and was not retried.
+- [x] Record the controller's separate manual read-only inspection of unsubmitted write forms: transfer, new-share, contact-update and hold native POST destinations, controls and hidden token presence are documented in [live evidence](../meridian/live-evidence.md). The teller hold page warning is not a demonstrated server or guarded denial.
+- [ ] Inspect each chosen write's review transition and final posting control with fresh facts and its separate approval. The controller inspection did not click `Continue`, `Save Changes`, `Apply Hold` or any final posting control; no write artifact, approval or posting is established.
+- [x] Commit the artifact check and sanitized readiness note after the final integrated gates. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
 
 ## Live-operation rules for Tasks 5–8
 
@@ -404,17 +423,25 @@ npx vitest run test/meridian-artifacts.test.ts -t meridian-place-hold
 
 ## Task 9: Finish unhappy paths, integrated rehearsal and delivery
 
-**Files:** Extend existing `test/meridian.test.ts` only for missing deterministic checks; update `docs/meridian/live-evidence.md`, `docs/meridian/runbook.md`, `docs/meridian/report.md`, `docs/meridian/evaluation.md`, `README.md` and `docs/README.md`. Retain inspected sanitized evidence under `docs/meridian/evidence/`.
+**Files:** Extend existing `test/meridian.test.ts` only for missing deterministic checks; repair the shared dashboard renderer in `src/server/public/app.js`; update `docs/meridian/live-evidence.md`, `docs/meridian/runbook.md`, `docs/meridian/report.md`, `docs/meridian/evaluation.md`, and the scoped sanitized evidence summary under `docs/meridian/evidence/`. The broader `README.md` and `docs/README.md` remain outside this narrow Task 9d update.
 
 **Interfaces:** Existing HTTP endpoints and auth remain unchanged. `GET /runs/:id` exposes lifecycle/result; operator `/decision` resolves one intervention. `npm run eval` consumes local evidence and authenticated journal records without mutating them.
 
-- [ ] Run existing offline coverage first:
+- [x] Run existing offline coverage first for Task 9a:
 
 ```sh
 npx vitest run test/meridian.test.ts test/evidence-eval.test.ts test/meridian-artifacts.test.ts test/screenshot-mask.test.ts
 ```
 
-- [ ] For each missing case in this matrix, add one focused regression using the existing local form/guarded/journal fixtures, run it red, fix only the shared failing path, and rerun. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
+This passed with 4 files and 66 tests at `541d776f85d94097bc1e63fa7966de69da5947de`; the earlier 198-test run at `4ec9b93` is historical and not a current-head full-suite claim.
+
+- [x] Task 9a's reviewed deterministic matrix is covered by focused local regressions at `541d776f85d94097bc1e63fa7966de69da5947de`; its scope remains offline and does not satisfy the live operation rows below. Do not duplicate passing coverage. The assertion is the required observable result, not a test-name substring.
+
+- [x] Task 9b's scoped evidence ledger and sanitized read summary retain the source-specific `3/7` boundary, current caller API-only distinction, evaluator results and historical unknown state.
+
+- [x] Task 9c's real dashboard read and independent restart check recorded login, reload, caller/operator visibility, evidence view, accepted Refresh/Send keyboard effects, historical redaction, unchanged 26-run count and unchanged unknown envelope. The initial focus-derived flag remains insufficient on its own.
+
+- [x] Task 9d repairs the shared run-card elapsed display and adds a focused browser assertion for known elapsed time, true zero and missing historical timing. The local fixture is a display check, not another live rehearsal; the new head's independent review and hosted checks remain pending.
 
 | Boundary | Required observable check |
 | --- | --- |
@@ -441,7 +468,7 @@ npx vitest run test/meridian.test.ts test/evidence-eval.test.ts test/meridian-ar
 | missing/stale hidden token | Fail closed or target rejection recorded; token value never persisted |
 
 - [ ] Rehearse a successful balance request and a separately authorized transfer through real chat→API→dashboard. Repeat the same API request key and confirm the original run ID without a second transaction. Rehearse an exceptional outcome and a repair that retains the same browser. Keep human repair distinct from complete discovery provenance.
-- [ ] Reauthenticate after reload; verify caller/operator visibility, approval control, keyboard usability, status/error presentation, masked evidence, elapsed time, and historical `sensitiveValuesUnavailable` behavior after restart. Do not add UI polish before these work.
+- [x] Reauthenticate after reload and verify caller/operator visibility, read-only keyboard usability, status/result presentation, evidence view, elapsed time and historical `sensitiveValuesUnavailable` behavior after restart through the scoped Task 9c read and Task 9d local display check. Approval/handoff controls were not clicked; their keyboard operation, same-browser repair and integrated write rehearsal remain open.
 - [ ] Update the evidence ledger with capability/version, discovery ID, replay ID, source SHA, approval, actual verified state, safety evaluation, evidence path and any limitation. If one of those facts is absent, mark the gate incomplete. Remove outdated completion claims, not adverse evidence. Update the 1–2 page report and exact setup/discovery/replay/demo commands.
 - [ ] Run final repository gates and inspect hosted CI on the same final PR head:
 
