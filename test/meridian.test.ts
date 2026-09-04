@@ -264,16 +264,40 @@ describe('single-use interventions and live controls', () => {
     const expired = approval.wait(request); await vi.advanceTimersByTimeAsync(300000); expect(await expired).toBe('abort'); expect(session.currentOwner).toBe('automation');
   });
 
-  it('aborts a closed browser intervention without dispatch or control handoff', async () => {
-    let dispatches = 0;
-    const page = { isClosed: () => true, click: () => { dispatches++; } } as never;
-    const session = new ControlSession();
-    const result = await new OperatorConsole(page, new RunLogger('replay', new Redactor(), temp()), session).intervene({
-      kind: 'replay_stuck', capability: 'hold@1.0.0', goal: 'apply hold', stepId: 'post', reason: 'stuck', url: origin,
-    });
-    expect(result).toBe('abort');
-    expect(session.currentOwner).toBe('automation');
-    expect(dispatches).toBe(0);
+  it('allows one approved mutation and blocks wrong, stale, and aborted approval before dispatch', async () => {
+    const waitForApproval = async (approval: Approval) => {
+      for (let i = 0; i < 50 && !approval.pending; i++) await Promise.resolve();
+      expect(approval.pending).toBeDefined();
+      return approval.pending!.id;
+    };
+    const makeRun = () => {
+      const approval = new Approval(new ControlSession(), () => {}, Date.now() + 600_000);
+      const gate = vi.fn(async () => {
+        const pending = approval.wait({ kind: 'risk_approval', capability: 'hold', goal: 'apply hold', reason: 'apply hold', url: origin });
+        return (await pending) === 'approve';
+      });
+      return { approval, run: guarded({}, gate) };
+    };
+
+    const blocked = makeRun();
+    const rejected = expect(blocked.run.surface.click(target, 1000, 'read')).rejects.toThrow(/aborted/);
+    const blockedId = await waitForApproval(blocked.approval);
+    expect(() => blocked.approval.decide(randomUUID(), 'abort')).toThrow(/Stale/);
+    expect(() => blocked.approval.decide(blockedId, 'retry')).toThrow(/does not match/);
+    blocked.approval.decide(blockedId, 'abort');
+    await rejected;
+    expect(() => blocked.approval.decide(blockedId, 'abort')).toThrow(/Stale/);
+    expect(blocked.run.dispatch).not.toHaveBeenCalled();
+    expect(blocked.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const approved = makeRun();
+    const dispatched = approved.run.surface.click(target, 1000, 'read');
+    const approvedId = await waitForApproval(approved.approval);
+    approved.approval.decide(approvedId, 'approve');
+    await dispatched;
+    expect(approved.run.dispatch).toHaveBeenCalledTimes(1);
+    expect(approved.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(approved.run.surface.mutationDispatched).toBe(true);
   });
   it('requires approval for a down-labelled post even if policy allows it', async () => {
     const gate = vi.fn(async () => false); const run = guarded({}, gate);
@@ -494,13 +518,9 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
     for (tool of ['approve', 'select_supervisor']) expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
 
-    let dispatches = 0;
     const session = new ControlSession();
     const approval = new Approval(session, () => {}, Date.now() + 600_000);
-    const pending = approval.wait({ kind: 'replay_stuck', capability: 'hold', goal: 'apply hold', reason: 'stuck', url: origin }).then(decision => {
-      if (decision === 'approve') dispatches++;
-      return decision;
-    });
+    const pending = approval.wait({ kind: 'replay_stuck', capability: 'hold', goal: 'apply hold', reason: 'stuck', url: origin });
     service.live.set(run.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval });
     const operator = { Authorization: `Bearer ${'o'.repeat(32)}` };
     expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'retry' }))).status).toBe(409);
@@ -509,7 +529,6 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'abort' }))).status).toBe(200);
     expect(await pending).toBe('abort');
     expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'retry' }))).status).toBe(409);
-    expect(dispatches).toBe(0);
     expect((await request(`/runs/${run.runId}/evidence/missing.json`, caller)).status).toBe(403);
     expect((await request(`/runs/${run.runId}/evidence/missing.json`, operator)).status).toBe(404);
     expect(journal.records.size).toBe(1);
@@ -611,6 +630,37 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
     await browser.page.evaluate(() => fetch('/members/1/update', { method: 'POST' }).catch(() => {})); expect(posted).toBe(0);
     const dir = temp(); const logger = new RunLogger('replay', new Redactor(), dir, true); logger.log('error', { password: 'PRIVATE', params: { member: 'PRIVATE' }, observed: 'PRIVATE' }); logger.writeResult({ status: 'success', outputs: { name: 'PRIVATE' } });
     expect(readdirSync(logger.dir).map(f => readFileSync(join(logger.dir, f), 'utf8')).join('')).not.toContain('PRIVATE');
+  } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('stops replay with no target POST when the browser closes before intervention', async () => {
+  const app = express();
+  let posted = 0;
+  app.get('/start', (_req, res) => res.send('<form method="post" action="/mutate"><input type="submit" value="Mutate"></form>'));
+  app.post('/mutate', (_req, res) => { posted++; res.end('mutated'); });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin] });
+  const start = browser.start.bind(browser);
+  browser.start = async entryUrl => { await start(entryUrl); await browser.page.close(); };
+  const logger = new RunLogger('replay', new Redactor(), temp());
+  const session = new ControlSession();
+  const escalated = vi.fn(async request => new OperatorConsole(browser.page, logger, session).intervene(request));
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 1, id: 'closed-browser', name: 'closed-browser', description: 'closed browser fixture', version: '1.0.0', status: 'approved',
+    app: { appId: 'fixture', entryUrl: `${localOrigin}/start`, allowedOrigins: [localOrigin] }, parameters: [], outputs: [],
+    steps: [{ id: 'mutate', intent: 'submit mutation', action: 'click', target: { description: 'Mutate', strategies: [{ kind: 'role', role: 'button', name: 'Mutate' }] }, risk: 'read' }],
+    successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+  try {
+    const result = await runReplay(artifact, {}, { surface: browser, logger, policy: Policy.parse({ ...policy, allowedOrigins: [localOrigin] }), escalate: escalated });
+    expect(result.status).toBe('failure');
+    if (result.status === 'failure') expect(result.escalated).toBe(true);
+    expect(escalated).toHaveBeenCalledOnce();
+    expect(session.currentOwner).toBe('automation');
+    expect(browser.page.isClosed()).toBe(true);
+    expect(posted).toBe(0);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
 }, 15000);
 
