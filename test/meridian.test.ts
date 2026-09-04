@@ -313,11 +313,15 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
   try {
     await page.goto(`http://127.0.0.1:${address.port}`); await page.locator('#credential').fill('o'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
+    expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
     await page.route('**/chat', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: '<img src=x onerror=alert(1)>' }) }));
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.locator('#messages p').first().waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    await page.locator('#credential').fill('c'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.waitForFunction(() => document.getElementById('status')?.textContent?.includes('Connected as caller'));
+    expect(await page.locator('#role-label').isHidden()).toBe(true);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); journal.close(); }
 }, 15000);
 

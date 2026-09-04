@@ -24,6 +24,12 @@ Review checked login references, observed selectors, assertions and actual extra
 
 Raw names, member numbers, credentials and returned account values are omitted from the backup.
 
+## Dashboard and chat checkpoint
+
+[Live chat results](evidence/dashboard-chat-read.json) show a caller request through the real dashboard and Azure model received HTTP 202 and invoked `meridian-member-record`. Run `b1c437d4-708f-40cb-bf38-b20f11566922` stopped on `SESSION_EXPIRED` at sign-on. This verifies request routing and failure presentation, not a successful balance rehearsal.
+
+The rehearsal exposed CSS overriding the caller's hidden operator selector. The shared hidden rule was corrected; [the subsequent UI check](evidence/dashboard-ui-checks.json) verifies that the selector is hidden, the credential field is cleared, and browser storage contains no credential. The original result retains the observed pre-fix value. [The masked screenshot](evidence/dashboard-fixed.png) shows the corrected caller view. Automated coverage checks both caller and operator visibility; server-side authority checks were unchanged.
+
 ## Error inspection
 
 [Profile probe results](evidence/profile-probes/summary.json) cover validation, not-found, permission, timeout, maintenance and server errors. These are per-request, read-only live probes on an operation route; no global settings were changed. They are not LLM discoveries, approved postings or write-capability replays. Maintenance cleared through the observed Continue link to the menu; the original operation was not resumed.
