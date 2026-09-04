@@ -71,7 +71,7 @@ export function originAllowed(allowed: string[], url: string): boolean {
 }
 
 // Keep query strings (which may carry member IDs etc.) out of denial reasons.
-function redactUrlForLog(url: string): string {
+export function redactUrlForLog(url: string): string {
   try {
     const u = new URL(url);
     return u.origin + u.pathname;

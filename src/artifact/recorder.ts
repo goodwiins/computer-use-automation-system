@@ -79,10 +79,21 @@ export function recordArtifact(input: RecorderInput, discovery: DiscoveryResult)
   // there a short value is matched as a whole token, here there is no token
   // boundary to lean on — `(4)` looks like one — so short values are left
   // literal. That trades a silent wrong-cell read for a loud resolution
-  // failure, and values this short carry nothing worth hiding.
+  // failure. A *sensitive* short value (a PIN) is the one case with nothing
+  // safe to do: it must not be persisted literal and cannot be templatized
+  // safely, so recording refuses rather than writing the secret into the artifact.
   const MIN_CSS_PARAM_LEN = 4;
-  const templatizeCss = (s: string): string =>
-    substitute(s, paramEntries.filter(([, v]) => String(v).length >= MIN_CSS_PARAM_LEN));
+  const templatizeCss = (s: string): string => {
+    for (const [name, value] of paramEntries) {
+      const v = String(value);
+      if (v.length < MIN_CSS_PARAM_LEN && v.length > 0 && input.sensitiveParams.includes(name) && s.includes(v)) {
+        throw new Error(
+          `Cannot record artifact: sensitive parameter "${name}" is too short to templatize safely and appears literally in css selector "${s}"`,
+        );
+      }
+    }
+    return substitute(s, paramEntries.filter(([, v]) => String(v).length >= MIN_CSS_PARAM_LEN));
+  };
 
   const parameters: Parameter[] = Object.entries(input.params).map(([name, value]) => ({
     name,

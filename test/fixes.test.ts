@@ -698,6 +698,33 @@ describe('security review 2026-09-03 (G1/G2/G3)', () => {
     expect(strategy.kind === 'css' && strategy.selector).toBe("tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4)");
   });
 
+  it('G2: a short *sensitive* param inside a css selector refuses to record rather than persist it', () => {
+    expect(() => recordArtifact(
+      {
+        name: 'css-pin', description: 'x', goal: 'x', entryUrl: 'http://localhost:4173/',
+        params: { pin: '123' }, sensitiveParams: ['pin'],
+        appId: 'test', allowedOrigins: ['http://localhost:4173'], appDetectors: [],
+        model: 'test', discoveryRunId: 'r1',
+      },
+      {
+        status: 'success', outputs: {}, finalUrl: 'http://localhost:4173/members/1',
+        trace: [{
+          action: 'click', reason: 'open the row', urlAfter: 'http://localhost:4173/members/1',
+          descriptor: { description: 'row', strategies: [{ kind: 'css', selector: "tr:has(> td:text-is('123')) > td:nth-of-type(2)" }] },
+        }],
+      },
+    )).toThrow(/sensitive parameter "pin" is too short/);
+  });
+
+  it('G3: a rejected overlay entryUrl is reported without its query string', () => {
+    let msg = '';
+    try { applyOverlay(BASE, overlay({ status: 'approved', entryUrl: 'http://evil.test/login?pin=OVERLAYSECRET' })); }
+    catch (e) { msg = (e as Error).message; }
+    expect(msg).toMatch(/outside the base artifact's allowed origins/);
+    expect(msg).toContain('http://evil.test/login');
+    expect(msg).not.toContain('OVERLAYSECRET');
+  });
+
   it('G3: an overlay is only as approved as itself, and its entryUrl is bounds-checked', () => {
     expect(applyOverlay(BASE, overlay()).status).toBe('draft');                         // default: unreviewed
     expect(applyOverlay(BASE, overlay({ status: 'approved' })).status).toBe('approved');
