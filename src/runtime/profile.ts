@@ -14,10 +14,18 @@ export function loadProfile(name = 'cu-nexus') {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid profile name');
   return AppProfile.parse(JSON.parse(readFileSync(new URL(`../../config/app-profiles/${name}.json`, import.meta.url), 'utf8')));
 }
+/** Stable identity for the frame that owns a live control or extraction. */
+export interface FrameContext {
+  id: string;
+  name: string;
+  url: string;
+  navigation: number;
+}
 export interface LiveControl {
   url: string; destination: string; method: string; control: string; submit: boolean;
   operator: string; branch: string; role: string; conditions: string[]; facts: Record<string, string>; tokenPresent: boolean;
   error: boolean;
+  frame?: FrameContext;
 }
 export function classify(profile: AppProfile, control: LiveControl, origins: string[]) {
   if (!originAllowed(origins, control.destination)) throw new Error('Control destination outside allowed origins');

@@ -26,17 +26,17 @@
 
 ## Verified implementation and PR ledger — September 4, 2026
 
-The code inspection used `origin/dev` at `5bc21fe9728b59ce6c9cf2013c48b85646eaf179` and PR #39 at `b093b6503a39339399f57c2d59a3d5f5b417c18d`. The following PR states were refreshed on GitHub; passing head CI does not establish integrated or live acceptance.
+Current runtime baseline: `aa90387244be07b9955b8b5b83eacf4b9f3058a1`. Passing runtime and integration checks do not establish live acceptance.
 
-| PR | State / exact inspected head | Existing implementation | Action |
+| PR | Reviewed/final source | Integrated result | Reuse boundary |
 | --- | --- | --- | --- |
-| [#34](https://github.com/goodwiins/computer-use-automation-system/pull/34) | Merged; `def4b38a2f906f725813f5c89563f3fe82e31140` | Hosted profile, forms/tokens, runtime, API, approval and result presentation | Reuse; do not rebuild |
-| [#35](https://github.com/goodwiins/computer-use-automation-system/pull/35) | Merged into the #34 stack; `338734d16e7fc4d0f30f239886660e0f1af30a6c` | Safety/evaluation and durable uncertainty handling | Reuse; retain regression gates |
-| [#37](https://github.com/goodwiins/computer-use-automation-system/pull/37) | Open → `dev`; `745ef645ae48730e769e6fc639ec4f71739d23e8` | Read acceptance, artifact catalog tests and run timing | Review/integrate before new capability branches |
-| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | Open → `dev`; `b093b6503a39339399f57c2d59a3d5f5b417c18d` | Transfer eligibility, scoped review facts, output binding and completion validation | Reuse after #37 integration; **does not implement the typed outcome below** |
-| [#40](https://github.com/goodwiins/computer-use-automation-system/pull/40) | Open → `dev`; documentation only | Remaining execution gates, fallback distinctions and final UI ordering | Preserve the latest plan during integration; not evidence of runtime delivery |
+| [#34](https://github.com/goodwiins/computer-use-automation-system/pull/34) / [#35](https://github.com/goodwiins/computer-use-automation-system/pull/35) | Historical reviewed heads `def4b38a2f906f725813f5c89563f3fe82e31140` / `338734d16e7fc0f30f239886660e0f1af30a6c` | Runtime and safety baseline in `dev` | Reuse; retain regression gates |
+| [#37](https://github.com/goodwiins/computer-use-automation-system/pull/37) | `745ef645ae48730e769e6fc639ec4f71739d23e8` | Merged as `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; merge producer passed | Reuse read acceptance, catalog tests and elapsed rendering |
+| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | Repair `05f0647`; final reviewed head `64c9b11` | Merged as `fcd87f7fb8d573c8d44d43436310cce07baae06a`; head/merge producers and 257 local tests passed | Reuse transfer fact, approval and completion binding; **does not implement Task A** |
+| [#41](https://github.com/goodwiins/computer-use-automation-system/pull/41) | Repair `3aacfac`; final reviewed head `ec5f6a1ea421c7d4b5b345c4d83614eb513d3ec9` | Merged as `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; head/merge producers and 269 local tests passed | Reuse terminal setup, cleanup and cancellation fixes |
+| [#40](https://github.com/goodwiins/computer-use-automation-system/pull/40) | Remote head `f635798435dca7fb7eb40c616df74f26e4ccb69f`; newer local documentation candidate pending | Unmerged; final candidate review, hosted CI and merge remain open | Preserve the latest plan; do not treat it as runtime or live evidence |
 
-The Typecheck and tests producer checks passed on the listed #37 and #39 heads: [#37 producer](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33859462030/job/100980319268), [#39 producer](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33885287126/job/101063439085). Neither PR currently contains an approved transfer/open-share/update/hold artifact. Their existing overlapping documentation and tests require integration review, not blind cherry-picking.
+No listed PR contains an approved transfer, open-share, update-member, or place-hold artifact. The runtime fixes do not promote the transfer draft. Current live acceptance remains `3/7`, and the producing SHAs in the evidence ledger remain source-specific.
 
 ### What §2 already has, and what remains
 
@@ -56,9 +56,9 @@ The six-column transfer row, single-process runtime and separate PR boundaries a
 
 ## Integration prerequisite
 
-- [ ] Refresh #37, #39 and #40 heads, diffs and reviews. Follow the execution plan's **Required integration gate for PRs #37 and #39**: #37 first, then #39 on the refreshed baseline, preserving the newest #40 planning content. Merge only under the user's merge authorization.
-- [ ] Confirm the resulting `dev` includes #37's `test/meridian-artifacts.test.ts` and #39's transfer implementation. Run `npm run ci`, `npm run validate` and `git diff --check`; inspect CI on the resulting dev SHA separately.
-- [ ] Create an isolated `codex/meridian-insufficient-funds-outcome` branch from that integrated `origin/dev` using the worktree skill. Do not apply the source snippets to the current documentation branch, which lacks #39's implementation.
+- [x] PRs #37, #39 and #41 were reviewed and integrated in order, preserving the newest #40 planning content. Their reviewed heads, repair commits, merge commits and passing producer checks are recorded in the integration ledger.
+- [x] Confirmed the resulting `dev` at `aa90387244be07b9955b8b5b83eacf4b9f3058a1` includes #37 read acceptance, #39 transfer protections and #41 terminal-lifecycle repairs; the recorded PR-head and merge producer checks passed. Final PR #40 documentation gates remain separate.
+- [ ] After PR #40 is merged and its final `dev` producer passes, create an isolated `codex/meridian-insufficient-funds-outcome` branch from that verified baseline using the worktree skill. Keep Task A out of the documentation integration branch.
 
 ## Task A: Return insufficient funds as a terminal business result
 

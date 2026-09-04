@@ -23,7 +23,7 @@ const fields = {
   classification: z.enum(['business_outcome', 'recoverable', 'fatal']),
   kind: z.enum(['discovery', 'replay', 'risk_approval', 'replay_stuck', 'discovery_stuck']),
   decision: z.enum(['approve', 'retry', 'skip', 'abort']),
-  code: z.enum(['POST_OUTCOME_UNKNOWN', 'RUN_FAILED', 'DISCOVERY_FAILED']),
+  code: z.enum(['POST_OUTCOME_UNKNOWN', 'RUN_FAILED', 'DISCOVERY_FAILED', 'RUN_ABORTED', 'RUNTIME_CLEANUP_FAILED']),
 } satisfies Record<string, z.ZodTypeAny>;
 
 export function safeEvent(event: string, data: Record<string, unknown>) {

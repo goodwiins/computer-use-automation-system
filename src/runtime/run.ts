@@ -6,6 +6,7 @@ import type { Policy } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import { BrowserSurface } from '../surface/browser.js';
 import { GuardedSurface, type HumanGate } from '../surface/guarded.js';
+import { meridianTransferMemberTable, transferFactsFromParams } from './contracts.js';
 import type { ActionContext } from './approval.js';
 import type { AppProfile, FaultScenario } from './profile.js';
 
@@ -32,6 +33,7 @@ export function createRuntime(options: {
   redactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   if (options.operator) redactor.addSensitiveValues([options.operator.password]);
   const strict = options.profile?.appId === 'meridian';
+  const transfer = strict ? transferFactsFromParams(options.params) : undefined;
   const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId, options.onEvent);
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
@@ -40,17 +42,28 @@ export function createRuntime(options: {
   const surface = new GuardedSurface(browser, options.policy, options.gate, e => logger.log('policy.decision', e),
     strict ? { profile: options.profile!, session, deadline, runId: logger.runId, artifact: options.artifact, version: options.version,
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
+      transfer: transfer ? { expected: transfer, memberTable: meridianTransferMemberTable } : undefined,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
     } : undefined, (event, data) => logger.log(event, data));
-  const timer = setTimeout(() => { options.onClose?.(); void surface.close(); }, 600_000);
+  let timer: ReturnType<typeof setTimeout>;
+  const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
+    close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };
+  timer = setTimeout(() => { void closeRuntime(runtime); }, 600_000);
   timer.unref();
-  return { surface, browser, logger, session, redactor, promptRedactor, deadline,
-    close: async () => { clearTimeout(timer); options.onClose?.(); await surface.close(); } };
+  return runtime;
 }
 
 export async function executeReplay(artifact: CapabilityArtifact, params: Record<string, string | number>,
   runtime: ReturnType<typeof createRuntime>, policy: Policy,
   escalate?: (request: InterventionRequest) => Promise<InterventionDecision>) {
   try { return await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy, escalate }); }
-  finally { await runtime.close(); }
+  finally { await closeRuntime(runtime); }
+}
+
+export async function closeRuntime(runtime: ReturnType<typeof createRuntime>) {
+  try { await runtime.close(); }
+  catch {
+    // Cleanup and its diagnostics must not replace a verified result or the original error.
+    try { runtime.logger.log('evidence.warning', { code: 'RUNTIME_CLEANUP_FAILED' }); } catch { /* evidence unavailable */ }
+  }
 }

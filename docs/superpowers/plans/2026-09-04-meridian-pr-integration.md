@@ -24,28 +24,22 @@
 - Assistant-ui remains the final chat phase. Preserve #37's existing elapsed-time correction; do not expand it into new UI work.
 - Implement `INSUFFICIENT_FUNDS` in the next separate runtime PR, after this baseline is integrated.
 
-## Verified starting point
+## Verified starting point and execution ledger
 
-Snapshot checked September 4, 2026. Refresh it at execution; SHA changes invalidate earlier review and CI conclusions for the changed candidate.
+Snapshot refreshed September 4, 2026. Historical head results remain attached to the source that produced them; passing integration tests do not establish live capability acceptance.
 
-`origin/dev`: `5bc21fe9728b59ce6c9cf2013c48b85646eaf179`.
+Current consumed `origin/dev`: `aa90387244be07b9955b8b5b83eacf4b9f3058a1`.
 
-| PR | Exact head | Existing delivery | Hosted CI at this head |
+| PR | Reviewed/final head | Integration result | Hosted producer evidence |
 | --- | --- | --- | --- |
-| [#37](https://github.com/goodwiins/computer-use-automation-system/pull/37) | `745ef645ae48730e769e6fc639ec4f71739d23e8` | Read acceptance, approved-artifact checks, elapsed-time display | [Passed](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33859462030/job/100980319268) |
-| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | `b093b6503a39339399f57c2d59a3d5f5b417c18d` | Transfer eligibility, current review facts, output binding and verified completion | [Passed](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33885287126/job/101063439085) |
-| [#40](https://github.com/goodwiins/computer-use-automation-system/pull/40) | `f635798435dca7fb7eb40c616df74f26e4ccb69f` | Latest execution gates, target-app supplement, fallback distinctions and UI ordering | [Passed](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33912439907/job/101151716399) |
-| [#41](https://github.com/goodwiins/computer-use-automation-system/pull/41) | `b41dcc294e96381023d72a71f42d8e7c1b42d02d` | Setup finalization, outcome-preserving cleanup, terminal cancellation | [Passed](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33916285757/job/101164090455) |
+| [#37](https://github.com/goodwiins/computer-use-automation-system/pull/37) | `745ef645ae48730e769e6fc639ec4f71739d23e8` | Merged as `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; read acceptance and elapsed-time display retained | Historical head [passed](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33859462030/job/100980319268); merge [run `33919679746`, job `101174884826`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33919679746/job/101174884826) passed |
+| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | Initial inspected `b093b6503a39339399f57c2d59a3d5f5b417c18d`; repair `05f0647`; final reviewed `64c9b11` | Merged as `fcd87f7fb8d573c8d44d43436310cce07baae06a`; transfer guards retained; 257 local tests | Head [run `33920737879`, job `101178214101`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33920737879/job/101178214101) and merge [run `33920922815`, job `101178797950`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33920922815/job/101178797950) passed |
+| [#41](https://github.com/goodwiins/computer-use-automation-system/pull/41) | Repair `3aacfac`; final reviewed `ec5f6a1ea421c7d4b5b345c4d83614eb513d3ec9` | Merged as `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; three reviewed lifecycle findings fixed; 269 local tests | Head [run `33921302067`, job `101180000937`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33921302067/job/101180000937) and merge [run `33921529657`, job `101180716774`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33921529657/job/101180716774) passed |
+| [#40](https://github.com/goodwiins/computer-use-automation-system/pull/40) | Remote head `f635798435dca7fb7eb40c616df74f26e4ccb69f`; reviewed local plan commit `0f6f11a1c324073a66e9bd6d08964ac72340abf1`; fallback-key fix `4d9a05e` | This documentation branch consumes `aa903872`; final candidate commit, independent review, hosted CI, push and merge remain pending | Remote-head-only [run `33912439907`, job `101151716399`](https://github.com/goodwiins/computer-use-automation-system/actions/runs/33912439907/job/101151716399) passed; it is not evidence for the unpublished candidate |
 
-All four PRs are open and individually mergeable against the current `dev`. That does not mean they combine without conflicts. CodeRabbit's success status says its review was skipped for this base branch; it is not a completed code review.
+PRs #37, #39 and #41 are integrated with passing head and merge producer checks. PR #40 remains the protected documentation candidate and must obtain review and hosted CI on its published final head before merge. CodeRabbit's earlier skipped-review status is not used as review evidence.
 
-A non-checkout merge inspection of #37 and #39 reproduced conflicts in:
-
-1. `docs/meridian/live-evidence.md`
-2. `docs/plans/2026-09-04-meridian-superpowers.md`
-3. `test/meridian.test.ts`
-
-#39 and #41 also touch several of the same runtime files. Even a clean textual merge needs semantic verification.
+The combined tree retains the three-artifact read acceptance, #39 operation/fact binding, and #41 terminal lifecycle handling. Those runtime fixes do not approve or promote the transfer draft, accept any of the four write capabilities, or raise live coverage above `3/7`.
 
 ## Ownership and deliverables
 
@@ -118,9 +112,9 @@ npx vitest run test/runtime-lifecycle.test.ts test/guarded.test.ts
 
 **Interfaces:** Consumes the reviewed #37 head; produces a CI-verified `dev` commit containing its read baseline.
 
-- [ ] Recheck #37's current SHA, base, mergeability and checks. If `dev` moved, refresh the candidate and review the changed comparison before merging.
-- [ ] Run `npm run ci`, `npm run validate` and `git diff --check` on the final candidate, unless that exact unchanged tree already has recorded passing local checks. Keep producer evidence for the exact PR head.
-- [ ] When merge authorization is established, merge with the reviewed head pinned. Run the following from the checkout whose current HEAD was just reviewed and validated. The guard refuses the merge if the remote PR head differs:
+- [x] Recheck #37's current SHA, base, mergeability and checks. If `dev` moved, refresh the candidate and review the changed comparison before merging.
+- [x] Run `npm run ci`, `npm run validate` and `git diff --check` on the final candidate, unless that exact unchanged tree already has recorded passing local checks. Keep producer evidence for the exact PR head.
+- [x] When merge authorization is established, merge with the reviewed head pinned. Run the following from the checkout whose current HEAD was just reviewed and validated. The guard refuses the merge if the remote PR head differs:
 
 ```bash
 pr37_head=$(git rev-parse HEAD)
@@ -129,8 +123,8 @@ git fetch origin
 gh pr view 37 --repo goodwiins/computer-use-automation-system --json state,mergeCommit
 ```
 
-- [ ] Record the returned merge commit. Inspect the CI run whose `headSha` is that merge commit; do not substitute the PR-head CI result. If a later unrelated commit has already advanced `dev`, record it separately.
-- [ ] Confirm the merged tree contains the three-artifact test and read summary. Do not promote the pending transfer draft to make a catalog test pass.
+- [x] Record the returned merge commit. Inspect the CI run whose `headSha` is that merge commit; do not substitute the PR-head CI result. If a later unrelated commit has already advanced `dev`, record it separately.
+- [x] Confirm the merged tree contains the three-artifact test and read summary. Do not promote the pending transfer draft to make a catalog test pass.
 
 **Acceptance:** #37 is merged into `dev`, its merge commit's CI passes, and the read-only acceptance boundary is unchanged.
 
@@ -140,8 +134,8 @@ gh pr view 37 --repo goodwiins/computer-use-automation-system --json state,merge
 
 **Interfaces:** Consumes `dev` after #37 and #39's reviewed changes; produces an updated, independently validated #39 head.
 
-- [ ] Confirm `/Users/goodwiinz/.codex/worktrees/interface-ai-transfer-runtime` is clean, on `codex/meridian-transfer-runtime`, and not being edited by another worker. Fetch and inspect divergence before editing; if unexpected work exists, coordinate ownership rather than overwriting it.
-- [ ] Bring `origin/dev` into that branch using a merge. Resolve reported conflicts individually:
+- [x] Confirm `/Users/goodwiinz/.codex/worktrees/interface-ai-transfer-runtime` is clean, on `codex/meridian-transfer-runtime`, and not being edited by another worker. Fetch and inspect divergence before editing; if unexpected work exists, coordinate ownership rather than overwriting it.
+- [x] Bring `origin/dev` into that branch using a merge. Resolve reported conflicts individually:
 
 ```bash
 git fetch origin
@@ -149,10 +143,10 @@ git merge --no-commit origin/dev
 git diff --name-only --diff-filter=U
 ```
 
-- [ ] In `test/meridian.test.ts`, retain both #37's timing/read tests and #39's transfer tests. Remove duplicated unchanged helpers only after checking their definitions; do not discard a whole side of the file. Preserve the tests for wrong canonical transaction rows, scoped review facts, native Continue forms, workarea frames, changed posting facts and per-attempt evidence.
-- [ ] In `docs/meridian/live-evidence.md`, retain #37's read acceptance details and #39's transfer discovery limitations. A successful discovery post does not imply an approved artifact or successful deterministic replay.
-- [ ] In `docs/plans/2026-09-04-meridian-superpowers.md`, keep #39's transfer-runtime progress and #37's factual read updates. Treat #40 as the authority for the final remaining execution gates; it will be reconciled in Task 6.
-- [ ] Scan tracked files for conflict markers, then run the focused transfer checks and full gates:
+- [x] In `test/meridian.test.ts`, retain both #37's timing/read tests and #39's transfer tests. Remove duplicated unchanged helpers only after checking their definitions; do not discard a whole side of the file. Preserve the tests for wrong canonical transaction rows, scoped review facts, native Continue forms, workarea frames, changed posting facts and per-attempt evidence.
+- [x] In `docs/meridian/live-evidence.md`, retain #37's read acceptance details and #39's transfer discovery limitations. A successful discovery post does not imply an approved artifact or successful deterministic replay.
+- [x] In `docs/plans/2026-09-04-meridian-superpowers.md`, keep #39's transfer-runtime progress and #37's factual read updates. Treat #40 as the authority for the final remaining execution gates; it will be reconciled in Task 6.
+- [x] Scan tracked files for conflict markers, then run the focused transfer checks and full gates:
 
 ```bash
 git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- '*.ts' '*.js' '*.md'
@@ -164,8 +158,8 @@ git diff --check
 
 The marker scan normally returns exit status 1 because no markers match. Inspect any match; Markdown separators may require interpretation.
 
-- [ ] Stage only resolved files, complete the merge commit, and push normally. Review the conflict-resolution diff as new code. Wait for the updated #39 head's CI before merging it using the same head-pinning pattern as Task 3, with PR number 39.
-- [ ] Record #39's merge commit and verify its `dev` CI. Do not start live acceptance between #39 and #41: the terminal-outcome fixes are still a prerequisite.
+- [x] Stage only resolved files, complete the merge commit, and push normally. Review the conflict-resolution diff as new code. Wait for the updated #39 head's CI before merging it using the same head-pinning pattern as Task 3, with PR number 39.
+- [x] Record #39's merge commit and verify its `dev` CI. Do not start live acceptance between #39 and #41: the terminal-outcome fixes are still a prerequisite.
 
 **Acceptance:** #39 includes the read baseline, retains its transfer protections, and has passing CI both on its final PR head and its resulting merge commit.
 
@@ -175,10 +169,10 @@ The marker scan normally returns exit status 1 because no markers match. Inspect
 
 **Interfaces:** Consumes `dev` after #39; produces a combined transfer runtime with correct terminal outcomes.
 
-- [ ] Confirm the terminal-outcomes worktree is clean and not actively owned by another worker. Merge current `origin/dev` into `codex/meridian-runtime-terminal-outcomes`; preserve both sets of changes even if Git reports no conflict.
-- [ ] Trace `createRuntime`, `executeReplay`, `closeRuntime`, `InvocationService.invoke`, `runReplay`, `runDiscovery` and `GuardedSurface` in the combined tree. Preserve #39's output validation and #41's cleanup handling together.
-- [ ] Confirm cancellation is handled before ordinary recovery/escalation, while `mutationDispatched` uncertainty still takes precedence. A cancelled operation after intent cannot become an ordinary safe-to-retry failure.
-- [ ] Run the existing integration-relevant tests:
+- [x] Confirm the terminal-outcomes worktree is clean and not actively owned by another worker. Merge current `origin/dev` into `codex/meridian-runtime-terminal-outcomes`; preserve both sets of changes even if Git reports no conflict.
+- [x] Trace `createRuntime`, `executeReplay`, `closeRuntime`, `InvocationService.invoke`, `runReplay`, `runDiscovery` and `GuardedSurface` in the combined tree. Preserve #39's output validation and #41's cleanup handling together.
+- [x] Confirm cancellation is handled before ordinary recovery/escalation, while `mutationDispatched` uncertainty still takes precedence. A cancelled operation after intent cannot become an ordinary safe-to-retry failure.
+- [x] Run the existing integration-relevant tests:
 
 ```bash
 npx vitest run test/runtime-lifecycle.test.ts test/meridian.test.ts test/meridian-cli.test.ts test/guarded.test.ts
@@ -187,9 +181,9 @@ npm run validate
 git diff --check
 ```
 
-- [ ] Inspect all nine lifecycle cases: construction failure and idempotent lookup; verified success despite cleanup failure; original error despite diagnostic failure; partial-setup cleanup before slot release; terminal denial in replay, discovery and recovery; API/journal/result consistency with both successful and failing cleanup.
-- [ ] Preserve strict `RUNTIME_CLEANUP_FAILED` metadata without persisting the raw exception. Confirm that `result.json`, journal and API agree in the cleanup-failure regression.
-- [ ] Commit any merge resolution, push, inspect exact-head CI, merge authorized #41 with the reviewed head pinned, and verify the resulting `dev` commit's CI.
+- [x] Inspect all nine lifecycle cases: construction failure and idempotent lookup; verified success despite cleanup failure; original error despite diagnostic failure; partial-setup cleanup before slot release; terminal denial in replay, discovery and recovery; API/journal/result consistency with both successful and failing cleanup.
+- [x] Preserve strict `RUNTIME_CLEANUP_FAILED` metadata without persisting the raw exception. Confirm that `result.json`, journal and API agree in the cleanup-failure regression.
+- [x] Commit any merge resolution, push, inspect exact-head CI, merge authorized #41 with the reviewed head pinned, and verify the resulting `dev` commit's CI.
 
 **Acceptance:** The combined runtime passes the lifecycle and transfer regressions. These checks demonstrate code behavior offline; live coverage remains 3/7.
 
@@ -199,14 +193,16 @@ git diff --check
 
 **Interfaces:** Consumes the integrated runtime and read evidence; produces one current documentation baseline and next-task handoff.
 
-- [ ] Preserve this newly written integration plan deliberately before refreshing the documentation branch. Review its diff, then commit it as documentation if it is to be delivered with #40; do not discard it as an unexpected untracked file.
-- [ ] Merge current `origin/dev` into `codex/meridian-plan-review-fixes`. Resolve overlapping plans and reports paragraph by paragraph; do not use blanket `ours` or `theirs` selection.
-- [ ] Update the PR ledger with actual reviewed heads and merge commits for #37, #39 and #41. Keep historical evidence associated with the source that produced it; do not relabel it as a fresh run on the integrated source.
-- [ ] Mark the three #41 runtime findings fixed, while retaining the transfer artifact's separate recording/provenance, fact-binding and completion acceptance gates. Runtime fixes alone do not promote an artifact.
-- [ ] Keep Task A, `INSUFFICIENT_FUNDS`, explicitly pending. State that valid pre-intent underfunding should become a business outcome; malformed/wrong-account data remains a failure and post-intent uncertainty remains unknown.
-- [ ] Preserve the distinction between live execution, offline fixture demonstration and recorded evidence. None raises the 3/7 live count. Keep assistant-ui deferred until capability/runtime/API acceptance and user UI direction.
-- [ ] Check relative links and search changed documentation for stale claims that #37/#39/#41 are still open or that the four writes are already accepted. Preserve historical quotations where their date and source are clear.
+- [x] Preserve this newly written integration plan deliberately before refreshing the documentation branch. Review its diff, then commit it as documentation if it is to be delivered with #40; do not discard it as an unexpected untracked file.
+- [x] Merge current `origin/dev` into `codex/meridian-plan-review-fixes`. Resolve overlapping plans and reports paragraph by paragraph; do not use blanket `ours` or `theirs` selection.
+- [x] Update the PR ledger with actual reviewed heads and merge commits for #37, #39 and #41. Keep historical evidence associated with the source that produced it; do not relabel it as a fresh run on the integrated source.
+- [x] Mark the three #41 runtime findings fixed, while retaining the transfer artifact's separate recording/provenance, fact-binding and completion acceptance gates. Runtime fixes alone do not promote an artifact.
+- [x] Keep Task A, `INSUFFICIENT_FUNDS`, explicitly pending. State that valid pre-intent underfunding should become a business outcome; malformed/wrong-account data remains a failure and post-intent uncertainty remains unknown.
+- [x] Preserve the distinction between live execution, offline fixture demonstration and recorded evidence. None raises the 3/7 live count. Keep assistant-ui deferred until capability/runtime/API acceptance and user UI direction.
+- [x] Check relative links and search changed documentation for stale claims that #37/#39/#41 are still open or that the four writes are already accepted. Preserve historical quotations where their date and source are clear.
 - [ ] Run `npm run ci`, `npm run validate` and `git diff --check` as required by the repository gates. Commit only the scoped documentation, push, review the new #40 head, then merge the authorized candidate and verify its `dev` CI.
+
+Local candidate gates passed after reconciliation: `npm run ci` completed typecheck and 269 tests across 16 files; `npm run validate`, `git diff --check`, the relative-link scan, and the conflict-marker scan passed. The combined item remains open for the final commit, independent review, publication, exact-head hosted CI, merge, and post-merge `dev` producer.
 
 **Acceptance:** The latest execution gates survive integration, source/evidence claims agree, and the plan clearly names the next runtime task.
 
@@ -236,16 +232,16 @@ git diff --check
 
 ## Execution record and definition of done
 
-Planning completed: current PR states and checks inspected; the #37/#39 conflict paths reproduced without modifying either checkout. Integration has not been executed by writing this document.
+Execution through the PR #40 local candidate is recorded below. PR #40 itself is not yet published, reviewed on its final head, CI-verified, or merged, so the integration point remains in progress.
 
-- [ ] Current baseline and protected-worktree inventory recorded.
-- [ ] #37 reviewed, integrated, merge commit and passing producer recorded.
-- [ ] #39 conflicts resolved without losing read or transfer tests; integrated and verified.
-- [ ] #41 lifecycle protections retained in the combined runtime; integrated and verified.
-- [ ] #40 reconciled with actual source/evidence status; integrated and verified.
-- [ ] Final `dev` SHA, test count and hosted producer recorded.
-- [ ] Original dirty worktrees and unpromoted transfer evidence preserved.
-- [ ] Live capability count remains 3/7; assistant-ui remains deferred.
-- [ ] Task A handoff points to the verified baseline and a separate implementation PR.
+- [x] Current consumed baseline `aa90387244be07b9955b8b5b83eacf4b9f3058a1` recorded.
+- [x] #37 reviewed, integrated as `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`, and its passing merge producer recorded.
+- [x] #39 repair `05f0647`, final head `64c9b11`, merge `fcd87f7fb8d573c8d44d43436310cce07baae06a`, 257 local tests, and passing head/merge producers recorded.
+- [x] #41 repair `3aacfac`, final head `ec5f6a1ea421c7d4b5b345c4d83614eb513d3ec9`, merge `aa90387244be07b9955b8b5b83eacf4b9f3058a1`, 269 local tests, and passing head/merge producers recorded.
+- [ ] #40 final candidate committed, independently reviewed, published, hosted-CI verified, and merged.
+- [ ] Final post-#40 `dev` SHA, test count and hosted producer recorded.
+- [x] Controller verified the protected primary and acceptance worktree dirty-file hashes and status unchanged; the unpromoted transfer evidence remains protected.
+- [x] Live capability count remains `3/7`; assistant-ui remains deferred.
+- [x] Task A handoff points to baseline `aa90387244be07b9955b8b5b83eacf4b9f3058a1` and a separate implementation PR. Valid pre-intent underfunding becomes `business_outcome / INSUFFICIENT_FUNDS`; malformed or wrong-account facts remain failures, and post-intent uncertainty remains `POST_OUTCOME_UNKNOWN`.
 
 The individual point is complete only when all execution gates above are checked with evidence, or explicitly reported as blocked. Writing this plan or opening a PR does not itself complete integration.

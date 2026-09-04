@@ -1,6 +1,6 @@
 # MERIDIAN demonstration runbook
 
-Status: implementation in progress. Three live LLM-discovered read artifacts are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads and the separate unknown posting; never retry that posting.
+Status: acceptance in progress. Three of seven live LLM-discovered capabilities are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads, the genuine dashboard read, the current caller chat/API read and the separate unknown posting; never retry that posting. The current runtime through PRs #37, #39 and #41 is integrated in `dev` at `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; those integrations did not create new live evidence. All new PRs target `dev`, while `master` remains production and untouched.
 
 ## Setup
 
@@ -23,9 +23,9 @@ The default MERIDIAN entry point is `https://web-sample.interface-hiring.com/sig
 
 ## Record the seven capabilities
 
-Stop the API before CLI discovery/replay: the one-process/run/journal shape is a low-complexity demo decision with a concurrency ceiling. Each CLI invocation below needs a fresh `--idempotency-key` for a genuinely new request; reuse the same key after a transport retry. The key identifies discovery as well as replay. Never use a new key to retry an uncertain posting.
+Stop the API before CLI discovery/replay: the filesystem journal permits one process. Each CLI invocation below needs a fresh `--idempotency-key` for a genuinely new request; reuse the same key after a transport retry. The key identifies discovery as well as replay. Never use a new key to retry an uncertain posting.
 
-First select current synthetic data manually from the hosted app. Set the following shell variables to those explicit choices (do not assume seed balances or select the first ambiguous result): `MEMBER`, `LAST_NAME`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, `ADDRESS`. The source and destination must be suitable current shares; the target has accumulated state and some shares are on hold.
+First select current synthetic data manually from the hosted app. Set the following shell variables to those explicit choices (do not assume seed balances or select the first ambiguous result): `MEMBER`, `LAST_NAME`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, `ADDRESS`. The source and destination must be suitable current shares; the target has accumulated state and some shares are on hold. These values are chosen operation facts and require a separate human decision before any posting.
 
 The commands below are recording instructions, not a claim that these recordings have run:
 
@@ -67,7 +67,7 @@ cu discover --profile meridian --operator SUPERVISOR --name meridian-place-hold 
 
 Discovery requires a real interactive terminal for each posting approval. Approval permits automation to execute and record the click. An actual human repair makes the discovery incomplete and requires a fresh complete recording. Runtime passwords resolve from environment configuration; do not pass operator, password, or branch with `--param`.
 
-Inspect every draft artifact. Confirm login references, selectors, table row/column selectors, post-action assertions, outputs, sensitive metadata, and effective mutation risk. MERIDIAN's data tables use `td` headers; use an explicit data-row selector such as `:scope > tbody > tr:nth-child(n+2)` where the live table warrants it. Do not manufacture live provenance; the explicitly labeled offline fixture below is a contingency only.
+Inspect every draft artifact. Confirm login references, selectors, table row/column selectors, post-action assertions, outputs, sensitive metadata, and effective mutation risk. MERIDIAN's data tables use `td` headers; use an explicit data-row selector such as `:scope > tbody > tr:nth-child(n+2)` where the live table warrants it. Do not manufacture provenance or replace missing live behavior with a fixture.
 
 Promotion is a review operation, distinct from approving a transaction:
 
@@ -81,15 +81,15 @@ Promote each reviewed artifact separately. Keep one pinned version per ID in `AR
 
 ```sh
 cu replay --profile meridian --artifact artifacts/meridian-member-record.v1.0.0.json \
-  --params '{"member":"REPLACE_WITH_MEMBER"}' --idempotency-key lookup-1
+  --params "{\"member\":\"${MEMBER}\"}" --idempotency-key lookup-1
 cu serve --profile meridian
 ```
 
-Open `http://127.0.0.1:4180` exactly (the Host check rejects other aliases). Enter the caller or operator API token; it stays in page memory and a reload signs out. Choose a capability and enter its public inputs, or use the current chat entry point. Chat always uses caller authority, including when an operator is logged into the page; the user-selected assistant-ui chat is deferred to the final UI phase.
+Open `http://127.0.0.1:4180` exactly (the Host check rejects other aliases). Enter the caller or operator API token; it stays in page memory and a reload signs out. Choose a capability and enter its public inputs, or use chat. Chat always uses caller authority, including when an operator is logged into the page.
 
 The runtime verifies the operator role on the signed-on menu and binds it to the current target session identity. Posting rechecks that identity, profile detectors, review facts, and the current token. The outgoing native URL-encoded POST must exactly match the inspected form data; JavaScript changes during submission are refused. Unsupported form encodings or field types fail closed. Token values and session identifiers remain private in memory.
 
-The dashboard displays progress, recovery, results, safe evidence, and pending interventions. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum.
+The dashboard displays progress, recovery, results, safe evidence, pending interventions and elapsed time when the API supplies a finite nonnegative duration. Durations under one second use milliseconds; longer durations use seconds, and historical runs without timing keep the timing label absent. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum. The current caller chat/API read and the separate dashboard chat/read both succeeded as reads; neither was a posting.
 
 ## API
 
@@ -112,12 +112,12 @@ Test-only CLI fault injection applies once to the actual operation request, not 
 
 ```sh
 cu replay --profile meridian --artifact artifacts/meridian-funds-transfer.v1.0.0.json \
-  --params '{"member":"REPLACE_WITH_MEMBER","sourceShare":"REPLACE_SOURCE","destinationShare":"REPLACE_DESTINATION","amount":"0.01","memo":"Demo"}' \
-  --inject maintenance --fault-route /members/REPLACE_WITH_MEMBER/transfer \
+  --params "{\"member\":\"${MEMBER}\",\"sourceShare\":\"${SOURCE_SHARE}\",\"destinationShare\":\"${DESTINATION_SHARE}\",\"amount\":\"0.01\",\"memo\":\"Demo\"}" \
+  --inject maintenance --fault-route "/members/${MEMBER}/transfer" \
   --attended --idempotency-key maintenance-test-1
 ```
 
-Repeat with fresh test requests for `validation`, `notfound`, `permission`, `timeout`, and `server`. These flags are absent from chat and ordinary API invocation schemas. Maintenance's observed Continue link returns to the menu; clearing the notice alone does not prove the interrupted capability can finish. It may require bounded human repair. Session expiry and permission errors stop; they do not upgrade roles or log in again.
+Run that command once per scenario by changing `--inject` and the request key to fresh values for `validation`, `notfound`, `permission`, `timeout`, and `server`; inspect each target response and run classification before starting another. These flags are absent from chat and ordinary API invocation schemas. Maintenance's observed Continue link returns to the menu; clearing the notice alone does not prove the interrupted capability can finish. It may require bounded human repair. Session expiry and permission errors stop; they do not upgrade roles or log in again. Never use a new key to retry an uncertain or `POST_OUTCOME_UNKNOWN` operation.
 
 The journal lives at `EVIDENCE_DIR/journal` with signed records, exclusive creation, atomic replacement and file/directory synchronization. On restart, incomplete undispatched runs become interrupted; dispatching runs become `POST_OUTCOME_UNKNOWN`. No browser action resumes. The same key still identifies that run. A separate read-only inquiry can help investigate; it does not rewrite the original outcome. This is request deduplication, not exactly-once execution at a UI-only target.
 
@@ -131,12 +131,16 @@ npm run validate
 git diff --check
 ```
 
-`test/meridian.test.ts` contains small offline fixtures for request identity, approvals, live-control checks, private credential resolution, structured extraction, masking and HTTP auth. The existing `test/e2e.test.ts` fixture was verified on September 4, 2026 with `npx vitest run test/e2e.test.ts`: 1 file/1 test passed using local `target-app`, a scripted OpenAI stand-in and real local Chromium. It covers discovery → record → deterministic replay with a different member, not hosted MERIDIAN/API/chat/dashboard or a live LLM. Existing mock fixtures remain under `test/fixtures/` and can be exercised with `npm test`; they are not a second MERIDIAN app or proof of live coverage.
+`test/meridian.test.ts` contains small offline fixtures for request identity, approvals, live-control checks, private credential resolution, structured extraction, masking and HTTP auth. Existing mock fixtures remain under `test/fixtures/` and can be exercised with `npm test`. They are not a second MERIDIAN app or proof of live coverage.
+
+The published Task9a/9b checkpoint at `ca5d99a21e7274445eb119a71bc8c61f548fa9a7` passed 199 local tests across 15 files, typecheck, validation and diff-check, plus hosted workflow `33854138902` with producer `100963404693`. Task9d's focused dashboard browser check was red on the missing timing label, then green after the shared renderer repair; it covers known elapsed time, true zero and missing historical timing. No full suite rerun is claimed for the new head; its required typecheck, diff-check and controller-owned pre-push/hosted checks remain pending. The earlier full 198-test run belongs to `4ec9b933c9e39fcf471c52f7f5b2bcf7479f1457` and is historical.
+
+Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors (including last-name ambiguity and teller/supervisor holds), check token rejection, complete a separately approved chat/API/dashboard write rehearsal, exercise same-browser repair and approval/handoff keyboard controls, and inspect hosted CI on the final SHA. The recorded dashboard read/reload/Refresh/Send/evidence/role checks do not close these remaining gates, and none may be inferred from the offline suite alone.
 
 ## Explicit fallback demo modes
 
-Label each demonstration as **live**, **offline fixture**, or **recorded evidence**. In **live** mode, use hosted MERIDIAN, the real model, current facts and separate human approval for each post. In **offline fixture** mode, reuse the verified `test/e2e.test.ts` fixture and existing sanitized saved evidence; add no mock app or service. It exercises the local core flow only and does not count toward live coverage. In **recorded evidence** mode, show the sanitized files under `evidence/` and `live-evidence.md` without claiming a new run.
+Label each demonstration as **live**, **offline fixture**, or **recorded evidence**. In **live** mode, use hosted MERIDIAN, the real model, current facts and separate human approval for each post. In **offline fixture** mode, reuse the verified `test/e2e.test.ts` fixture and existing sanitized saved evidence; add no mock app or service. It exercises the local core flow only and does not count toward live coverage. In **recorded evidence** mode, show the sanitized files under `evidence/` and [live evidence](live-evidence.md) without claiming a new run.
 
 If the live model alone is unavailable, use the existing API/operator invocation path to replay an already approved artifact with a fresh idempotency key for each genuinely new replay while labeling chat/discovery unavailable. Reuse a key only for a transport retry of that exact invocation. If the hosted target is unavailable, show recorded evidence and run the offline fixture only if a browser is available; if the browser is also unavailable, use evidence only and do not claim the fixture ran. Never auto-switch during a live write, retry an unknown posting, or change its preserved run, request key, or terminal outcome. Independent build and documentation work may continue while live acceptance is blocked.
 
-Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors (including last-name ambiguity and teller/supervisor holds), check token rejection, rehearse chat/API/dashboard together, and inspect hosted CI on the final SHA. These are full-completion gates; the offline fixture and recorded-evidence contingencies do not satisfy them.
+Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors, check token rejection, rehearse the accepted API/operator controls, and inspect hosted CI on the final SHA. Assistant-ui remains the last phase after capability/runtime/API acceptance and user direction. The offline fixture and recorded-evidence contingencies do not satisfy these gates.

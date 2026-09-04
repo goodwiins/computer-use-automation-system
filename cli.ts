@@ -11,7 +11,7 @@ import { makeLLMClient } from './src/agent/client.js';
 import { createRuntime, operatorContext } from './src/runtime/run.js';
 import { Journal, RequestError, validateIdempotencyKey, type JournalRecord } from './src/runtime/journal.js';
 import { loadProfile, profilePolicy, FaultScenario } from './src/runtime/profile.js';
-import { applyMeridianContract, meridianContracts } from './src/runtime/contracts.js';
+import { applyMeridianContract, assertTransferOutputs, meridianContracts, transferFactsFromParams } from './src/runtime/contracts.js';
 import { serve } from './src/server/http.js';
 import { runDiscovery } from './src/agent/loop.js';
 import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder.js';
@@ -120,6 +120,7 @@ async function discover(argv: string[]) {
   const serverParams = operator ? ['operator', 'password', 'branch'] : [];
   for (const key of serverParams) { if (key in params) fatal(`--param cannot override server parameter ${key}`); params[key] = `{{${key}}}`; }
   if (operator) sensitive.push('password');
+  const expectedTransfer = meridian && name === 'meridian-funds-transfer' ? transferFactsFromParams(params) : undefined;
   const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
   let record: JournalRecord | undefined;
   let runtime: ReturnType<typeof createRuntime> | undefined;
@@ -146,7 +147,7 @@ async function discover(argv: string[]) {
       const { surface, browser, logger, session } = runtime;
       updateJournal(journal, record?.runId, 'running');
       console.log(`discovery run ${logger.runId} → ${logger.dir}`);
-      const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. Never choose the first of ambiguous matches.` : goal;
+      const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. ${name === 'meridian-funds-transfer' ? 'The transaction output must declare exactly one row with canonical columns member, sourceShare, destinationShare, amount, memo, confirmation; use type money only for amount and type string for the other columns, and mark every output and column sensitive. Observe each column selector and header handling from this recording; do not invent them.' : ''} Never choose the first of ambiguous matches.` : goal;
       const result = await runDiscovery(discoveryGoal, entry, params, policy.allowedOrigins, {
         surface,
         logger,
@@ -159,6 +160,7 @@ async function discover(argv: string[]) {
         escalate: headful
           ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
           : undefined,
+        validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : undefined,
       });
 
       if (result.status === 'success') {
@@ -189,7 +191,8 @@ async function discover(argv: string[]) {
         console.log(`  outputs : ${JSON.stringify(runtime.redactor.redact(result.outputs))}`);
         console.log(`  artifact: ${path} (status: draft — review, then run with --approve to promote)`);
       } else {
-        logger.writeResult({ status: result.status, stopReason: result.stopReason });
+        const code = result.stopReason === 'RUN_ABORTED' || result.stopReason === 'POST_OUTCOME_UNKNOWN' ? result.stopReason : undefined;
+        logger.writeResult(code ? { status: 'failure', failure: { code } } : { status: result.status });
         console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
         process.exitCode = 1;
       }
