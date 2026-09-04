@@ -38,11 +38,17 @@
 | PR #34 | `cd3ec9e7c5141d8e69a6c9a13043d0c433016113` | Draft implementation; base is currently `master`; hosted Typecheck and tests succeeded |
 | PR #35 | `338734d16e7fc4d0f30f239886660e0f1af30a6c` | Safety/evaluation follow-up stacked on #34; hosted Typecheck and tests succeeded |
 
-These are inspected snapshots, not authorization to merge. Refresh refs, reviews, and checks at execution. The #34/#35 code paths below are absent from current `dev` until integrated.
+These are inspected historical snapshots, not authorization to merge. Refresh refs, reviews, and checks at execution; the current integrated baseline is recorded below.
 
 ## Current integrated baseline — September 4, 2026
 
-Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`), and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on the same SHA. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
+Task 1 is now integrated into `dev` at `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; its tree equals the reviewed `def4b38a2f906f725813f5c89563f3fe82e31140`. The exact PR-head checks passed at `33847936549` (producer `100943958989`) on `def4b38a2f906f725813f5c89563f3fe82e31140`, and the subsequent dev merge check passed at `33848572273` (producer `100945942684`) on `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`; the resulting trees are equal. Task 4's `codex/meridian-capability-acceptance` branch starts from this commit. These CI results validate the integrated code baseline; they do not establish live capability behavior.
+
+### Current repair and integration status
+
+- Task 1 — complete: reviewed PR #34 repairs were integrated into `dev` at `4252cb7`; both the reviewed PR head and the resulting dev SHA passed their respective hosted CI checks above.
+- Task 2 — complete: CLI journal/resource and terminal-outcome repairs landed through `9a3e24d` after the scoped review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
+- Task 3 — complete: click-budget and trusted-step-reporting repairs landed through `47537d2` after the final deadline review; the recorded focused, CI, typecheck, validate and diff-check gates passed.
 
 Read [PR #34](https://github.com/goodwiins/computer-use-automation-system/pull/34), [PR #35](https://github.com/goodwiins/computer-use-automation-system/pull/35), and their `docs/meridian/live-evidence.md`. Existing evidence reports:
 
@@ -276,8 +282,10 @@ cu() { node --env-file=.env --import tsx cli.ts "$@"; }
 
 Stop `cu serve` before any CLI discovery/replay. Use an interactive terminal for discovery's approval gate. Choose current synthetic member/share/contact inputs with the operator and set `MEMBER`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, and `ADDRESS` locally. These are selected operation facts, not inferred defaults; values must be known before a write can be proposed for approval.
 - [x] Run the supplied fresh sign-on preflight at source `7abda4c326260d917795fe75320af99a7233bc6d` (`ad12819b-f07a-41ff-9710-bedff1afe1a5`, `TELLER`, evaluator pass) without repeating it, then run fresh member inquiry `b60ef7b1-a76f-4321-b825-540f8c7ff7d6` and member record `e4850bd4-6c63-42c9-8719-aaefef1c74e4` reads at source `4252cb70396b3f30f5c126d2ed2e164054a2bcfe`. Both reads succeeded with evaluator pass, 10 attempts, 0 mutation intents, and no violations or incomplete checks.
-- [x] Inspect the sanitized read transitions: sign-on operator/password/branch fields and POST, inquiry by/q fields and GET Search, and record GET Select plus shares-table extraction. No write form, review transition or posting control was submitted; write-route token/role checks and concrete eligible-share choices remain incomplete gates. The historical unknown operation stayed terminal `POST_OUTCOME_UNKNOWN` and was not retried.
-- [x] Commit the artifact check and sanitized readiness note after the final integrated gates: `773d818`. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
+- [x] Inspect the sanitized read transitions: sign-on operator/password/branch fields and POST, inquiry by/q fields and GET Search, and record GET Select plus shares-table extraction. No write form was submitted, and no review transition or posting control was clicked; write-route token/role checks and concrete eligible-share choices remain incomplete gates. The historical unknown operation stayed terminal `POST_OUTCOME_UNKNOWN` and was not retried.
+- [x] Record the controller's separate manual read-only inspection of unsubmitted write forms: transfer, new-share, contact-update and hold native POST destinations, controls and hidden token presence are documented in [live evidence](../meridian/live-evidence.md). The teller hold page warning is not a demonstrated server or guarded denial.
+- [ ] Inspect each chosen write's review transition and final posting control with fresh facts and its separate approval. The controller inspection did not click `Continue`, `Save Changes`, `Apply Hold` or any final posting control; no write artifact, approval or posting is established.
+- [x] Commit the artifact check and sanitized readiness note after the final integrated gates. Existing contract tests establish the baseline; do not manufacture a failing test when the behavior already exists.
 
 ## Live-operation rules for Tasks 5–8
 

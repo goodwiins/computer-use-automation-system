@@ -45,7 +45,18 @@ Task 4's fresh reads ran from the integrated `dev` tree at source SHA `4252cb703
 
 The current sanitized control observations show sign-on `operator` (text), `password` (password), and `branch` (select), followed by the `Sign On` POST. Inquiry used `by` (select), `q` (text), and a GET `Search`; record selection used a GET `Select` and extracted the shares table while excluding its header row. These read controls have no transaction token requirement. The current session used teller context; token values and session identifiers were never persisted.
 
-The record read confirms that a current shares table was extracted, but strict evidence protection omits member, share, balance and status values from replay results and committed documentation. The signed private journal and ignored task-private evidence retain the request identity and selected read fact for controller use; no raw output was copied into this document. No source, destination or hold share was selected, and no write form, review transition, or posting control was submitted. Write-route token presence, native POST facts, role checks and concrete eligible-share choices therefore remain gates for the separately approved write tasks.
+The record read confirms that a current shares table was extracted, but strict evidence protection omits member, share, balance and status values from replay results and committed documentation. The signed private journal and ignored task-private evidence retain the request identity and selected read fact for controller use; no raw output was copied into this document. No source, destination or hold share was selected for a proposed operation. No write form was submitted, and no review transition or posting control was clicked. Review-time token revalidation, role checks, concrete eligible-share choices and per-post approval therefore remain gates for the separately approved write tasks.
+
+The controller performed a separate manual read-only inspection of unsubmitted forms on the hosted MERIDIAN v4.2.1 application at `2026-09-04T07:36:36Z`–`2026-09-04T07:38:34Z`. It observed both HOLD and OPEN shares, with the selected operation facts retained privately. The initial native write-form facts were:
+
+| Page | Native method and action | Observed controls | Token presence |
+|---|---|---|---|
+| Transfer | `POST /members/:id/transfer/review` | source/destination selects, amount and memo inputs, `Continue` | hidden token present |
+| New share | `POST /members/:id/open-share/review` | type select (`S0001`, `S0070`, `MMKT`, `CERT`), deposit input, `Continue` | hidden token present |
+| Contact update | `POST /members/:id/update` | email, phone and address inputs, `Save Changes` | hidden token present |
+| Hold | `POST /members/:id/hold/review` | share/reason selects, notes input, `Continue` | hidden token present |
+
+The teller session displayed `RESTRICTED FUNCTION - SUPERVISOR OVERRIDE REQUIRED` on the hold page while still showing its form. This is a restriction warning only; no teller POST was attempted, so it does not prove a server or guarded denial. No `Continue`, `Save Changes`, `Apply Hold` or final posting control was clicked. No token value, password, cookie, SID or contact value was read into the output, no mid-flow reauthentication occurred, and no global injection setting changed. Actual selected review transitions and final current posting facts remain unverified for Tasks 5–8; this inspection does not establish a write artifact, approval or posting.
 
 Before each read, the private journal had no active lock and no MERIDIAN API listener was running; both runs closed with terminal `success` records. The historical open-share discovery `222ebecd-ca02-4960-a875-c2f2f76e0927` remains terminal `POST_OUTCOME_UNKNOWN`; these separate read-only runs did not retry it or alter its journal state.
 
