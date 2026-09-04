@@ -1,3 +1,4 @@
+import { evaluateRun } from '../src/evidence/evaluate.js';
 import { hintToDescriptor } from '../src/agent/tools.js';
 import { extractText } from '../src/artifact/schema.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -37,13 +38,13 @@ const origin = 'https://web-sample.interface-hiring.com';
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
 const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
-function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}) {
+function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void) {
   let live = structuredClone(control);
   const dispatch = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
   const surface: Surface = { start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }), currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch, readText: async () => ({ text: 'ok', report: await dispatch() }), isTextVisible: async text => text === 'done', describeTarget: async t => t, screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect: async () => structuredClone(live), dispatch }), ...overrides };
   const session = new ControlSession();
   const beforeDispatch = vi.fn();
-  return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
+  return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
 }
 
 describe('durable request identity', () => {
@@ -354,4 +355,44 @@ it('requires every server-reference login action before discovery submits sign-o
   expect(dispatch).not.toHaveBeenCalled();
   expect(messages[1]).toContain('Record the explicit server-reference');
   expect(messages.join('')).not.toContain('runtime-secret');
+});
+
+
+it.each([false, true])('evaluates real runtime attempts with observer failure and uncertain=%s', async uncertain => {
+  const dir = temp(); const journal = new Journal(join(dir, 'journal'), key);
+  const record = journal.reserve('test', 'request', 'hold', '1.0.0', {});
+  const logger = new RunLogger('replay', new Redactor(), dir, true, record.runId, async () => { throw new Error('offline telemetry'); });
+  const dispatch = vi.fn(async () => { if (uncertain) throw new Error('lost response'); return { strategyUsed: 0, kind: 'role', matches: 1 }; });
+  const run = guarded({ prepareClick: async () => ({ inspect: async () => control, dispatch }) }, async () => true,
+    { runId: record.runId, beforeDispatch: () => journal.update(record.runId, 'dispatching') }, (event, data) => logger.log(event, data));
+  const artifact = CapabilityArtifact.parse({ schemaVersion: 2, id: 'hold', name: 'hold', description: 'hold', version: '1.0.0', status: 'approved', app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] }, parameters: [], outputs: [], steps: [{ id: 'post', action: 'click', intent: 'post', target, risk: 'read' }], successCondition: { kind: 'textVisible', text: 'done' }, provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' } });
+  const escalate = vi.fn(async () => 'retry' as const);
+  try {
+    journal.update(record.runId, 'running');
+    const result = await runReplay(artifact, {}, { surface: run.surface, logger, policy, escalate });
+    journal.update(record.runId, result.status);
+    expect(dispatch).toHaveBeenCalledTimes(1); expect(escalate).not.toHaveBeenCalled();
+    const evidence = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8');
+    expect(evaluateRun(evidence, journal.records.get(record.runId)!)).toMatchObject({ status: uncertain ? 'unknown' : 'pass', mutationIntents: 1, riskDisagreements: 1 });
+    expect(evidence).not.toContain(origin);
+    const service = new InvocationService(journal, policy, profile, dir, [], temp());
+    // A stale in-memory presentation must never override terminal journal truth.
+    service.live.set(record.runId, { state: 'failure', inputs: {}, started: 0, approval: new Approval(new ControlSession(), () => {}, Date.now() + 1000) });
+    expect(service.get('operator', record.runId).state).toBe(uncertain ? 'POST_OUTCOME_UNKNOWN' : 'success');
+  } finally { journal.close(); }
+});
+
+
+it('assigns a fresh guarded attempt to an operator retry of the same replay step', async () => {
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  let count = 0;
+  const dispatch = async () => { if (++count === 1) throw new Error('read interrupted'); return { strategyUsed: 0, kind: 'role', matches: 1 }; };
+  const live = { ...control, submit: false, method: 'GET', destination: `${origin}/members` };
+  const run = guarded({ prepareClick: async () => ({ inspect: async () => live, dispatch }) }, async () => true, {}, (event, data) => logger.log(event, data));
+  const artifact = CapabilityArtifact.parse({ schemaVersion: 2, id: 'inquiry', name: 'inquiry', description: 'inquiry', version: '1.0.0', status: 'approved', app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] }, parameters: [], outputs: [], steps: [{ id: 'read', action: 'click', intent: 'read', target, risk: 'read' }], successCondition: { kind: 'textVisible', text: 'done' }, provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' } });
+  const result = await runReplay(artifact, {}, { surface: run.surface, logger, policy, escalate: async () => 'retry' });
+  expect(result.status).toBe('success'); expect(count).toBe(2);
+  const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(events.filter(e => e.event === 'action.start' && e.action === 'click').map(e => e.attempt)).toEqual([2, 3]);
+  expect(events.filter(e => e.event === 'action.end' && e.action === 'click').map(e => e.status)).toEqual(['failure', 'success']);
 });

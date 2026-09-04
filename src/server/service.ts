@@ -74,8 +74,8 @@ export class InvocationService {
         return decision === 'approve';
       },
       beforeDispatch: () => this.journal.update(record.runId, 'dispatching'), onClose: () => approval.cancel(),
-      onEvent: (event, data) => {
-        if (event === 'step.start') state.step = String(data.stepId);
+      onEvent: (event) => {
+        if (event === 'action.start') state.step = runtime.surface.currentStep;
         if (event === 'detector.recovering') state.state = 'recovering';
         if (event === 'step.ok') state.state = 'running';
       },
@@ -92,8 +92,8 @@ export class InvocationService {
       const secrets = new Redactor();
       if (context) secrets.addSensitiveValues([context.password]);
       state.result = secrets.redact(result);
-      state.state = result.status;
-      this.journal.update(record.runId, result.status === 'failure' && runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : result.status);
+      state.state = result.status === 'failure' && runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : result.status;
+      this.journal.update(record.runId, state.state as 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN');
     }).catch(() => {
       state.state = runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure';
       this.journal.update(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
@@ -111,7 +111,7 @@ export class InvocationService {
     const result = live?.result;
     const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
-      state: live?.state ?? record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
+      state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       intervention: principal === 'operator' ? live?.approval.pending : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
       result: safeResult, sensitiveValuesUnavailable: !live, evidence };
   }

@@ -41,7 +41,7 @@ export function createRuntime(options: {
     strict ? { profile: options.profile!, session, deadline, runId: logger.runId, artifact: options.artifact, version: options.version,
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
-    } : undefined);
+    } : undefined, (event, data) => logger.log(event, data));
   const timer = setTimeout(() => { options.onClose?.(); void surface.close(); }, 600_000);
   timer.unref();
   return { surface, browser, logger, session, redactor, promptRedactor, deadline,

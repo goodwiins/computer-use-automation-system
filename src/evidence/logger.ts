@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Redactor } from '../safety/redact.js';
 import type { Surface } from '../surface/types.js';
+import { safeEvent } from './safe-event.js';
 
 export class RunLogger {
   readonly runId: string;
@@ -28,10 +29,12 @@ export class RunLogger {
   }
 
   log(event: string, data: Record<string, unknown> = {}): void {
-    this.onEvent?.(event, data);
-    if (this.strict) data = Object.fromEntries(Object.entries(data).filter(([key]) => ['stepId', 'action', 'risk', 'status', 'kind', 'ms', 'classification', 'detector', 'outcomeCode', 'code', 'isRetry', 'warning', 'approvalId', 'expiresAt', 'decision'].includes(key)));
-    const entry = this.redactor.redact({ ts: new Date().toISOString(), seq: this.seq++, event, ...data });
+    const safe = safeEvent(event, data);
+    const entry = this.redactor.redact({ ...(this.strict ? safe.data : data), ts: new Date().toISOString(), seq: this.seq++, event: this.strict ? safe.event : event });
     appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 });
+    // Observers receive only typed metadata, after persistence. Their failures
+    // cannot turn a completed browser action into a retryable execution error.
+    try { void Promise.resolve(this.onEvent?.(safe.event, Object.freeze({ ...safe.data }))).catch(() => {}); } catch { /* optional observer */ }
   }
 
   async screenshot(surface: Surface, label: string): Promise<string> {

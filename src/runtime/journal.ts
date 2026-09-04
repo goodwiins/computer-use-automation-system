@@ -19,6 +19,19 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Authenticate a snapshot without acquiring a lock or recovering/mutating it. */
+export function readJournalRecord(dir: string, runId: string, key: string): JournalRecord {
+  z.string().uuid().parse(runId);
+  if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
+  const envelope = JSON.parse(readFileSync(join(dir, `${runId}.json`), 'utf8'));
+  const actual = Buffer.from(createHmac('sha256', key).update(canonical(envelope.record)).digest('hex'));
+  const signature = Buffer.from(String(envelope.signature));
+  if (actual.length !== signature.length || !timingSafeEqual(actual, signature)) throw new Error('Journal authentication failed');
+  const record = RecordSchema.parse(envelope.record);
+  if (record.runId !== runId) throw new Error('Journal filename mismatch');
+  return record;
+}
+
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
 export class Journal {
   readonly records = new Map<string, JournalRecord>();
@@ -46,12 +59,7 @@ export class Journal {
     } finally { closeSync(startupFd); unlinkSync(startup); }
     try {
       for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
-        const envelope = JSON.parse(readFileSync(join(dir, file), 'utf8'));
-        const actual = Buffer.from(this.mac(envelope.record));
-        const signature = Buffer.from(String(envelope.signature));
-        if (actual.length !== signature.length || !timingSafeEqual(actual, signature)) throw new Error('Journal authentication failed');
-        const record = RecordSchema.parse(envelope.record);
-        if (file !== `${record.runId}.json`) throw new Error('Journal filename mismatch');
+        const record = readJournalRecord(dir, file.slice(0, -5), this.key);
         this.records.set(record.runId, record);
         if (['reserved', 'running', 'dispatching'].includes(record.state)) {
           this.update(record.runId, record.state === 'dispatching' ? 'POST_OUTCOME_UNKNOWN' : 'interrupted');
@@ -85,6 +93,14 @@ export class Journal {
   update(runId: string, state: JournalRecord['state']) {
     const record = this.records.get(runId);
     if (!record) throw new Error('Unknown journal run');
+    if (!['reserved', 'running', 'dispatching'].includes(record.state)) {
+      if (record.state === state) return;
+      throw new Error('Terminal journal state cannot be changed');
+    }
+    if (record.state === 'dispatching') {
+      if (state === 'reserved' || state === 'running') throw new Error('Dispatch intent cannot be cleared');
+      if (state === 'failure' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
+    }
     this.persist({ ...record, state });
   }
   close() { if (!this.closed) { this.closed = true; unlinkSync(this.lock); this.syncDir(); } }
