@@ -24,6 +24,7 @@ import { loadProfile, type LiveControl } from '../src/runtime/profile.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { Redactor } from '../src/safety/redact.js';
 import { runReplay } from '../src/replay/executor.js';
+import { InsufficientFundsError } from '../src/replay/outcomes.js';
 import { promoteToApproved } from '../src/artifact/promote.js';
 import type { Surface } from '../src/surface/types.js';
 import { createApp } from '../src/server/http.js';
@@ -464,6 +465,17 @@ describe('MERIDIAN funds-transfer semantic checks', () => {
     expect(() => assertTransferEligibility(request, '9001', rows)).not.toThrow();
   });
 
+  it('classifies only valid underfunding as insufficient funds', () => {
+    expect(() => assertTransferEligibility(request, '9001', [
+      { ...rows[0]!, balance: '0.99' }, rows[1]!,
+    ])).toThrow(InsufficientFundsError);
+    for (const balance of ['not-money', '']) {
+      expect(() => assertTransferEligibility(request, '9001', [
+        { ...rows[0]!, balance }, rows[1]!,
+      ])).toThrow('Transfer facts failed validation');
+    }
+  });
+
   it.each([
     ['wrong member', '9999', rows],
     ['duplicate source row', '9001', [rows[0]!, rows[0]!, rows[1]!]],
@@ -545,6 +557,58 @@ describe('MERIDIAN funds-transfer semantic checks', () => {
       ['amount', 'money', true], ['memo', 'string', true], ['confirmation', 'string', true],
     ]);
   });
+});
+
+it.each([false, true])('keeps funds outcome phase correct: intent=%s', async afterIntent => {
+  const artifact = applyMeridianContract(transferArtifact());
+  artifact.status = 'approved';
+  artifact.steps = artifact.steps.filter(step => step.id === 'post');
+  const params = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B',
+    amount: '1.00', memo: 'fixture', operator: 'SUPER1', password: 'secret', branch: 'MAIN-001' };
+  const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
+  const surface: Surface = {
+    mutationDispatched: false,
+    start: async () => {}, navigate: async () => {},
+    currentUrl: () => `${origin}/members/9001`,
+    frameUrls: () => [`${origin}/members/9001`],
+    observe: async () => ({ url: `${origin}/members/9001`, title: '', frames: [] }),
+    click: vi.fn(async () => {
+      surface.mutationDispatched = afterIntent;
+      throw new InsufficientFundsError();
+    }),
+    fill: async () => report, select: async () => report,
+    readText: async () => ({ text: '', report }),
+    isTextVisible: async () => false, describeTarget: async descriptor => descriptor,
+    screenshot: async () => {}, close: async () => {},
+  };
+  const escalate = vi.fn(async () => 'abort' as const);
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  const replay = await runReplay(artifact, params, { surface, logger, policy, escalate });
+  expect(replay).toMatchObject(afterIntent
+    ? { status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } }
+    : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+  expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toMatchObject(
+    afterIntent ? { status: 'failure' } : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+  expect(surface.click).toHaveBeenCalledOnce();
+  expect(escalate).not.toHaveBeenCalled();
+
+  surface.mutationDispatched = false;
+  vi.mocked(surface.click).mockClear();
+  const create = vi.fn(async () => ({ choices: [{ message: {
+    role: 'assistant', content: '', tool_calls: [{ id: 'funds-check', type: 'function',
+      function: { name: 'click', arguments: JSON.stringify({ nameAttr: 'submit', reason: 'transfer', risk: 'irreversible' }) } }],
+  } }] }));
+  const openai = { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  const discovery = await runDiscovery('transfer', `${origin}/members/9001`, params, [origin], {
+    surface, logger: new RunLogger('discovery', new Redactor(), temp(), true),
+    openai, model: 'fixture', maxSteps: 3, escalate,
+  });
+  expect(discovery).toMatchObject(afterIntent
+    ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
+    : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+  expect(create).toHaveBeenCalledOnce();
+  expect(surface.click).toHaveBeenCalledOnce();
+  expect(escalate).not.toHaveBeenCalled();
 });
 
 describe('MERIDIAN guarded transfer path', () => {
@@ -640,6 +704,18 @@ describe('MERIDIAN guarded transfer path', () => {
     await expect(harness.run.surface.click(target)).rejects.toThrow(/transfer facts failed validation/i);
     expect(harness.run.dispatch).toHaveBeenCalledOnce();
     expect(harness.gate).not.toHaveBeenCalled();
+  });
+
+  it('stops underfunding before any approval or mutation intent', async () => {
+    const harness = transferHarness([{ ...eligibleRows[0]!, balance: '0.99' }, ...eligibleRows.slice(1)]);
+    await harness.run.surface.start(`${origin}/members`);
+    harness.setUrl(harness.memberUrl);
+    harness.setLive({ url: harness.memberUrl, destination: harness.memberUrl,
+      method: 'GET', control: 'Select member', submit: false, facts: {} });
+    await expect(harness.run.surface.click(target)).rejects.toThrow(InsufficientFundsError);
+    expect(harness.gate).not.toHaveBeenCalled();
+    expect(harness.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(harness.run.surface.mutationDispatched).toBe(false);
   });
 
   it('keeps member eligibility extraction inside the member-selection action lifecycle', async () => {

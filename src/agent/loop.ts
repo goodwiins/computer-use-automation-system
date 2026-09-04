@@ -10,6 +10,7 @@ import type { InterventionDecision, InterventionRequest } from '../escalation/se
 import type { RunLogger } from '../evidence/logger.js';
 import type { Surface } from '../surface/types.js';
 import { RunAbortedError } from '../surface/guarded.js';
+import { InsufficientFundsError } from '../replay/outcomes.js';
 import { DISCOVERY_TOOLS, hintToDescriptor, systemPrompt, type TargetHint } from './tools.js';
 
 export interface TraceEntry {
@@ -31,12 +32,14 @@ export interface TraceEntry {
 }
 
 export interface DiscoveryResult {
-  status: 'success' | 'escalated' | 'stopped';
+  status: 'success' | 'escalated' | 'stopped' | 'business_outcome';
   trace: TraceEntry[];
   outputs: Record<string, OutputValue>;
   summary?: string;
   finalUrl: string;
   stopReason?: string;
+  outcomeCode?: string;
+  detail?: string;
 }
 
 export interface DiscoveryDeps {
@@ -228,6 +231,10 @@ export async function runDiscovery(
       consecutiveFailures = 0;
     } catch (err) {
       if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
+      if (err instanceof InsufficientFundsError) {
+        return finish('business_outcome', err.outcomeCode, undefined, undefined,
+          { outcomeCode: err.outcomeCode, detail: err.message });
+      }
       if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED');
       consecutiveFailures++;
       const message = err instanceof Error ? err.message : String(err);
@@ -260,17 +267,16 @@ export async function runDiscovery(
   }
   return finish('stopped', `max steps (${deps.maxSteps}) reached`);
 
-  function finish(status: DiscoveryResult['status'], stopReason?: string, summary?: string, finalUrl = surface.currentUrl()): DiscoveryResult {
+  function finish(
+    status: DiscoveryResult['status'], stopReason?: string, summary?: string,
+    finalUrl = surface.currentUrl(),
+    outcome?: { outcomeCode: string; detail: string },
+  ): DiscoveryResult {
     if (status === 'success') deps.validateCompletion?.(outputs);
     const result: DiscoveryResult = {
-      status,
-      trace,
-      outputs,
-      summary,
-      finalUrl,
-      stopReason,
+      status, trace, outputs, summary, finalUrl, stopReason, ...outcome,
     };
-    logger.log('discovery.finish', { status, stopReason, outputs, steps: trace.length });
+    logger.log('discovery.finish', { status, stopReason, outputs, steps: trace.length, ...outcome });
     return result;
   }
 }

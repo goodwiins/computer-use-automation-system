@@ -1,4 +1,12 @@
 import type { OutputValue } from '../artifact/schema.js';
+
+export class InsufficientFundsError extends Error {
+  readonly outcomeCode = 'INSUFFICIENT_FUNDS';
+  constructor() {
+    super('Insufficient available balance in the source share.');
+    this.name = 'InsufficientFundsError';
+  }
+}
 // The replay result contract. The central distinction — the one the brief
 // calls "the most common design mistake" — is that a business outcome
 // ("no such member") is a first-class *answer*, not a failure. Callers
