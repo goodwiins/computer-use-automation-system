@@ -1,4 +1,4 @@
-import type { LiveControl } from '../runtime/profile.js';
+import type { FrameContext, LiveControl } from '../runtime/profile.js';
 // The Surface is the seam between "how we perceive/act on a UI" and
 // everything above it (discovery loop, replay executor, recorder). The
 // artifact schema speaks only in Surface terms — so a desktop implementation
@@ -51,6 +51,10 @@ export interface Surface {
   start(entryUrl: string): Promise<void>;
   observe(): Promise<Observation>;
   currentUrl(): string;
+  /** Identity of the current working frame, when the surface has frame state. */
+  currentFrame?(): FrameContext | undefined;
+  /** Identity of the frame used by the most recent target resolution. */
+  lastResolvedFrame?(): FrameContext | undefined;
   /** URL of every live frame (top included) — bounds checks must cover all of them. */
   frameUrls(): string[];
 

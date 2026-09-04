@@ -29,6 +29,7 @@ import { PolicyViolationError, RunAbortedError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
 import { checkDetectors, matchDetector } from './detectors.js';
 import type { ReplayResult, StepFailure } from './outcomes.js';
+import { assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
 
 export interface ReplayDeps {
   surface: Surface; // must already be policy-guarded
@@ -50,6 +51,7 @@ export async function runReplay(
 
   // Per-tenant defaults (from an overlay) fill in under the caller's params.
   params = { ...artifact.paramDefaults, ...params };
+  const transfer = artifact.app.appId === 'meridian' ? transferFactsFromParams(params) : undefined;
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
@@ -368,6 +370,10 @@ export async function runReplay(
 
   for (const output of artifact.outputs) {
     if (artifact.schemaVersion === 2 && !validOutput(output, outputs[output.name])) return fail({ stepId: '(outputs)', intent: 'validate output types', expected: output.type, observed: 'Output does not satisfy its declared contract' });
+  }
+  if (transfer) {
+    try { assertTransferOutputs(transfer, outputs); }
+    catch { return fail({ stepId: '(outputs)', intent: 'verify transfer completion details', expected: 'current transfer details matching the request', observed: 'Output does not satisfy its declared contract' }); }
   }
   const shot = await logger.screenshot(surface, 'success');
   logger.log('replay.success', { outputs, screenshot: shot });
