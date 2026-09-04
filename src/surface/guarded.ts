@@ -1,16 +1,59 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile } from '../runtime/profile.js';
+import { assertTransferEligibility, assertTransferFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
 // Policy enforcement as a Surface decorator. Every actor — the LLM during
 // discovery, the deterministic replayer, a future caller — goes through the
 // same gate, so no code path can act outside the allowlist.
 
-import { RiskClass, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
+import { moneyCents, RiskClass, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ResolutionReport, Surface } from './types.js';
 
 const DEFAULT_TIMEOUT = 10_000;
+const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
+const MEMBER_ROUTE = /^\/members\/(\d+)$/;
+const REVIEW_FACTS = {
+  member: 'review:Member:',
+  sourceShare: 'review:From:',
+  destinationShare: 'review:To:',
+  amount: 'review:Amount:',
+  memo: 'review:Memo:',
+} as const;
+const DISPLAY_MONEY = /^(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}$/;
+const DISPLAY_SHARE = /^([0-9]{1,12}-[A-Za-z0-9-]+) \(\$((?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2})\)$/;
+const DISPLAY_MEMBER = /^([0-9]{1,12}) - (.+)$/;
+
+function transferReviewFailed(): never {
+  throw new Error('Transfer review facts are missing or ambiguous');
+}
+
+function parseDisplayMoney(value: string): string {
+  const match = /^\$([\s\S]+)$/.exec(value.trim());
+  if (!match || !DISPLAY_MONEY.test(match[1]!)) return transferReviewFailed();
+  const canonical = match[1]!.replaceAll(',', '');
+  try { moneyCents(canonical); } catch { return transferReviewFailed(); }
+  return canonical;
+}
+
+function parseDisplayMember(value: string, expected: string): string {
+  const match = DISPLAY_MEMBER.exec(value.trim());
+  if (!match || match[1] !== expected || !match[2]!.trim()) return transferReviewFailed();
+  return match[1]!;
+}
+
+function parseDisplayShare(value: string, expected: string): string {
+  const match = DISPLAY_SHARE.exec(value.trim());
+  if (!match || match[1] !== expected) return transferReviewFailed();
+  try { moneyCents(match[2]!.replaceAll(',', '')); } catch { return transferReviewFailed(); }
+  return match[1]!;
+}
+
+type TransferBinding = {
+  expected: TransferFacts;
+  memberTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
+};
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -28,6 +71,7 @@ export class GuardedSurface implements Surface {
   private attempt = 0;
   private started = false;
   private signOnSubmitted = false;
+  private transferEligibility?: { member: string; shares: TransferShare[] };
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -46,6 +90,7 @@ export class GuardedSurface implements Surface {
       profile: AppProfile; session: ControlSession; deadline: number;
       runId: string; artifact: string; version: string; operator: string; branch: string; role: string;
       beforeDispatch: (context: ActionContext) => void;
+      transfer?: TransferBinding;
     },
     private readonly onAction?: (event: string, data: Record<string, unknown>) => void,
   ) {}
@@ -76,6 +121,75 @@ export class GuardedSurface implements Surface {
     if (this.runtime && this.signOnSubmitted && new URL(this.inner.currentUrl()).pathname === '/signon') throw new Error('Session ended; start a new invocation');
   }
 
+  private path(url: string): string {
+    try { return new URL(url, this.policy.allowedOrigins[0]).pathname; } catch { return ''; }
+  }
+
+  private transferRoute(url: string) {
+    return TRANSFER_ROUTE.exec(this.path(url));
+  }
+
+  private requireTransferRoute(url: string): void {
+    const match = this.transferRoute(url);
+    if (!match || this.runtime?.profile.appId !== 'meridian') return;
+    const binding = this.runtime.transfer;
+    if (!binding) throw new Error('Transfer parameters are not bound');
+    if (match[1] !== binding.expected.member) {
+      this.transferEligibility = undefined;
+      throw new Error('Transfer member does not match the bound request');
+    }
+    if (this.mutationDispatched) {
+      this.transferEligibility = undefined;
+      return;
+    }
+    if (!this.transferEligibility || this.transferEligibility.member !== binding.expected.member) throw new Error('Transfer eligibility has not been verified for this run');
+  }
+
+  private preserveTransferState(url: string): void {
+    const match = this.transferRoute(url);
+    if (match) {
+      this.requireTransferRoute(url);
+      return;
+    }
+    const member = MEMBER_ROUTE.exec(this.path(url));
+    if (!member || member[1] !== this.runtime?.transfer?.expected.member) this.transferEligibility = undefined;
+  }
+
+  private async captureTransferEligibility(memberPath: string, timeoutMs: number): Promise<void> {
+    const binding = this.runtime?.transfer;
+    const member = MEMBER_ROUTE.exec(this.path(memberPath));
+    if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Transfer member selection is not eligible');
+    if (!this.inner.readTable) throw new Error('Member eligibility table is unavailable');
+    const rows = await this.readTable(binding.memberTable.target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    const shares = rows.map(row => {
+      if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw new Error('Member eligibility table is incomplete');
+      return { share: row.shareId, status: row.status, balance: row.balance };
+    });
+    assertTransferEligibility(binding.expected, member[1]!, shares);
+    this.transferEligibility = { member: member[1]!, shares };
+  }
+
+  private assertTransferReview(live: import('../runtime/profile.js').LiveControl): void {
+    const binding = this.runtime?.transfer;
+    const member = TRANSFER_ROUTE.exec(this.path(live.destination))?.[1];
+    if (!binding || !member || member !== binding.expected.member) throw new Error('Transfer review is not bound to the requested member');
+    const fact = (name: string) => {
+      const value = live.facts[name];
+      if (typeof value !== 'string') throw new Error('Transfer review facts are missing or ambiguous');
+      return value;
+    };
+    assertTransferFacts(binding.expected, {
+      member: fact('member'), sourceShare: fact('from'), destinationShare: fact('to'), amount: fact('amount'), memo: fact('memo'),
+    });
+    assertTransferFacts(binding.expected, {
+      member: parseDisplayMember(fact(REVIEW_FACTS.member), binding.expected.member),
+      sourceShare: parseDisplayShare(fact(REVIEW_FACTS.sourceShare), binding.expected.sourceShare),
+      destinationShare: parseDisplayShare(fact(REVIEW_FACTS.destinationShare), binding.expected.destinationShare),
+      amount: parseDisplayMoney(fact(REVIEW_FACTS.amount)),
+      memo: fact(REVIEW_FACTS.memo),
+    });
+  }
+
 
   private async gate(action: string, risk: RiskClass, url = this.inner.currentUrl()): Promise<void> {
     this.assertAutomation();
@@ -97,9 +211,11 @@ export class GuardedSurface implements Surface {
       if (this.runtime && this.started) throw new Error('A run can start only once');
       this.started = true;
       this.assertRoute(entryUrl);
+      this.requireTransferRoute(entryUrl);
       await this.gate('navigate', 'read', entryUrl);
       await this.inner.start(entryUrl);
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
+      this.preserveTransferState(this.inner.currentUrl());
     });
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
@@ -111,7 +227,7 @@ export class GuardedSurface implements Surface {
   // the shot, and dropping them here would render them in the clear in every
   // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
   screenshot(path: string, opts?: { maskValues?: string[] }) { return this.inner.screenshot(path, opts); }
-  close() { return this.inner.close(); }
+  close() { this.transferEligibility = undefined; return this.inner.close(); }
   drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
@@ -134,9 +250,11 @@ export class GuardedSurface implements Surface {
   async navigate(url: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
       this.assertRoute(url);
+      this.preserveTransferState(url);
       await this.gate('navigate', 'read', url);
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
+      this.preserveTransferState(this.inner.currentUrl());
     });
   }
   private assertRoute(url: string) {
@@ -169,9 +287,12 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
+        this.preserveTransferState(live.destination);
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
+        const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
+        if (transferPost) this.assertTransferReview(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
         if (rule?.mutation) {
@@ -192,6 +313,11 @@ export class GuardedSurface implements Surface {
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
+          if (transferPost) {
+            this.requireTransferRoute(refreshed.destination);
+            this.assertTransferReview(refreshed);
+            this.requireTransferRoute(this.inner.currentUrl());
+          }
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
           this.assertAutomation();
@@ -205,6 +331,9 @@ export class GuardedSurface implements Surface {
         if (signOn && live.submit) this.signOnSubmitted = true;
         const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
+        if (this.mutationDispatched) this.transferEligibility = undefined;
+        else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
+        this.preserveTransferState(this.inner.currentUrl());
         return report;
       }
       const live = await this.inner.describeTarget(t, remaining());
@@ -215,36 +344,47 @@ export class GuardedSurface implements Surface {
       await outsideBudget(() => this.gate('click', this.effectiveRisk));
       const report = await this.inner.click(t, remaining());
       this.assertStillInBounds('click');
+      this.preserveTransferState(this.inner.currentUrl());
       return report;
     });
   }
   async fill(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
     return this.action('fill', risk, async () => {
+      this.preserveTransferState(this.inner.currentUrl());
       await this.gate('fill', risk);
       const report = await this.inner.fill(t, value, timeoutMs);
       this.assertStillInBounds('fill'); // change handlers can navigate in legacy apps
+      this.preserveTransferState(this.inner.currentUrl());
       return report;
     });
   }
   async select(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write', selectBy?: 'label' | 'value'): Promise<ResolutionReport> {
     return this.action('select', risk, async () => {
+      this.preserveTransferState(this.inner.currentUrl());
       await this.gate('select', risk);
       const report = await this.inner.select(t, value, timeoutMs, risk, selectBy);
       this.assertStillInBounds('select'); // onchange submits are a legacy staple
+      this.preserveTransferState(this.inner.currentUrl());
       return report;
     });
   }
   async readTable(t: TargetDescriptor, columns: TableColumn[], timeoutMs?: number, rowSelector?: string) {
     return this.action('extract', 'read', async () => {
+      this.preserveTransferState(this.inner.currentUrl());
       await this.gate('extract', 'read');
       if (!this.inner.readTable) throw new Error('Table extraction unavailable');
-      return this.inner.readTable(t, columns, timeoutMs, rowSelector);
+      const rows = await this.inner.readTable(t, columns, timeoutMs, rowSelector);
+      this.preserveTransferState(this.inner.currentUrl());
+      return rows;
     });
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     return this.action('extract', 'read', async () => {
+      this.preserveTransferState(this.inner.currentUrl());
       await this.gate('extract', 'read');
-      return this.inner.readText(t, timeoutMs);
+      const result = await this.inner.readText(t, timeoutMs);
+      this.preserveTransferState(this.inner.currentUrl());
+      return result;
     });
   }
 }

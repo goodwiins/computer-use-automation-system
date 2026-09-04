@@ -513,18 +513,24 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
   const body = document.body.innerText;
   const facts: Record<string, string> = {};
+  const addFact = (name: string, value: string) => {
+    if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
+    facts[name] = value;
+  };
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
-        if (Object.hasOwn(facts, field.name)) throw new Error('Duplicate form fact');
-        facts[field.name] = field.value;
+        addFact(field.name, field.value);
       }
     }
-    for (const label of document.querySelectorAll('.box td.lbl')) {
-      facts[`review:${label.textContent?.trim()}`] = label.nextElementSibling?.textContent?.trim() ?? '';
+    const nestedReviewTable = Array.from(form!.querySelectorAll('table')).find(table => table.querySelector('td.lbl')) as HTMLTableElement | undefined;
+    let reviewTable: HTMLTableElement | null = nestedReviewTable ?? form!.closest('table');
+    while (reviewTable && !reviewTable.querySelector('td.lbl')) reviewTable = reviewTable.parentElement?.closest('table') ?? null;
+    for (const label of reviewTable?.querySelectorAll('td.lbl') ?? []) {
+      addFact(`review:${label.textContent?.trim() ?? ''}`, label.nextElementSibling?.textContent?.trim() ?? '');
     }
     const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
-    if (member) facts.member = member;
+    if (member) addFact('member', member);
   }
   const tokens = form?.querySelectorAll('input[type=hidden][name="_token"]');
   const tokenPresent = tokens?.length === 1 && !!(tokens[0] as HTMLInputElement).value;
