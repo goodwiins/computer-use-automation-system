@@ -148,8 +148,8 @@ runbook/write-up, and hosted checks where publication is authorized.
 | Seven genuine discovery/artifact/replay pairs | Coordinating task | 3/7 historically accepted; four write gates incomplete |
 | Runtime safety, idempotency, unknown outcome, evidence | Coordinating task + shared integration | Base includes PR46; additional evidence/CLI audit underway |
 | Vercel AI SDK typed caller chat | Task 1 | Implemented at 5c5df38; independent review approved after two fixes. Real AI SDK protocol with offline model fixtures; live model gate pending |
-| assistant-ui runtime and component map | Task 2 | Pending |
-| Shared run state, approvals, evidence, accessibility | Task 2 | Pending |
+| assistant-ui runtime and component map | Task 2 | Implemented at 3c7528d; independent review approved after three fixes |
+| Shared run state, approvals, evidence, accessibility | Task 2 | Eleven final offline focused checks pass; independent review approved; live gates pending |
 | Live model/read UI invocation and exceptional path | Task 3 | Pending |
 | Local CI/build/validate and diff checks | All | Task 1 at 7eeb447: 285 tests / 18 files, typecheck, artifact validation, and diff checks pass. New UI/build gates pending |
 | Review, setup, exact commands, write-up, handoff | Task 3 + coordinating task | Pending |
@@ -193,10 +193,84 @@ Research references: [AI SDK adapter/version table](https://www.assistant-ui.com
 - Chat transport retries use the existing durable invocation journal: same key
   and same invocation identity returns the existing run; changed capability or
   arguments returns 409. There is no persisted conversation or chat-response cache.
-- Coordinating task reports reviewed PR47 merged at `2c7f4ed`; integration into
-  this branch is next after Task 1 review approval.
+- Coordinating task reports reviewed PR47 merged at `2c7f4ed`; integrated locally into
+  this branch at `6353741` before Task 2 started.
 
 Task 1 review fixed SDK default logging of raw provider errors and legacy mixed
 tool responses hiding an accepted run ID. Scoped re-review approved `5c5df38`;
 128 combined chat/legacy tests and typecheck passed after the fixes. One minor
 regression-test assertion improvement is retained for the final audit.
+
+## Adaptation boundary and remaining coupling
+
+The chat change reuses the existing Express routes, catalog conversion,
+`InvocationService`, deterministic executor, approvals, journal, and evidence
+access. Vercel AI SDK handles one bounded interpretation/tool-selection step;
+the new UI consumes run IDs and existing authenticated read/decision endpoints.
+It introduces no model into replay or operator authorization. The React build
+and backend tool renderers are Task 2 work until verified below.
+
+The broader core is not yet demonstrably portable by configuration alone.
+`config/app-profiles/meridian.json` supplies routes, form rules, detectors, and
+mask selectors, but target-specific choices still live in shared TypeScript:
+`src/runtime/profile.ts` selects policy by app ID; `src/server/service.ts` applies
+MERIDIAN contracts and operator context; `src/runtime/run.ts` wires transfer
+facts and a hardcoded observed member-table selector from
+`src/runtime/contracts.ts`; `src/replay/executor.ts` validates MERIDIAN transfer
+outputs. These are concrete coupling points for a future target adapter.
+
+This branch preserves those reviewed behaviors. Moving them into a generic
+plugin framework would add scope without proving another target; a second
+concrete target should drive that extraction. No second-target portability
+proof or completed full-surface adaptation is claimed here.
+
+## Live UI acceptance procedure (pending execution)
+
+1. Coordinate exclusive hosted-target use, then launch this exact reviewed
+   branch with existing local credentials and a new private evidence/journal
+   directory. Keep the journal HMAC stable and retain its request identities.
+2. Connect as caller through the bundled UI. Ask the real configured model for
+   one explicit approved read capability; record its request identity and run ID
+   privately. A `202`/tool output proves acceptance only.
+3. Wait for the authoritative run to finish, compare the structured result in
+   the chat card and dashboard, and run the evidence evaluator against that run.
+   Save sanitized booleans/counts plus source SHA and artifact version.
+4. Refresh/reconnect through authenticated reads; verify history keeps the same
+   run ID and no new invocation occurs. Reload must clear credentials and chat.
+5. Exercise an authorized exceptional read path if supported. Keep offline
+   approval/unknown fixtures distinct from live operator decisions. Do not
+   perform a write or approve one merely to complete the UI check.
+
+The final report must replace these pending steps with actual evidence or exact
+blockers. Prior September 4 dashboard evidence is historical and does not test
+this AI SDK/assistant-ui implementation.
+
+## Required component connections
+
+| UI component | Existing authority / data source | Acceptance boundary |
+| --- | --- | --- |
+| AssistantRuntimeProvider, Thread, Message, Composer | useChatRuntime + AssistantChatTransport → `/api/chat` | Server owns tools; stopping text is not cancelling a transaction |
+| CapabilityRunCard | Backend tool output runId → shared authenticated `/runs/:id` cache | Accepted/started remains distinct from completed |
+| ResultCard | Typed authoritative run result | Decimal values remain strings; historical unavailable data is explicit |
+| CapabilityCatalog and invocation form | Authorized `/capabilities` descriptors and pinned versions | Missing/not-authorized functions remain visible only as non-actionable coverage labels |
+| RunHistory, RunDetail, recorded event timeline | `/runs`, `/runs/:id`, safe authorized event evidence | Discovery versus replay is explicit; missing raw step IDs are not fabricated |
+| EvidenceViewer | Authenticated evidence route | Inert text/JSON and masked image blobs; no credential-bearing URLs |
+| ApprovalPanel, EscalationCard | Live intervention context and decision endpoint | Operator-only exact decision/expiry; no retry of an unknown posting |
+| Operator session controls | Server principal and allowed role on direct invocation | Credentials stay in memory; chat remains caller-bound |
+
+Implementation paths and final check evidence are recorded after Task 2 review.
+
+Task 2 implemented at `c25214d`. Final focused browser/transport/legacy-dashboard
+selection: 7 passed, with backend/UI typecheck, production build, artifact
+validation, audit (0 vulnerabilities), and diff checks passing. Earlier full
+suite passed 293 tests; a later controlled-stop fixture timed out after 294
+passes, was corrected, and passed the final focused run. The final integrated
+whole-suite result remains a Task 3 gate.
+
+Independent Task 2 review found over-limit transcripts, polling that stops after
+repeated identical failures, and a credential draft retained on disconnect.
+All three fixes passed scoped re-review at `3c7528d`. A stale local validation
+alert after a later successful send is retained for the Task 3 audit correction. The production bundle is approximately
+722 kB minified / 212 kB gzip and emits Vite's size warning; no policy was loosened
+or arbitrary warning threshold raised. Browser CSP checks pass after disabling
+Zod's optional JIT probe through its published configuration.
