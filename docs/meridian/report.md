@@ -1,7 +1,7 @@
 # MERIDIAN current acceptance checkpoint
 
 Date: September 5, 2026
-Current integrated runtime `dev` as of this checkpoint: `4886ad6463c5c72c695160c62dd9beacf572564d`
+Current integrated runtime `dev` as of this checkpoint: `b3c838bb113fb6de3a966040e2997671c44102b3`
 
 This is a partial Task 9 checkpoint, not final delivery or production readiness. Live acceptance remains **3/7**: sign-on, member inquiry and member record have genuine model discoveries, approved artifacts and deterministic replays. Funds transfer, open share, contact update and supervisor hold still lack accepted complete recording/replay evidence. The long, source-specific history remains in [live evidence](live-evidence.md); historical run IDs and producing SHAs are not relabeled as current runs.
 
@@ -21,7 +21,7 @@ The current baseline includes these reviewed repairs:
 
 These gates verify source and offline behavior. They do not promote the transfer draft or prove a live write. Operation-specific request, approval and completion contracts now exist for open share, member update and supervisor hold, while genuine discovery/replay artifacts and accepted evidence for all four writes remain missing.
 
-PR #59 established the grouped `tbody`/native-CSS extraction and structural-evidence prerequisite without claiming a hosted transfer receipt. PR #60 integrated observation bounds, PR #61 open-share completion, and PR #62 member-update completion. PR #63, covering supervisor hold and shared fresh transfer eligibility, remains open under CI/review repair; maintenance recovery is integrated offline but not yet published.
+PR #59 established the grouped `tbody`/native-CSS extraction and structural-evidence prerequisite without claiming a hosted transfer receipt. PR #60 integrated observation bounds, PR #61 open-share completion, and PR #62 member-update completion. PR #63 merged supervisor hold and shared fresh transfer eligibility at `b3c838b` from reviewed head `32e29f8`; 545 tests, typecheck and exact-head CI passed, and code review completed without new findings. Maintenance recovery is integrated in this change with 557 tests/17 files, typecheck and artifact validation passing. It follows the observed member checkpoint and clean open-share re-entry with one pre-intent attempt. These offline checks add no live acceptance. Desktop automation remains paused following the Mac-control interruption; genuine write acceptance resumes only with user direction and separate posting approvals.
 
 ## Verified evidence and adverse outcomes
 

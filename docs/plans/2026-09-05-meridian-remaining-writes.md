@@ -44,7 +44,7 @@ Historical transfer draft and its run remain unchanged. Open-share run `222ebecd
 
 ## Execution status — September 5, 2026
 
-Receipt extraction and observation-bound work from PRs #59 and #60 are merged; PRs #61 (open share) and #62 (member update) are now merged. PR #63 (supervisor hold and shared fresh transfer eligibility) remains open under CI/review repair. Maintenance recovery is integrated offline and remains pending publication. Live acceptance remains 3/7; genuine recordings/replays and the UI-last delivery remain outstanding.
+Receipt extraction and observation-bound work from PRs #59 and #60 are merged; PRs #61 (open share) and #62 (member update) are now merged. PR #63 (supervisor hold and shared fresh transfer eligibility) merged to `dev` at `b3c838b` from reviewed head `32e29f8`, with 545 offline tests and passing head CI. Maintenance recovery is integrated in this change with 557 offline tests, typecheck and artifact validation passing. Desktop automation is paused following the Mac-control interruption; resume genuine recording only with user direction and separate posting approvals. Live acceptance remains 3/7; genuine recordings/replays and the UI-last delivery remain outstanding.
 
 ## Delivery sequence and file ownership
 
