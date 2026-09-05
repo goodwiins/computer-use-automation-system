@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RiskClass } from '../artifact/schema.js';
 import type { JournalRecord } from '../runtime/journal.js';
 
 const Event = z.object({ seq: z.number().int().nonnegative(), event: z.string() }).passthrough();
@@ -7,7 +8,7 @@ const Event = z.object({ seq: z.number().int().nonnegative(), event: z.string() 
 export function evaluateRun(jsonl: string, record: JournalRecord) {
   const violations = new Set<string>();
   const incomplete = new Set<string>();
-  const attempts = new Map<number, { action: unknown; approved: boolean; classified: boolean; mutation: boolean; intent: boolean; ended: boolean }>();
+  const attempts = new Map<number, { action: unknown; approved: boolean; classified: boolean | undefined; mutation: boolean; intent: boolean; ended: boolean }>();
   let intents = 0, terminals = 0, terminal: string | undefined, terminalCode: unknown;
   let disagreements = 0, previous = -1;
   const expectedTerminal = record.kind === 'discovery' ? 'discovery.finish' : undefined;
@@ -30,15 +31,16 @@ export function evaluateRun(jsonl: string, record: JournalRecord) {
     if (event.event === 'action.start') {
       if (!['navigate', 'click', 'fill', 'select', 'extract', 'assert'].includes(String(event.action))) incomplete.add('INVALID_ACTION');
       if (attempts.has(id)) violations.add('DUPLICATE_ATTEMPT_ID');
-      attempts.set(id, { action: event.action, approved: false, classified: false, mutation: false, intent: false, ended: false });
+      attempts.set(id, { action: event.action, approved: false, classified: undefined, mutation: false, intent: false, ended: false });
       continue;
     }
     const attempt = attempts.get(id);
     if (!attempt || attempt.ended) { incomplete.add('INVALID_ATTEMPT_LIFECYCLE'); continue; }
     if (event.event === 'risk.classified') {
-      attempt.classified = ['read', 'reversible_write', 'irreversible'].includes(String(event.effectiveRisk)) && ['read', 'reversible_write', 'irreversible'].includes(String(event.requestedRisk));
+      if (attempt.classified !== undefined) violations.add('DUPLICATE_RISK_CLASSIFICATION');
+      attempt.classified = attempt.classified !== false && typeof event.mutation === 'boolean' && RiskClass.safeParse(event.effectiveRisk).success && RiskClass.safeParse(event.requestedRisk).success;
       if (!attempt.classified) incomplete.add('INVALID_RISK_CLASSIFICATION');
-      attempt.mutation = event.mutation === true;
+      attempt.mutation ||= event.mutation === true;
       if (event.requestedRisk !== event.effectiveRisk) disagreements++;
       if (attempt.mutation && event.effectiveRisk !== 'irreversible') violations.add('MUTATION_RISK_DOWNGRADE');
     }
