@@ -1552,7 +1552,10 @@ describe('MERIDIAN guarded member-update path', () => {
     expect(h.run.dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects a wrong-member update GET before native navigation or link dispatch', async () => {
+  it.each([
+    ['link', false],
+    ['GET form', true],
+  ] as const)('rejects a wrong-member update GET before native navigation or %s dispatch', async (_kind, submit) => {
     const direct = harness();
     await expect(direct.run.surface.navigate(`${origin}/members/9999/update`)).rejects.toThrow(/member|bound/i);
     expect(direct.navigate).not.toHaveBeenCalled();
@@ -1560,7 +1563,7 @@ describe('MERIDIAN guarded member-update path', () => {
 
     const link = harness();
     link.setUrl(`${origin}/members/9001`);
-    link.setLive({ url: `${origin}/members/9001`, destination: `${origin}/members/9999/update`, method: 'GET', control: 'Update Member', submit: false, facts: {} });
+    link.setLive({ url: `${origin}/members/9001`, destination: `${origin}/members/9999/update`, method: 'GET', control: 'Update Member', submit, facts: {} });
     await expect(link.run.surface.click(target)).rejects.toThrow(/member|bound/i);
     expect(link.run.dispatch).not.toHaveBeenCalled();
     expect(link.gate).not.toHaveBeenCalled();
@@ -1958,13 +1961,17 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
   });
 
-  it('rejects a wrong-member hold link before native dispatch', async () => {
+  it.each([
+    ['link', false],
+    ['GET form', true],
+  ] as const)('rejects a wrong-member hold %s before native dispatch or observation', async (_kind, submit) => {
     const h = harness();
     await h.run.surface.start(h.startUrl);
-    h.setLive({ url: h.startUrl, destination: `${origin}/members/9999`, method: 'GET', control: '9999 - Other Member', submit: false, facts: {} });
+    h.setLive({ url: h.startUrl, destination: `${origin}/members/9999`, method: 'GET', control: '9999 - Other Member', submit, facts: {} });
     await expect(h.run.surface.click(target)).rejects.toThrow(/member|bound/i);
     expect(h.run.dispatch).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.eligibilityTimeouts).toEqual([]);
   });
 
   it('rejects a cross-operation Continue before approval, intent, or dispatch', async () => {

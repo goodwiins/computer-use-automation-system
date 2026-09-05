@@ -847,7 +847,7 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
-        if (live.method === 'GET' && !live.submit) this.assertBoundMemberNavigation(live.destination);
+        if (live.method === 'GET') this.assertBoundMemberNavigation(live.destination);
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
