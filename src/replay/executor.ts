@@ -28,7 +28,7 @@ import { originAllowed, type Policy } from '../safety/policy.js';
 import { PolicyViolationError, RunAbortedError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
 import { checkDetectors, matchDetector } from './detectors.js';
-import type { ReplayResult, StepFailure } from './outcomes.js';
+import { InsufficientFundsError, type ReplayResult, type StepFailure } from './outcomes.js';
 import { assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
 
 export interface ReplayDeps {
@@ -272,6 +272,14 @@ export async function runReplay(
       return null;
     } catch (err) {
       if (surface.mutationDispatched) return fail({ stepId: step.id, intent: step.intent, expected: 'verified posting completion', observed: 'POST_OUTCOME_UNKNOWN' });
+      if (err instanceof InsufficientFundsError) {
+        const result: ReplayResult = {
+          status: 'business_outcome', outcomeCode: err.outcomeCode, detail: err.message, ...base,
+        };
+        logger.log('replay.business_outcome', { stepId: step.id, outcomeCode: err.outcomeCode });
+        logger.writeResult(result);
+        return result;
+      }
       if (err instanceof RunAbortedError) return aborted(step.id);
       noteDialogs(step.id);
       // The dialog that explains this failure often fired on an EARLIER step

@@ -1,4 +1,5 @@
 import { moneyCents, Parameter, type CapabilityArtifact, type OutputValue, type TableColumn, type TargetDescriptor } from '../artifact/schema.js';
+import { InsufficientFundsError } from '../replay/outcomes.js';
 
 export type TransferFacts = {
   member: string; sourceShare: string; destinationShare: string;
@@ -60,7 +61,7 @@ export function assertTransferEligibility(expected: TransferFacts, actualMember:
     sourceBalance = moneyCents(selected[0]!.balance);
     moneyCents(selected[1]!.balance);
   } catch { return transferCheckFailed(); }
-  if (sourceBalance < amount) return transferCheckFailed();
+  if (sourceBalance < amount) throw new InsufficientFundsError();
 }
 
 export function assertTransferFacts(expected: TransferFacts, actual: TransferFacts): void {

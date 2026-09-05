@@ -190,13 +190,18 @@ async function discover(argv: string[]) {
         console.log(`\n✔ goal achieved in ${result.trace.length} recorded steps`);
         console.log(`  outputs : ${JSON.stringify(runtime.redactor.redact(result.outputs))}`);
         console.log(`  artifact: ${path} (status: draft — review, then run with --approve to promote)`);
+      } else if (result.status === 'business_outcome') {
+        logger.writeResult({ status: result.status, outcomeCode: result.outcomeCode, detail: result.detail });
+        console.log(`\nDiscovery outcome: ${result.outcomeCode}`);
       } else {
         const code = result.stopReason === 'RUN_ABORTED' || result.stopReason === 'POST_OUTCOME_UNKNOWN' ? result.stopReason : undefined;
         logger.writeResult(code ? { status: 'failure', failure: { code } } : { status: result.status });
         console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
         process.exitCode = 1;
       }
-      updateJournal(journal, record?.runId, result.status === 'success' ? 'success' : dispatchIntent(journal, record?.runId, surface.mutationDispatched) ? 'POST_OUTCOME_UNKNOWN' : 'failure');
+      updateJournal(journal, record?.runId, result.status === 'success' ? 'success'
+        : dispatchIntent(journal, record?.runId, surface.mutationDispatched) ? 'POST_OUTCOME_UNKNOWN'
+        : result.status === 'business_outcome' ? 'business_outcome' : 'failure');
     } catch {
       process.exitCode = 1;
       const uncertain = dispatchIntent(journal, record?.runId, runtime?.surface.mutationDispatched);

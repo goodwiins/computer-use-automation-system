@@ -62,12 +62,14 @@ Evidence write failures still stop execution, and durable journal failures block
 posting. Terminal journal state cannot be reset to resume an old operation.
 The API reports terminal journal state even when its in-memory view is stale.
 
-The integrated runtime fixes the reviewed operation-binding, setup-finalization,
-cleanup and cancellation defects. It does not promote the transfer draft or
-increase live acceptance above `3/7`. Valid current-fact underfunding before
-dispatch intent still requires the separate Task A typed
-`business_outcome / INSUFFICIENT_FUNDS`; malformed or wrong-account facts remain
-failures, and an unverified outcome after intent remains `POST_OUTCOME_UNKNOWN`.
+Source `6ab82fe0cde9cc9dae64e5c69ca019753c42ad89` adds Task A's typed
+`business_outcome / INSUFFICIENT_FUNDS` for validated current-fact underfunding
+before dispatch intent. Offline fixtures passed 131 focused tests and the full
+274-test `npm run ci`; `npm run validate` also passed. They show that malformed
+or wrong-account facts remain failures, discovery stops without another model
+turn, replay and CLI retain the safe result, and any unverified outcome after
+intent remains `POST_OUTCOME_UNKNOWN`. No live target or model call ran, no
+artifact was produced or promoted, and live acceptance remains `3/7`.
 
 No LangSmith SDK, OpenAI wrapper, OTel collector, or network export is enabled.
 If export is added later, consume only this metadata projection, use a bounded

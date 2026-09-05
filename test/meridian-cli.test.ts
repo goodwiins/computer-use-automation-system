@@ -296,7 +296,7 @@ it('keeps terminal journal cleanup when runtime close rejects', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('supplies the canonical transfer completion validator to discovery', async () => {
+it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transfer completion validator to discovery: %s', async status => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-discovery-'));
   const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
@@ -330,7 +330,13 @@ it('supplies the canonical transfer completion validator to discovery', async ()
       runDiscovery: async (_goal: string, _entry: string, _params: Record<string, string | number>, _origins: string[], deps: Parameters<typeof actual.runDiscovery>[4]) => {
         validator = deps.validateCompletion as unknown as ((outputs: Record<string, unknown>) => void) | undefined;
         validator?.({ confirmation: 'CONF-123', transaction: [{ member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture', confirmation: 'CONF-123' }] });
-        return { status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/members/9001/transfer/post', stopReason: 'fixture' };
+        return {
+          status, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/members/9001',
+          stopReason: status === 'business_outcome' ? 'INSUFFICIENT_FUNDS' : 'fixture',
+          ...(status === 'business_outcome' ? {
+            outcomeCode: 'INSUFFICIENT_FUNDS', detail: 'Insufficient available balance in the source share.',
+          } : {}),
+        };
       },
     };
   });
@@ -341,6 +347,19 @@ it('supplies the canonical transfer completion validator to discovery', async ()
     await runCli(['discover', '--name', 'meridian-funds-transfer', '--goal', 'Transfer', '--profile', 'meridian', '--entry', 'https://web-sample.interface-hiring.com/signon', '--idempotency-key', 'cli-discovery-transfer', '--param', 'member=9001', '--param', 'sourceShare=9001-A', '--param', 'destinationShare=9001-B', '--param', 'amount=1.00', '--param', 'memo=fixture']);
     expect(validator).toBeTypeOf('function');
     expect(error).not.toHaveBeenCalledWith(expect.stringContaining('canonical'));
+    const journalDir = join(dir, 'journal');
+    const records = readdirSync(journalDir).filter(name => name.endsWith('.json'))
+      .map(name => JSON.parse(readFileSync(join(journalDir, name), 'utf8')).record);
+    expect(records).toHaveLength(1);
+    expect(records[0].state).toBe(status === 'business_outcome' ? 'business_outcome' : 'failure');
+    const result = JSON.parse(readFileSync(join(dir, records[0].runId, 'result.json'), 'utf8'));
+    expect(result.status).toBe(status);
+    expect(result).not.toHaveProperty('artifact');
+    if (status === 'business_outcome') {
+      expect(result.outcomeCode).toBe('INSUFFICIENT_FUNDS');
+      expect(process.exitCode ?? 0).toBe(0);
+    }
+    expect(existsSync(join(journalDir, 'server.lock'))).toBe(false);
     log.mockRestore(); error.mockRestore();
   } finally {
     vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
