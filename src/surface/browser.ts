@@ -389,6 +389,7 @@ export class BrowserSurface implements Surface {
     let navigationRequests = 0;
     let stableNavigation: number | undefined;
     let stableFrames: string | undefined;
+    let pageEvents = 0;
     const createdPages = new Set<Page>();
     const unexpectedPages = new Set<Page>();
     const fail = (message: string) => { violation ??= message; };
@@ -398,8 +399,10 @@ export class BrowserSurface implements Surface {
       unexpectedPages.add(opened);
     };
     const trackCreatedPage = (opened: Page) => {
-      if (opened === this.page || opened.isClosed()) return;
+      if (opened === this.page) return;
+      pageEvents++;
       createdPages.add(opened);
+      if (opened.isClosed()) return;
       if (page && opened !== page) markUnexpectedPage(opened);
     };
     this.context.on('page', trackCreatedPage);
@@ -519,18 +522,41 @@ export class BrowserSurface implements Surface {
       pendingError = error;
       throw error;
     } finally {
-      try { assertStable(); } catch (error) { pendingError = error; }
       let closeFailed = false;
-      const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...(page ? [page] : [])]);
-      pagesToClose.delete(this.page);
-      for (const opened of pagesToClose) {
-        try { if (!opened.isClosed()) await opened.close(); }
-        catch { closeFailed = true; }
-        if (!opened.isClosed()) closeFailed = true;
-      }
+      const nextPageEventTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+      const drainCreatedPages = async () => {
+        for (;;) {
+          const before = pageEvents;
+          let closeError = false;
+          const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
+          pagesToClose.delete(this.page!);
+          for (const opened of pagesToClose) {
+            try { if (!opened.isClosed()) await opened.close(); }
+            catch { closeError = true; }
+            if (!opened.isClosed()) closeError = true;
+          }
+          await nextPageEventTurn();
+          const remainingPages = this.context!.pages().filter(opened => opened !== this.page && !opened.isClosed());
+          if (closeError) return false;
+          if (remainingPages.length === 0 && pageEvents === before) return true;
+          if (Date.now() >= deadline) return false;
+        }
+      };
+      closeFailed = !(await drainCreatedPages());
+      try { assertStable(); } catch (error) { pendingError = error; }
       if (!closeFailed) {
-        this.context.off('page', trackCreatedPage);
-        if (routeInstalled) await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+        if (routeInstalled && this.opts.profile?.appId !== 'meridian') {
+          const beforeUnroute = pageEvents;
+          await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+          if (!closeFailed && (pageEvents !== beforeUnroute || this.context.pages().some(opened => opened !== this.page && !opened.isClosed()))) {
+            closeFailed = !(await drainCreatedPages());
+            try { assertStable(); } catch (error) { pendingError = error; }
+          }
+        }
+        // Retain the strict MERIDIAN route until the context closes. It falls
+        // through the original page and keeps any teardown-racing popup from
+        // reaching an unbound member after this listener is removed.
+        if (!closeFailed) this.context.off('page', trackCreatedPage);
       }
       if (closeFailed) throw new Error('Read-only page cleanup failed');
       if (pendingError) throw pendingError;

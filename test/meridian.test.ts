@@ -2801,6 +2801,34 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
     expect(browser.currentUrl()).toBe(originalUrl);
 
+    let triggerPopupOnClose = true;
+    let cleanupPopup: Page | undefined;
+    const popupDuringClose = (opened: Page) => {
+      if (opened === browser.page || !triggerPopupOnClose) return;
+      triggerPopupOnClose = false;
+      const nativeClose = opened.close.bind(opened);
+      vi.spyOn(opened, 'close').mockImplementationOnce(async () => {
+        const popup = browser.page.waitForEvent('popup');
+        await browser.page.evaluate(() => { window.open('about:blank'); });
+        cleanupPopup = await popup;
+        await nativeClose();
+      });
+    };
+    context.on('page', popupDuringClose);
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
+    } finally { context.off('page', popupDuringClose); }
+    expect(cleanupPopup?.isClosed()).toBe(true);
+    expect(wrongMemberGets).toBe(0);
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+
+    const guardedLatePopup = context.waitForEvent('page');
+    await browser.page.evaluate(() => { window.open('about:blank'); });
+    const latePopup = await guardedLatePopup;
+    await expect(latePopup.goto(`${localOrigin}/members/9999`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
+    expect(wrongMemberGets).toBe(0);
+    await latePopup.close();
+
     const creationFailure = vi.spyOn(context, 'newPage').mockRejectedValueOnce(new Error('fixture auxiliary creation failure'));
     try {
       await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/creation failure/i);
