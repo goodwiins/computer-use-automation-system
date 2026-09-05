@@ -2768,8 +2768,8 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 }, 15000);
 
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
-  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false;
-  let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0;
+  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false; let subresourceFresh = false;
+  let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0; let wrongMemberGets = 0; let operationGets = 0;
   let releaseReviewWebSocket: (() => void) | undefined;
   const upgradeSockets = new Set<Duplex>();
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
@@ -2789,23 +2789,24 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
       return;
     }
     if (reloadFresh) return res.send(`<meta http-equiv="refresh" content="0.01;url=/members/9001">${identity}`);
-    if (websocketFresh) return res.send(`${member}<img src="/slow.png"><script>
+    if (websocketFresh) return setTimeout(() => res.send(`${member}<script>
       const wsUrl = location.origin.replace(/^http/, 'ws') + '/write-channel';
       const openSocket = Socket => { const socket = new Socket(wsUrl); socket.onopen = () => socket.send('unauthorized mutation'); };
       openSocket(WebSocket);
       const worker = new Worker(URL.createObjectURL(new Blob([\`const socket = new WebSocket('${'${wsUrl}'}'); socket.onopen = () => socket.send('worker mutation');\`], { type: 'text/javascript' })));
       const popup = window.open('about:blank'); if (popup) openSocket(popup.WebSocket);
-    </script>`);
+    </script>`), 100);
+    if (subresourceFresh) return res.send(`${member}<link rel="preload" as="image" href="/members/9999"><img src="/members/9001/transfer">`);
     if (redirectFresh) return res.redirect('/members/9999');
     return res.send(member);
   });
   app.get('/arm-review-websocket', (_req, res) => { releaseReviewWebSocket = () => res.send('armed'); });
-  app.get('/members/9999', (_req, res) => res.send(member));
+  app.get('/members/9999', (_req, res) => { wrongMemberGets++; res.send(member); });
   app.get('/members/8888', (_req, res) => { forbiddenMemberGets++; res.send(member); });
+  app.get('/members/9001/transfer', (_req, res) => { operationGets++; res.send('not an image'); });
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
   app.post('/members/9001/hold/review', (_req, res) => res.send(review));
   app.post('/members/9001/hold/post', (_req, res) => { posted++; res.send('held'); });
-  app.get('/slow.png', (_req, res) => setTimeout(() => res.type('png').send('not-an-image'), 100));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   server.on('upgrade', (request, socket) => {
     websocketUpgrades++;
@@ -2859,6 +2860,7 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/navigation|redirected/i);
     expect(browser.page.context().pages()).toHaveLength(1);
     redirectFresh = false;
+    wrongMemberGets = 0;
     reloadFresh = true;
     await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 500)).rejects.toThrow(/changed/i);
     expect(browser.page.context().pages()).toHaveLength(1);
@@ -2872,6 +2874,66 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(websocketMessages).toBe(0);
     expect(browser.page.context().pages()).toHaveLength(1);
     websocketFresh = false;
+
+    subresourceFresh = true;
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/subresource/i);
+    subresourceFresh = false;
+    expect(wrongMemberGets).toBe(0);
+    expect(operationGets).toBe(0);
+    expect(browser.page.context().pages()).toHaveLength(1);
+
+    const context = browser.page.context();
+    const originalUrl = browser.currentUrl();
+    const nativeNewPage = context.newPage.bind(context);
+    const pendingPopup = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      const auxiliary = nativeNewPage();
+      await browser.page.evaluate(() => { window.open('/members/9999'); });
+      return auxiliary;
+    });
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
+    } finally { pendingPopup.mockRestore(); }
+    expect(wrongMemberGets).toBe(0);
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+    expect(browser.currentUrl()).toBe(originalUrl);
+
+    let triggerPopupOnClose = true;
+    let cleanupPopup: Page | undefined;
+    const popupDuringClose = (opened: Page) => {
+      if (opened === browser.page || !triggerPopupOnClose) return;
+      triggerPopupOnClose = false;
+      const nativeClose = opened.close.bind(opened);
+      vi.spyOn(opened, 'close').mockImplementationOnce(async () => {
+        const popup = browser.page.waitForEvent('popup');
+        await browser.page.evaluate(() => { window.open('about:blank'); });
+        cleanupPopup = await popup;
+        await nativeClose();
+      });
+    };
+    context.on('page', popupDuringClose);
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
+    } finally { context.off('page', popupDuringClose); }
+    expect(cleanupPopup?.isClosed()).toBe(true);
+    expect(wrongMemberGets).toBe(0);
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+
+    const guardedLatePopup = context.waitForEvent('page');
+    await browser.page.evaluate(() => { window.open('about:blank'); });
+    const latePopup = await guardedLatePopup;
+    await expect(latePopup.goto(`${localOrigin}/members/9999`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
+    expect(wrongMemberGets).toBe(0);
+    await latePopup.close();
+
+    const creationFailure = vi.spyOn(context, 'newPage').mockRejectedValueOnce(new Error('fixture auxiliary creation failure'));
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/creation failure/i);
+    } finally { creationFailure.mockRestore(); }
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).resolves.toMatchObject({
+      tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })]],
+    });
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+    expect(browser.currentUrl()).toBe(originalUrl);
 
     let auxiliary: Page | undefined;
     let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
@@ -2998,6 +3060,62 @@ it('scopes transfer review facts to its form table and rejects duplicate labels'
     const hiddenValueChild = await browser.prepareClick(post);
     await expect(hiddenValueChild.inspect()).resolves.toMatchObject({ facts: { 'review:Amount:': '' } });
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}, 15000);
+
+it('requires one complete rendered hold or open-share review table before approval', async () => {
+  const app = express();
+  const identity = '<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p><p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
+  app.get('/menu', (_req, res) => res.send(identity));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+  const rows = (values: readonly string[], labels: readonly string[]) => `<table>${labels.map((label, index) => `<tr><td class="lbl">${label}</td><td>${values[index]}</td></tr>`).join('')}</table>`;
+  const fixtures = [
+    {
+      control: 'Apply Hold',
+      action: '/members/9001/hold/post',
+      fields: '<input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="share" value="9001-S0001-1"><input type="hidden" name="reason" value="FRAUD"><input type="hidden" name="notes" value="fixture">',
+      labels: ['Member:', 'Share:', 'Reason:', 'Notes:'],
+      active: ['9001 - Fixture Member', '9001-S0001-1 - Regular Shares', 'FRAUD', 'fixture'],
+      stale: ['9001 - Stale Member', '9001-S0070-1 - Share Draft (Checking)', 'LEGAL', 'stale'],
+      expected: { 'review:Member:': '9001 - Fixture Member', 'review:Share:': '9001-S0001-1 - Regular Shares', 'review:Reason:': 'FRAUD', 'review:Notes:': 'fixture' },
+    },
+    {
+      control: 'Open Share',
+      action: '/members/9001/open-share/post',
+      fields: '<input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="type" value="S0001"><input type="hidden" name="deposit" value="5.00">',
+      labels: ['Member:', 'Share Type:', 'Initial Deposit:'],
+      active: ['9001 - Fixture Member', 'S0001 - Regular Shares', '$5.00'],
+      stale: ['9001 - Stale Member', 'S0070 - Share Draft (Checking)', '$9.00'],
+      expected: { 'review:Member:': '9001 - Fixture Member', 'review:Share Type:': 'S0001 - Regular Shares', 'review:Initial Deposit:': '$5.00' },
+    },
+  ] as const;
+  try {
+    await browser.start(`${localOrigin}/menu`);
+    for (const fixture of fixtures) {
+      const form = (reviewTables: string) => `${identity}<form method="post" action="${fixture.action}">${fixture.fields}${reviewTables}<input type="submit" value="${fixture.control}"></form>`;
+      await browser.page.setContent(form(rows(fixture.active, fixture.labels)));
+      const target = { description: fixture.control, strategies: [{ kind: 'role' as const, role: 'button', name: fixture.control }] };
+      const prepared = await browser.prepareClick(target);
+      await expect(prepared.inspect()).resolves.toMatchObject({ facts: fixture.expected });
+
+      await browser.page.setContent(form(`${rows(fixture.stale, fixture.labels)}${rows(fixture.active, fixture.labels)}`));
+      const gate = vi.fn(async () => false);
+      const beforeDispatch = vi.fn();
+      const guardedSurface = new GuardedSurface(browser, Policy.parse({ ...policy, allowedOrigins: [localOrigin] }), gate, undefined, {
+        profile, session: new ControlSession(), deadline: Date.now() + 10_000,
+        runId: randomUUID(), artifact: 'hold', version: '1.0.0',
+        operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch,
+      });
+      await expect(guardedSurface.click(target)).rejects.toThrow(/ambiguous/i);
+      expect(gate).not.toHaveBeenCalled();
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(guardedSurface.mutationDispatched).toBe(false);
+    }
+  } finally {
+    await browser.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 }, 15000);
 
 it('allows a native Continue form before the transfer review page', async () => {

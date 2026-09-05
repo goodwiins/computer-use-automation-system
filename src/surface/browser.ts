@@ -392,45 +392,38 @@ export class BrowserSurface implements Surface {
     if (!originAllowed(this.opts.allowedOrigins ?? [], expected.href)) throw new Error('Read-only page origin is not allowed');
     const deadline = Date.now() + timeoutMs;
     const remaining = () => timeoutRemaining(deadline);
-    const page = await this.context.newPage();
+    let page: Page | undefined;
+    let routeInstalled = false;
     let violation: string | undefined;
     let navigation = 0;
     let navigationRequests = 0;
     let stableNavigation: number | undefined;
     let stableFrames: string | undefined;
+    let pageEvents = 0;
+    const createdPages = new Set<Page>();
     const unexpectedPages = new Set<Page>();
     const fail = (message: string) => { violation ??= message; };
-    const closeUnexpectedPage = (opened: Page) => {
+    const markUnexpectedPage = (opened: Page) => {
       if (opened === page || opened === this.page) return;
       fail('Read-only page opened a popup');
       unexpectedPages.add(opened);
-      opened.close().catch(() => {});
     };
-    this.context.on('page', closeUnexpectedPage);
-    page.on('framenavigated', () => { navigation++; });
-    page.on('dialog', dialog => {
-      fail('Read-only page opened a dialog');
-      dialog.dismiss().catch(() => {});
-    });
-    page.on('popup', popup => {
-      fail('Read-only page opened a popup');
-      popup.close().catch(() => {});
-    });
-    page.on('download', download => {
-      fail('Read-only page started a download');
-      download.cancel().catch(() => {});
-    });
+    const trackCreatedPage = (opened: Page) => {
+      if (opened === this.page) return;
+      pageEvents++;
+      createdPages.add(opened);
+      if (opened.isClosed()) return;
+      if (page && opened !== page) markUnexpectedPage(opened);
+    };
+    this.context.on('page', trackCreatedPage);
     const routeReadOnlyRequest = async (route: Route) => {
       const request = route.request();
       let requestPage: Page | undefined;
       try { requestPage = request.frame().page(); } catch { /* fail below */ }
       if (requestPage === this.page) return route.fallback();
-      if (requestPage !== page) {
-        fail('Read-only page opened a popup');
-        if (requestPage) {
-          unexpectedPages.add(requestPage);
-          requestPage.close().catch(() => {});
-        }
+      if (!page || requestPage !== page) {
+        if (requestPage) markUnexpectedPage(requestPage);
+        else fail('Read-only page opened a popup');
         return route.abort();
       }
       let requested: URL;
@@ -441,6 +434,10 @@ export class BrowserSurface implements Surface {
       }
       if (requested.origin !== expected.origin || !['GET', 'HEAD'].includes(request.method())) {
         fail('Read-only page attempted an out-of-bounds request');
+        return route.abort();
+      }
+      if (!request.isNavigationRequest() && this.opts.profile?.appId === 'meridian') {
+        fail('Read-only MERIDIAN page attempted a subresource request');
         return route.abort();
       }
       if (request.isNavigationRequest()) {
@@ -456,7 +453,7 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     };
-    const frameSignature = () => page.frames().map(frame => `${this.frameContext(frame).id}:${frame.url()}`).join('\n');
+    const frameSignature = () => page?.frames().map(frame => `${this.frameContext(frame).id}:${frame.url()}`).join('\n') ?? '';
     const assertStable = () => {
       if (violation) throw new Error(violation);
       if (stableNavigation !== undefined && (navigation !== stableNavigation || frameSignature() !== stableFrames)) {
@@ -466,6 +463,20 @@ export class BrowserSurface implements Surface {
     let pendingError: unknown;
     try {
       await this.context.route('**/*', routeReadOnlyRequest);
+      routeInstalled = true;
+      page = await this.context.newPage();
+      for (const opened of createdPages) if (opened !== page) markUnexpectedPage(opened);
+      if (violation) throw new Error(violation);
+      page.on('framenavigated', () => { navigation++; });
+      page.on('dialog', dialog => {
+        fail('Read-only page opened a dialog');
+        dialog.dismiss().catch(() => {});
+      });
+      page.on('popup', popup => markUnexpectedPage(popup));
+      page.on('download', download => {
+        fail('Read-only page started a download');
+        download.cancel().catch(() => {});
+      });
       if (this.opts.profile?.appId === 'meridian') {
         // MERIDIAN member facts are server-rendered. Disable page-authored JS
         // only in this auxiliary tab so dedicated workers and popup scripts
@@ -521,16 +532,41 @@ export class BrowserSurface implements Surface {
       pendingError = error;
       throw error;
     } finally {
-      try { assertStable(); } catch (error) { pendingError = error; }
       let closeFailed = false;
-      for (const opened of [...unexpectedPages, page]) {
-        try { if (!opened.isClosed()) await opened.close(); }
-        catch { closeFailed = true; }
-        if (!opened.isClosed()) closeFailed = true;
-      }
+      const nextPageEventTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+      const drainCreatedPages = async () => {
+        for (;;) {
+          const before = pageEvents;
+          let closeError = false;
+          const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
+          pagesToClose.delete(this.page!);
+          for (const opened of pagesToClose) {
+            try { if (!opened.isClosed()) await opened.close(); }
+            catch { closeError = true; }
+            if (!opened.isClosed()) closeError = true;
+          }
+          await nextPageEventTurn();
+          const remainingPages = this.context!.pages().filter(opened => opened !== this.page && !opened.isClosed());
+          if (closeError) return false;
+          if (remainingPages.length === 0 && pageEvents === before) return true;
+          if (Date.now() >= deadline) return false;
+        }
+      };
+      closeFailed = !(await drainCreatedPages());
+      try { assertStable(); } catch (error) { pendingError = error; }
       if (!closeFailed) {
-        this.context.off('page', closeUnexpectedPage);
-        await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+        if (routeInstalled && this.opts.profile?.appId !== 'meridian') {
+          const beforeUnroute = pageEvents;
+          await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+          if (!closeFailed && (pageEvents !== beforeUnroute || this.context.pages().some(opened => opened !== this.page && !opened.isClosed()))) {
+            closeFailed = !(await drainCreatedPages());
+            try { assertStable(); } catch (error) { pendingError = error; }
+          }
+        }
+        // Retain the strict MERIDIAN route until the context closes. It falls
+        // through the original page and keeps any teardown-racing popup from
+        // reaching an unbound member after this listener is removed.
+        if (!closeFailed) this.context.off('page', trackCreatedPage);
       }
       if (closeFailed) throw new Error('Read-only page cleanup failed');
       if (pendingError) throw pendingError;
@@ -791,30 +827,34 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
         addFact(field.name, field.value);
       }
     }
-    const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
-    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
-      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
+    const destinationPath = new URL(destination).pathname;
+    const canonicalReview = [
+      { name: 'Transfer', route: 'transfer', labels: new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']) },
+      { name: 'Open-share', route: 'open-share', labels: new Set(['Member:', 'Share Type:', 'Initial Deposit:']) },
+      { name: 'Hold', route: 'hold', labels: new Set(['Member:', 'Share:', 'Reason:', 'Notes:']) },
+    ].find(review => new RegExp(`^/members/\\d+/${review.route}/review$`).test(location.pathname)
+      || new RegExp(`^/members/\\d+/${review.route}/post$`).test(destinationPath));
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
-      ...(transferReview ? siblingReviewTables(form!) : []),
+      ...(canonicalReview ? siblingReviewTables(form!) : []),
     ])) as HTMLTableElement[];
     let reviewTable: HTMLTableElement | null;
     let reviewLabels: Element[];
-    if (transferReview) {
+    if (canonicalReview) {
       const candidates = tables.map(table => ({ table, labels: ownLabels(table) }))
         .filter(candidate => isRendered(candidate.table))
-        .filter(candidate => candidate.labels.some(label => transferLabels.has(renderedText(label))));
+        .filter(candidate => candidate.labels.some(label => canonicalReview.labels.has(renderedText(label))));
       const complete = candidates.filter(candidate => {
         const labels = candidate.labels.map(renderedText);
-        return transferLabels.size === new Set(labels.filter(label => transferLabels.has(label))).size
-          && transferLabels.size === labels.filter(label => transferLabels.has(label)).length;
+        return canonicalReview.labels.size === new Set(labels.filter(label => canonicalReview.labels.has(label))).size
+          && canonicalReview.labels.size === labels.filter(label => canonicalReview.labels.has(label)).length;
       });
       if (candidates.length === 1) {
-        const labels = candidates[0]!.labels.map(renderedText).filter(label => transferLabels.has(label));
+        const labels = candidates[0]!.labels.map(renderedText).filter(label => canonicalReview.labels.has(label));
         if (new Set(labels).size !== labels.length) throw new Error('Duplicate form fact');
       }
-      if (candidates.length !== 1 || complete.length !== 1) throw new Error('Transfer review facts are missing or ambiguous');
+      if (candidates.length !== 1 || complete.length !== 1) throw new Error(`${canonicalReview.name} review facts are missing or ambiguous`);
       reviewTable = complete[0]!.table;
       reviewLabels = complete[0]!.labels;
     } else {
