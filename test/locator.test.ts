@@ -2,6 +2,7 @@
 // the determinism core. Uses a data: URL so no server is needed.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { checkDetectors } from '../src/replay/detectors.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { TargetResolutionError } from '../src/surface/types.js';
 
@@ -13,6 +14,9 @@ const HOSTILE_PAGE = `<html><body bgcolor="#eee">
 </tr></table></td></tr></table>
 <table><tr><td><a href="#one">12345</a></td><td>SMITH, JOHN</td></tr>
 <tr><td><a href="#two">12345-S01</a></td><td>PRIMARY SHARE</td></tr></table>
+<div hidden>SYSTEM ERROR</div><p>SYSTEM ERROR</p>
+<div hidden>HIDDEN ONLY</div>
+<iframe name="workarea" srcdoc="<p>FRAME ONLY</p>"></iframe>
 </body></html>`;
 
 describe('tiered locator resolution', () => {
@@ -62,5 +66,20 @@ describe('tiered locator resolution', () => {
     });
     expect(d.strategies[0]).toEqual({ kind: 'role', role: 'button', name: 'Search' });
     expect(d.strategies.at(-1)?.kind).toBe('css');
+  });
+
+  it('detects a visible duplicate when the first text match is hidden', async () => {
+    expect(await surface.isTextVisible('SYSTEM ERROR')).toBe(true);
+    expect(await checkDetectors(surface, { detectors: [] })).toMatchObject({
+      id: 'generic-server-error',
+      classification: 'fatal',
+    });
+    expect(await surface.isTextVisible('HIDDEN ONLY')).toBe(false);
+    expect(await surface.isTextVisible('ABSENT')).toBe(false);
+  });
+
+  it('preserves explicit frame selection for visible text', async () => {
+    expect(await surface.isTextVisible('FRAME ONLY', '')).toBe(false);
+    expect(await surface.isTextVisible('FRAME ONLY', 'workarea')).toBe(true);
   });
 });

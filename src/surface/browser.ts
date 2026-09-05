@@ -258,7 +258,7 @@ export class BrowserSurface implements Surface {
   async isTextVisible(text: string, frame?: string): Promise<boolean> {
     for (const f of this.framesToSearch(frame)) {
       try {
-        if (await f.getByText(text).first().isVisible({ timeout: 250 })) return true;
+        if (await f.getByText(text).filter({ visible: true }).first().isVisible({ timeout: 250 })) return true;
       } catch {
         /* frame may be navigating; treat as not visible */
       }
