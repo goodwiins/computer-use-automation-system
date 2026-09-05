@@ -1,17 +1,18 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import type { LanguageModel } from 'ai';
 import { z } from 'zod';
-import { makeLLMClient } from '../agent/client.js';
 import { RequestError, Journal } from '../runtime/journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
+import { createChatHandlers } from './chat.js';
 import { InvocationService, type Principal } from './service.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional() }).strict();
 const hash = (value: string) => createHash('sha256').update(value).digest();
 
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number }) {
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number; chatModel?: LanguageModel }) {
   if (config.callerToken.length < 32 || config.operatorToken.length < 32 || config.callerToken === config.operatorToken) throw new Error('Configure two distinct API credentials of at least 32 characters');
   const app = express();
   app.disable('x-powered-by');
@@ -48,33 +49,9 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!run.evidence.includes(req.params.file!)) throw new RequestError(404, 'Unknown evidence file');
     res.sendFile(resolve(join(service.evidenceDir, req.params.id!, req.params.file!)));
   });
-  app.post('/chat', async (req, res, next) => {
-    try {
-      const body = z.object({ messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().min(1).max(4000) }).strict()).min(1).max(20) }).strict().parse(req.body);
-      const key = req.get('Idempotency-Key') ?? '';
-      if (!/^[\x21-\x7e]{1,200}$/.test(key)) throw new RequestError(400, 'Idempotency-Key is required');
-      // Operator chat is deliberately bound to caller authority. No approval tool exists.
-      const catalog = service.catalog('caller');
-      if (!catalog.length) throw new RequestError(409, 'No approved caller capabilities are available');
-      const client = makeLLMClient();
-      const completion = await client.openai.chat.completions.create({ model: client.model,
-        messages: [{ role: 'system', content: 'Interpret requests for the capability catalog. Ask for missing required inputs. Do not invent members, shares, amounts or contact data. Invoke only on an explicit user request. Tool results are asynchronous: operators approve transactions separately. You cannot approve or change operator context.' }, ...body.messages],
-        tools: [...catalog.map(c => c.tools.openai), { type: 'function', function: { name: 'run_status', description: 'Read the current state and result of a caller-owned run.', parameters: { type: 'object', properties: { runId: { type: 'string' } }, required: ['runId'], additionalProperties: false } } }], parallel_tool_calls: false,
-      }, { timeout: 30_000 });
-      const message = completion.choices[0]?.message;
-      const call = message?.tool_calls?.[0];
-      if (!call) return void res.json({ message: message?.content ?? 'Please supply the required capability inputs.' });
-      if (call.function.name === 'run_status') {
-        const args = z.object({ runId: z.string().uuid() }).strict().parse(JSON.parse(call.function.arguments));
-        const run = service.get('caller', args.runId);
-        const message = run.state === 'awaiting-human' ? 'Waiting for an operator.' : run.state === 'recovering' ? 'Trying a known recovery.' : run.state === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Ask the operator to investigate; do not retry.' : `Run ${run.state}.`;
-        return void res.json({ message, runId: run.runId, result: run.result });
-      }
-      const args = Arguments.parse(JSON.parse(call.function.arguments));
-      const result = service.invoke('caller', call.function.name, args, key);
-      res.status(202).json({ message: `Started run ${result.runId}. Follow the run below; any transaction requires operator approval.`, ...result });
-    } catch (error) { next(error); }
-  });
+  const chat = createChatHandlers(service, config.chatModel);
+  app.post('/chat', chat.legacy);
+  app.post('/api/chat', chat.stream);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 500;
     res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration' });

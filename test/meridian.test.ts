@@ -12,7 +12,6 @@ import { Approval } from '../src/runtime/approval.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams, type OutputValue } from '../src/artifact/schema.js';
-import * as clients from '../src/agent/client.js';
 import { runDiscovery } from '../src/agent/loop.js';
 import * as runtime from '../src/runtime/run.js';
 import { recordArtifact } from '../src/artifact/recorder.js';
@@ -32,6 +31,7 @@ import { InvocationService } from '../src/server/service.js';
 import express from 'express';
 import { chromium } from 'playwright';
 import { request as httpRequest, createServer } from 'node:http';
+import { MockLanguageModelV3 } from 'ai/test';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'meridian-')); dirs.push(dir); return dir; };
@@ -1018,7 +1018,14 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
   const dir = temp(), artifactDir = temp(); const journal = new Journal(join(dir, 'journal'), key);
   const run = journal.reserve('operator', 'r', 'hold', '1.0.0', {});
   const service = new InvocationService(journal, policy, profile, dir, [], artifactDir);
-  const app = createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: 4180 });
+  let tool = 'run_status';
+  const chatModel = new MockLanguageModelV3({ doGenerate: async () => ({
+    content: [{ type: 'tool-call', toolCallId: 'call-1', toolName: tool, input: JSON.stringify({ runId: run.runId }) }],
+    finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+    usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+    warnings: [],
+  }) });
+  const app = createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: 4180, chatModel });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const address = server.address() as { port: number };
   const request = (path: string, headers = {}, method = 'GET', body?: string) => new Promise<{ status: number; headers: Headers }>((resolve, reject) => {
@@ -1034,9 +1041,6 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect((await request(`/runs/${run.runId}/decision`, caller, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'approve' }))).status).toBe(403);
     const fixture = CapabilityArtifact.parse(JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8')));
     vi.spyOn(service, 'catalog').mockReturnValue([{ id: fixture.id, version: fixture.version, description: fixture.description, parameters: fixture.parameters, outputs: fixture.outputs, tools: toToolSchema(fixture) }]);
-    let tool = 'run_status';
-    const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ function: { name: tool, arguments: JSON.stringify({ runId: run.runId }) } }] } }] }));
-    vi.spyOn(clients, 'makeLLMClient').mockReturnValue({ model: 'fixture', openai: { chat: { completions: { create } } } as unknown as ReturnType<typeof clients.makeLLMClient>['openai'] });
     const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
     const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
     expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
