@@ -177,7 +177,8 @@ function parseTimeline(text: string): TimelineResult {
       result.malformed++;
       continue;
     }
-    const spec = typeof raw.event === 'string' ? events[raw.event] : undefined;
+    const spec =
+      typeof raw.event === 'string' && Object.hasOwn(events, raw.event) ? events[raw.event] : undefined;
     if (!spec) {
       result.unrecognized++;
       continue;

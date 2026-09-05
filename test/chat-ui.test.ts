@@ -379,7 +379,9 @@ it('renders a bounded, inert recorded timeline and polls active evidence with au
     });
   const lines = [
     event(0, 'replay.start'),
+    JSON.stringify({ event: '__proto__' }),
     event(1, 'step.start', { action: 'click', risk: 'read', stepId: 'private-step-id' }),
+    JSON.stringify({ event: 'constructor' }),
     event(2, 'action.start', { action: 'click', attempt: 1, requestedRisk: 'read' }),
     event(3, 'risk.classified', {
       attempt: 1,
@@ -409,6 +411,7 @@ it('renders a bounded, inert recorded timeline and polls active evidence with au
   expect(await timeline.locator('li').count()).toBe(50);
   await visible(page, `[data-run-id="${runId}"] .timeline`, 'Showing the newest 50 of 59');
   await visible(page, `[data-run-id="${runId}"] .timeline`, 'Timeline may be incomplete.');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, '2 unrecognized log lines were omitted.');
   expect(await card.locator('.timeline').innerText()).not.toContain(hostile);
   expect(await card.locator('.timeline').innerText()).not.toContain('private-step-id');
   expect(await card.locator('.timeline').innerText()).not.toContain('private.invalid');
@@ -421,6 +424,7 @@ it('renders a bounded, inert recorded timeline and polls active evidence with au
   await page.setViewportSize({ width: 1024, height: 900 });
   await card.getByRole('button', { name: 'Show 9 older events', exact: true }).click();
   expect(await timeline.locator('li').count()).toBe(59);
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Replay started');
   await visible(page, `[data-run-id="${runId}"] .timeline`, 'Step started');
   await visible(page, `[data-run-id="${runId}"] .timeline`, 'Step completed');
   await visible(page, `[data-run-id="${runId}"] .timeline`, 'Discovery turn 2');
