@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
-import { applyMeridianContract, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianTransferMemberTable } from '../src/runtime/contracts.js';
+import { applyMeridianContract, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
@@ -40,6 +40,7 @@ const key = 'hmac-test-key-with-at-least-32-characters';
 const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
 const requestOpenShare = () => ({ member: '9001', shareType: 'S0001', deposit: '5.00' });
+const requestMemberUpdate = () => ({ member: '9001', email: 'member@example.test', phone: '5550001111', address: '1 Main Street' });
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
 const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false,
   frame: { id: 'fixture-workarea', name: 'workarea', url: `${origin}/members/1/hold/review`, navigation: 1 } };
@@ -316,7 +317,6 @@ describe('single-use interventions and live controls', () => {
     expect(run.dispatch).not.toHaveBeenCalled();
   });
   it.each([
-    ['meridian-update-member', '/members/9001', '/members/9001/update', 'Save Changes'],
     ['meridian-place-hold', '/members/9001/hold/review', '/members/9001/hold/post', 'Apply Hold'],
   ] as const)('permits the canonical write destination for %s', async (artifact, url, destination, controlName) => {
     const gate = vi.fn(async () => true);
@@ -343,6 +343,15 @@ describe('single-use interventions and live controls', () => {
     const run = guarded({}, gate, { artifact: 'meridian-open-share' });
     run.change({ url: `${origin}/members/9001/open-share/review`, destination: `${origin}/members/9001/open-share/post`, control: 'Open Share' });
     await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/open-share/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+  it('fails closed when a canonical member update has no request binding', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-update-member' });
+    run.change({ url: `${origin}/members/9001/update`, destination: `${origin}/members/9001/update`, control: 'Save Changes' });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/member-update/i);
     expect(gate).not.toHaveBeenCalled();
     expect(run.beforeDispatch).not.toHaveBeenCalled();
     expect(run.dispatch).not.toHaveBeenCalled();
@@ -677,10 +686,30 @@ it('refuses an incomplete canonical open share before allocating runtime evidenc
   expect(readdirSync(evidenceDir)).toEqual([]);
 });
 
+it('refuses an incomplete canonical member update before allocating runtime evidence', () => {
+  const evidenceDir = temp();
+  expect(() => runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-update-member', version: '1.0.0', policy, profile,
+    params: { member: '9001', email: 'member@example.test', phone: '5550001111' }, sensitive: [], gate: async () => false, evidenceDir,
+  })).toThrow(/complete request/i);
+  expect(readdirSync(evidenceDir)).toEqual([]);
+});
+
 it('creates the canonical open-share runtime with a completion boundary', async () => {
   const candidate = runtime.createRuntime({
     kind: 'replay', artifact: 'meridian-open-share', version: '1.0.0', policy, profile,
     params: requestOpenShare(), sensitive: [], gate: async () => false, evidenceDir: temp(),
+    operator: { operator: 'teller-test', password: 'secret', branch: 'MAIN-001', role: 'TELLER' },
+    beforeDispatch: () => {},
+  });
+  expect(candidate.validateCompletion).toBeTypeOf('function');
+  await candidate.close();
+});
+
+it('creates the canonical member-update runtime with a completion boundary', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'replay', artifact: 'meridian-update-member', version: '1.0.0', policy, profile,
+    params: requestMemberUpdate(), sensitive: [], gate: async () => false, evidenceDir: temp(),
     operator: { operator: 'teller-test', password: 'secret', branch: 'MAIN-001', role: 'TELLER' },
     beforeDispatch: () => {},
   });
@@ -697,9 +726,9 @@ it('allows a cu-nexus runtime whose capability ID matches the canonical transfer
   await candidate.close();
 });
 
-it('keeps generic discovery named meridian-open-share free of strict completion binding', async () => {
+it.each(['meridian-open-share', 'meridian-update-member'])('keeps generic discovery named %s free of strict completion binding', async artifact => {
   const candidate = runtime.createRuntime({
-    kind: 'discovery', artifact: 'meridian-open-share', version: '1.0.0', policy,
+    kind: 'discovery', artifact, version: '1.0.0', policy,
     profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
   });
   expect(candidate.validateCompletion).toBeUndefined();
@@ -1394,6 +1423,174 @@ describe('MERIDIAN guarded open-share path', () => {
   });
 });
 
+describe('MERIDIAN guarded member-update path', () => {
+  const request = requestMemberUpdate();
+  const contactRow = (overrides: Record<string, string> = {}) => ({
+    memberLabel: 'Member No.:', member: request.member, nameLabel: 'Name:', name: 'Fixture Member',
+    emailLabel: 'E-mail:', email: request.email, phoneLabel: 'Phone:', phone: request.phone,
+    addressLabel: 'Address:', address: request.address, ...overrides,
+  });
+
+  function harness(gate = vi.fn(async () => true), initialRows: Array<Record<string, string>> = [contactRow()], operationOrigin = origin, completionRedirectOrigin?: string) {
+    let rows = initialRows;
+    let url = `${operationOrigin}/members/9001/update`;
+    let navigation = 0;
+    let frameId = 'update-workarea';
+    let changeFrameDuringRead = false;
+    const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
+    const run = guarded({
+      currentUrl: () => url,
+      currentFrame: frame,
+      lastResolvedFrame: frame,
+      frameUrls: () => [`${operationOrigin}/frameset`, url],
+      navigate: async next => { url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next; navigation++; },
+      readTable: async () => { if (changeFrameDuringRead) frameId = 'replacement-workarea'; return rows; },
+    }, gate, { artifact: 'meridian-update-member', memberUpdate: { expected: request, contactTable: meridianMemberContactTable } }, undefined,
+    async expected => { url = expected.destination; navigation++; }, undefined,
+    Policy.parse({ ...policy, allowedOrigins: operationOrigin === origin ? [origin] : ['https://policy-first.example', operationOrigin, ...(completionRedirectOrigin ? [completionRedirectOrigin] : [])] }));
+    const setLive = (next: Partial<LiveControl> = {}) => run.change({
+      url: `${operationOrigin}/members/9001/update`, destination: `${operationOrigin}/members/9001/update`, method: 'POST',
+      control: 'Save Changes', submit: true, facts: { ...request }, frame: frame(), ...next,
+    });
+    setLive();
+    return {
+      run, gate, setLive, currentUrl: () => url,
+      setUrl(next: string) { url = next; navigation++; },
+      setRows(next: Array<Record<string, string>>) { rows = next; },
+      replaceFrame() { frameId = 'replacement-workarea'; },
+      replaceFrameDuringRead() { changeFrameDuringRead = true; },
+    };
+  }
+
+  it('compares member update facts exactly without contact normalization', () => {
+    expect(() => assertMemberUpdateFacts(request, { ...request })).not.toThrow();
+    for (const [field, value] of [['member', '09001'], ['email', 'MEMBER@example.test'], ['phone', '(555) 000-1111'], ['address', '1 Main St.']] as const) {
+      expect(() => assertMemberUpdateFacts(request, { ...request, [field]: value })).toThrow(/member-update/i);
+    }
+  });
+
+  it('enters the update form through the normal member-record link before saving', async () => {
+    const h = harness();
+    const memberUrl = `${origin}/members/9001`;
+    const updateUrl = `${memberUrl}/update`;
+    h.setUrl(memberUrl);
+    h.setLive({ url: memberUrl, destination: updateUrl, method: 'GET', control: 'Update Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+    expect(h.currentUrl()).toBe(updateUrl);
+
+    h.setLive();
+    await h.run.surface.click(target);
+    expect(h.gate).toHaveBeenCalledOnce();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['member', '9999'], ['email', 'other@example.test'], ['phone', '5550002222'], ['address', '2 Main Street'],
+  ] as const)('rejects a changed native %s before approval or intent', async (field, value) => {
+    const h = harness();
+    h.setLive({ facts: { ...request, [field]: value } });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/member-update/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing facts, a wrong route member or origin, and a replaced form frame', async () => {
+    const missing = harness();
+    const facts = { ...request } as Record<string, string>;
+    delete facts.phone;
+    missing.setLive({ facts });
+    await expect(missing.run.surface.click(target)).rejects.toThrow(/facts/i);
+    expect(missing.gate).not.toHaveBeenCalled();
+
+    const wrongMember = harness();
+    wrongMember.setLive({ destination: `${origin}/members/9999/update` });
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/member-update/i);
+    expect(wrongMember.gate).not.toHaveBeenCalled();
+
+    const wrongOrigin = harness();
+    wrongOrigin.setLive({ destination: `https://other.example/members/9001/update` });
+    await expect(wrongOrigin.run.surface.click(target)).rejects.toThrow();
+    expect(wrongOrigin.gate).not.toHaveBeenCalled();
+
+    const wrongFrame = harness();
+    wrongFrame.replaceFrame();
+    await expect(wrongFrame.run.surface.click(target)).rejects.toThrow(/frame/i);
+    expect(wrongFrame.gate).not.toHaveBeenCalled();
+  });
+
+  it('rechecks exact form facts after approval and aborts without dispatch', async () => {
+    let h: ReturnType<typeof harness>;
+    const gate = vi.fn(async () => { h.setLive({ facts: { ...request, email: 'changed@example.test' } }); return true; });
+    h = harness(gate);
+    await expect(h.run.surface.click(target)).rejects.toThrow(/invalidated/i);
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+
+    const aborted = harness(vi.fn(async () => false));
+    await expect(aborted.run.surface.click(target)).rejects.toThrow(/aborted/i);
+    expect(aborted.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(aborted.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('dispatches once and accepts one fresh exactly labeled contact row', async () => {
+    const h = harness();
+    await h.run.surface.click(target);
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).toHaveBeenCalledOnce();
+    await expect(h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).resolves.toBeUndefined();
+  });
+
+  it('uses the validated update origin for read-back when policy has multiple origins', async () => {
+    const operationOrigin = 'https://member-system.example';
+    const h = harness(vi.fn(async () => true), [contactRow()], operationOrigin);
+    await h.run.surface.click(target);
+    await h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' });
+    expect(h.currentUrl()).toBe(`${operationOrigin}/members/9001`);
+  });
+
+  it('rejects same-path completion read-back redirected to another allowed origin', async () => {
+    const operationOrigin = 'https://member-system.example';
+    const redirectOrigin = 'https://member-redirect.example';
+    const h = harness(vi.fn(async () => true), [contactRow()], operationOrigin, redirectOrigin);
+    await h.run.surface.click(target);
+    await expect(h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).rejects.toThrow(/member-update/i);
+    expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it.each([
+    ['stale email', [contactRow({ email: 'old@example.test' })]],
+    ['other member', [contactRow({ member: '9999' })]],
+    ['wrong label', [contactRow({ emailLabel: 'Email:' })]],
+    ['missing value', [Object.fromEntries(Object.entries(contactRow()).filter(([key]) => key !== 'phone'))]],
+    ['missing row', []],
+    ['ambiguous rows', [contactRow(), contactRow()]],
+  ] as const)('rejects %s during fresh completion verification', async (_case, rows) => {
+    const h = harness();
+    await h.run.surface.click(target);
+    h.setRows([...rows]);
+    await expect(h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).rejects.toThrow(/member-update/i);
+  });
+
+  it('requires a dispatched request, a real saved output, and a stable read-back frame', async () => {
+    const undispatched = harness();
+    await expect(undispatched.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).rejects.toThrow(/dispatched/i);
+
+    const missingOutput = harness();
+    await missingOutput.run.surface.click(target);
+    await expect(missingOutput.run.surface.validateMemberUpdateCompletion({ saved: '' })).rejects.toThrow(/saved output/i);
+
+    const changedFrame = harness();
+    await changedFrame.run.surface.click(target);
+    changedFrame.replaceFrameDuringRead();
+    await expect(changedFrame.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).rejects.toThrow(/frame/i);
+  });
+});
+
 it('awaits delayed discovery completion rejection and keeps the dispatched outcome unknown', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
   const calls = [
@@ -1443,15 +1640,18 @@ it('runs discovery completion validation before emitting success', async () => {
   expect(events.some(event => event.event === 'discovery.finish' && event.status === 'success')).toBe(true);
 });
 
-it('records the receipt endpoint before completion read-back and replays the generated checkpoint', async () => {
-  const receiptUrl = `${origin}/members/9001/open-share/post`;
+it.each([
+  { capability: 'meridian-open-share', action: 'open share', params: requestOpenShare(), receiptPath: 'open-share/post', checkpoint: 'Share opened', outputName: 'shareId', outputValue: '9001-S0001-NEW', sensitive: ['member', 'deposit'] },
+  { capability: 'meridian-update-member', action: 'save member', params: requestMemberUpdate(), receiptPath: 'update', checkpoint: 'Member saved', outputName: 'saved', outputValue: 'Member saved', sensitive: ['member', 'email', 'phone', 'address'] },
+] as const)('records the $capability endpoint before completion read-back and replays the generated checkpoint', async fixture => {
+  const receiptUrl = `${origin}/members/9001/${fixture.receiptPath}`;
   const memberUrl = `${origin}/members/9001`;
-  const params = requestOpenShare();
+  const params = fixture.params;
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
   const calls = [
-    { name: 'click', args: { nameAttr: 'submit', reason: 'open share', risk: 'irreversible' } },
-    { name: 'assert', args: { kind: 'textVisible', text: 'Share opened', reason: 'verify receipt' } },
-    { name: 'extract', args: { nameAttr: 'shareId', outputName: 'shareId', reason: 'read new share ID' } },
+    { name: 'click', args: { nameAttr: 'submit', reason: fixture.action, risk: 'irreversible' } },
+    { name: 'assert', args: { kind: 'textVisible', text: fixture.checkpoint, reason: 'verify receipt' } },
+    { name: 'extract', args: { nameAttr: fixture.outputName, outputName: fixture.outputName, reason: 'read result' } },
     { name: 'done', args: { summary: 'complete' } },
   ];
   let discoveryUrl = `${origin}/signon`;
@@ -1462,7 +1662,7 @@ it('records the receipt endpoint before completion read-back and replays the gen
     navigate: async url => { discoveryUrl = url; },
     click: vi.fn(async () => { discoverySurface.mutationDispatched = true; discoveryUrl = receiptUrl; return report; }),
     fill: async () => report, select: async () => report,
-    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && discoveryUrl === receiptUrl,
+    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => text === fixture.checkpoint && discoveryUrl === receiptUrl,
     describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
   };
   const create = vi.fn(async () => {
@@ -1470,7 +1670,7 @@ it('records the receipt endpoint before completion read-back and replays the gen
     return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
   });
   const discoveryCompletion = vi.fn(async () => { await discoverySurface.navigate(memberUrl); });
-  const discovery = await runDiscovery('open share', `${origin}/signon`, params, [origin], {
+  const discovery = await runDiscovery(fixture.action, `${origin}/signon`, params, [origin], {
     surface: discoverySurface, logger: new RunLogger('discovery', new Redactor(), temp(), true),
     openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
     model: 'fixture', maxSteps: 4, validateCompletion: discoveryCompletion,
@@ -1482,11 +1682,11 @@ it('records the receipt endpoint before completion read-back and replays the gen
   expect(discoveryCompletion).toHaveBeenCalledOnce();
 
   const artifact = recordArtifact({
-    name: 'meridian-open-share', description: 'Open share', goal: 'Open share', entryUrl: `${origin}/signon`,
-    params, sensitiveParams: ['member', 'deposit'], allowedOrigins: [origin], appId: 'meridian', appDetectors: [], model: 'fixture', discoveryRunId: 'fixture',
+    name: fixture.capability, description: fixture.action, goal: fixture.action, entryUrl: `${origin}/signon`,
+    params, sensitiveParams: [...fixture.sensitive], allowedOrigins: [origin], appId: 'meridian', appDetectors: [], model: 'fixture', discoveryRunId: 'fixture',
   }, discovery);
   artifact.status = 'approved';
-  expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: '/members/{{member}}/open-share/post$' });
+  expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: `/members/{{member}}/${fixture.receiptPath}$` });
 
   let replayUrl = `${origin}/signon`;
   const replaySurface: Surface = {
@@ -1496,67 +1696,73 @@ it('records the receipt endpoint before completion read-back and replays the gen
     navigate: async url => { replayUrl = url; },
     click: vi.fn(async () => { replaySurface.mutationDispatched = true; replayUrl = receiptUrl; return report; }),
     fill: async () => report, select: async () => report,
-    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && replayUrl === receiptUrl,
+    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => text === fixture.checkpoint && replayUrl === receiptUrl,
     describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
   };
   const replayCompletion = vi.fn(async () => { await replaySurface.navigate(memberUrl); });
   const replay = await runReplay(artifact, params, {
     surface: replaySurface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: replayCompletion,
   });
-  expect(replay).toMatchObject({ status: 'success', outputs: { shareId: '9001-S0001-NEW' } });
+  expect(replay).toMatchObject({ status: 'success', outputs: { [fixture.outputName]: fixture.outputValue } });
   expect(replayCompletion).toHaveBeenCalledOnce();
   expect(replaySurface.click).toHaveBeenCalledOnce();
   expect(replayUrl).toBe(memberUrl);
 });
 
-it('keeps a wrong-status open-share completion unknown after one dispatch', async () => {
+it.each([
+  { capability: 'meridian-open-share', params: requestOpenShare(), path: 'open-share/post', checkpoint: 'Share opened', outputName: 'shareId', outputValue: '9001-S0001-NEW' },
+  { capability: 'meridian-update-member', params: requestMemberUpdate(), path: 'update', checkpoint: 'Member saved', outputName: 'saved', outputValue: 'Member saved' },
+] as const)('awaits replay $capability completion and keeps delayed rejection unknown after one dispatch', async fixture => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
-    id: 'meridian-open-share', name: 'meridian-open-share', description: 'Open share', version: '1.0.0', status: 'approved',
+    id: fixture.capability, name: fixture.capability, description: fixture.capability, version: '1.0.0', status: 'approved',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
-    parameters: meridianContracts['meridian-open-share'].parameters,
-    outputs: [{ name: 'shareId', type: 'string', description: 'New share ID', sensitive: true }],
+    parameters: meridianContracts[fixture.capability].parameters,
+    outputs: [{ name: fixture.outputName, type: 'string', description: 'Result', sensitive: true }],
     steps: [
-      { id: 'post', intent: 'open share', action: 'click', target, risk: 'irreversible' },
-      { id: 'checkpoint', intent: 'verify result', action: 'assert', assert: { kind: 'textVisible', text: 'Share opened' }, risk: 'read' },
-      { id: 'share-id', intent: 'read new share ID', action: 'extract', target, extract: { output: 'shareId' }, risk: 'read' },
+      { id: 'post', intent: 'post change', action: 'click', target, risk: 'irreversible' },
+      { id: 'checkpoint', intent: 'verify result', action: 'assert', assert: { kind: 'textVisible', text: fixture.checkpoint }, risk: 'read' },
+      { id: 'result', intent: 'read result', action: 'extract', target, extract: { output: fixture.outputName }, risk: 'read' },
     ],
-    successCondition: { kind: 'textVisible', text: 'Share opened' }, detectors: [],
+    successCondition: { kind: 'textVisible', text: fixture.checkpoint }, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
   });
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
   const surface: Surface = {
     mutationDispatched: false,
-    start: async () => {}, observe: async () => ({ url: `${origin}/members/9001/open-share/post`, title: '', frames: [] }),
-    currentUrl: () => `${origin}/members/9001/open-share/post`, frameUrls: () => [`${origin}/members/9001/open-share/post`],
+    start: async () => {}, observe: async () => ({ url: `${origin}/members/9001/${fixture.path}`, title: '', frames: [] }),
+    currentUrl: () => `${origin}/members/9001/${fixture.path}`, frameUrls: () => [`${origin}/members/9001/${fixture.path}`],
     navigate: async () => {}, click: vi.fn(async () => { surface.mutationDispatched = true; return report; }),
-    fill: async () => report, select: async () => report, readText: async () => ({ text: '9001-S0001-NEW', report }),
-    isTextVisible: async text => text === 'Share opened', describeTarget: async descriptor => descriptor,
+    fill: async () => report, select: async () => report, readText: async () => ({ text: fixture.outputValue, report }),
+    isTextVisible: async text => text === fixture.checkpoint, describeTarget: async descriptor => descriptor,
     screenshot: async () => {}, close: async () => {},
   };
   const validateCompletion = vi.fn(async () => { await Promise.resolve(); throw new Error('Open-share resulting state is not OPEN'); });
   const escalate = vi.fn(async () => 'retry' as const);
-  const result = await runReplay(artifact, requestOpenShare(), { surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion, escalate });
+  const result = await runReplay(artifact, fixture.params, { surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion, escalate });
   expect(result).toMatchObject({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
   expect(validateCompletion).toHaveBeenCalledOnce();
   expect(surface.click).toHaveBeenCalledOnce();
   expect(escalate).not.toHaveBeenCalled();
 });
 
-it('fails canonical open-share replay preflight when completion validation is absent', async () => {
+it.each([
+  ['meridian-open-share', requestOpenShare()],
+  ['meridian-update-member', requestMemberUpdate()],
+] as const)('fails canonical %s replay preflight when completion validation is absent', async (capability, params) => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
-    id: 'meridian-open-share', name: 'meridian-open-share', description: 'Open share', version: '1.0.0', status: 'approved',
+    id: capability, name: capability, description: capability, version: '1.0.0', status: 'approved',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
-    parameters: meridianContracts['meridian-open-share'].parameters,
-    outputs: [{ name: 'shareId', type: 'string', description: 'New share ID' }],
+    parameters: meridianContracts[capability].parameters,
+    outputs: [{ name: capability === 'meridian-open-share' ? 'shareId' : 'saved', type: 'string', description: 'Result' }],
     steps: [{ id: 'checkpoint', intent: 'fixture', action: 'assert', assert: { kind: 'urlMatches', pattern: '.*' }, risk: 'read' }],
     successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
   });
   const run = guarded();
   const start = vi.spyOn(run.surface, 'start');
-  const result = await runReplay(artifact, requestOpenShare(), { surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy });
+  const result = await runReplay(artifact, params, { surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy });
   expect(result).toMatchObject({ status: 'failure', failure: { stepId: '(pre-flight)' } });
   expect(start).not.toHaveBeenCalled();
   expect(run.dispatch).not.toHaveBeenCalled();

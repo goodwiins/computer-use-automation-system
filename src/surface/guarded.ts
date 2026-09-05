@@ -1,6 +1,6 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile, type FrameContext, type LiveControl } from '../runtime/profile.js';
-import { assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, meridianContracts, type OpenShareFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
+import { assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, meridianContracts, type MemberUpdateFacts, type OpenShareFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
 // Policy enforcement as a Surface decorator. Every actor — the LLM during
@@ -15,6 +15,7 @@ const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
 const OPEN_SHARE_ROUTE = /^\/members\/(\d+)\/open-share(?:\/(review|post))?$/;
 const MEMBER_ROUTE = /^\/members\/(\d+)$/;
+const UPDATE_ROUTE = /^\/members\/(\d+)\/update$/;
 const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
   'meridian-funds-transfer': /^\/members\/\d+\/transfer\/post$/,
   'meridian-open-share': /^\/members\/\d+\/open-share\/post$/,
@@ -91,6 +92,10 @@ type OpenShareBinding = {
 };
 type OpenShareStage = 'member' | 'open-share' | 'review';
 type OpenShareState = { member: string; priorShareIds: string[]; frame: FrameContext; stage: OpenShareStage };
+type MemberUpdateBinding = {
+  expected: MemberUpdateFacts;
+  contactTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
+};
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -114,6 +119,7 @@ export class GuardedSurface implements Surface {
   private signOnSubmitted = false;
   private transferEligibility?: TransferEligibility;
   private openShareState?: OpenShareState;
+  private memberUpdateOrigin?: string;
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -134,6 +140,7 @@ export class GuardedSurface implements Surface {
       beforeDispatch: (context: ActionContext) => void;
       transfer?: TransferBinding;
       openShare?: OpenShareBinding;
+      memberUpdate?: MemberUpdateBinding;
     },
     private readonly onAction?: (event: string, data: Record<string, unknown>) => void,
   ) {}
@@ -355,6 +362,30 @@ export class GuardedSurface implements Surface {
     });
   }
 
+  private assertMemberUpdateControl(live: LiveControl): void {
+    const binding = this.runtime?.memberUpdate;
+    const sourceUrl = new URL(live.url, this.policy.allowedOrigins[0]);
+    const destinationUrl = new URL(live.destination, this.policy.allowedOrigins[0]);
+    const source = UPDATE_ROUTE.exec(this.path(live.url));
+    const destination = UPDATE_ROUTE.exec(this.path(live.destination));
+    if (!binding || !source || !destination || source[1] !== binding.expected.member || destination[1] !== binding.expected.member
+      || sourceUrl.origin !== destinationUrl.origin || !live.frame) {
+      throw new Error('Member-update form is not bound to the requested member');
+    }
+    const current = this.inner.currentFrame?.();
+    if (!this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url) || this.path(current!.url) !== this.path(live.url)) {
+      throw new Error('Member-update frame is no longer bound to this run');
+    }
+    const fact = (name: keyof MemberUpdateFacts) => {
+      const value = live.facts[name];
+      if (typeof value !== 'string') throw new Error('Member-update form facts are missing or ambiguous');
+      return value;
+    };
+    assertMemberUpdateFacts(binding.expected, {
+      member: fact('member'), email: fact('email'), phone: fact('phone'), address: fact('address'),
+    });
+  }
+
   private requireTransferRoute(url: string): void {
     const route = this.transferStage(url);
     if (!route || this.runtime?.profile.appId !== 'meridian' || this.runtime.artifact !== 'meridian-funds-transfer') return;
@@ -508,7 +539,7 @@ export class GuardedSurface implements Surface {
   // the shot, and dropping them here would render them in the clear in every
   // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
   screenshot(path: string, opts?: { maskValues?: string[] }) { return this.inner.screenshot(path, opts); }
-  close() { this.transferEligibility = undefined; this.openShareState = undefined; return this.inner.close(); }
+  close() { this.transferEligibility = undefined; this.openShareState = undefined; this.memberUpdateOrigin = undefined; return this.inner.close(); }
   drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
@@ -588,6 +619,8 @@ export class GuardedSurface implements Surface {
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
         const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         const openSharePost = OPEN_SHARE_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
+        const memberUpdatePost = this.runtime.artifact === 'meridian-update-member' && rule?.mutation === true
+          && UPDATE_ROUTE.test(this.path(live.destination));
         if (rule?.mutation) {
           this.assertMeridianMutationOrigin(live);
           this.assertCapabilityOperation(live.destination);
@@ -595,6 +628,7 @@ export class GuardedSurface implements Surface {
         }
         if (transferPost) this.assertTransferReview(live);
         if (openSharePost) this.assertOpenShareReview(live);
+        if (memberUpdatePost) this.assertMemberUpdateControl(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
         if (recovery && (rule?.mutation || checkAction(this.policy, 'click', live.destination, this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
@@ -615,6 +649,7 @@ export class GuardedSurface implements Surface {
           this.assertAutomation();
           if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
           if (this.runtime.openShare && this.openShareStage(live.url)) this.assertOpenShareControl(live);
+          if (memberUpdatePost) this.assertMemberUpdateControl(live);
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
@@ -622,9 +657,11 @@ export class GuardedSurface implements Surface {
             this.assertTransferReview(refreshed);
           }
           if (openSharePost) this.assertOpenShareReview(refreshed);
+          if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
           this.assertAutomation();
+          if (memberUpdatePost) this.memberUpdateOrigin = new URL(refreshed.destination).origin;
           this.mutationDispatched = true;
           // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.
           this.emit('mutation.intent', { effectiveRisk: 'irreversible' });
@@ -711,6 +748,37 @@ export class GuardedSurface implements Surface {
       member: state.member, shareId: added[0]!.shareId,
       shareType: parseMemberTableShareType(added[0]!.type), deposit: added[0]!.deposit,
     }, outputs);
+  }
+  async validateMemberUpdateCompletion(outputs: Record<string, OutputValue>): Promise<void> {
+    const binding = this.runtime?.memberUpdate;
+    if (!binding || !this.memberUpdateOrigin || !this.mutationDispatched) throw new Error('Member-update completion is not bound to a dispatched request');
+    if (Object.keys(outputs).length !== 1 || typeof outputs.saved !== 'string' || !outputs.saved.trim()) throw new Error('Member-update saved output is missing');
+    const memberUrl = new URL(`/members/${binding.expected.member}`, this.memberUpdateOrigin).toString();
+    const memberOrigin = new URL(memberUrl).origin;
+    const sameOrigin = (url: string) => { try { return new URL(url).origin === memberOrigin; } catch { return false; } };
+    await this.navigate(memberUrl);
+    const before = this.inner.currentFrame?.();
+    if (!before || !sameOrigin(before.url) || this.path(before.url) !== this.path(memberUrl)) throw new Error('Member-update read-back frame is unavailable');
+    const rows = await this.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, undefined, binding.contactTable.rowSelector);
+    const resolved = this.inner.lastResolvedFrame?.();
+    const after = this.inner.currentFrame?.();
+    if (!resolved || !sameOrigin(resolved.url) || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberUrl)) {
+      throw new Error('Member-update read-back frame changed');
+    }
+    if (rows.length !== 1) throw new Error('Member-update resulting state is missing or ambiguous');
+    const row = rows[0]!;
+    const exact = (name: string) => {
+      const value = row[name];
+      if (typeof value !== 'string') throw new Error('Member-update resulting state is incomplete');
+      return value;
+    };
+    if (exact('memberLabel') !== 'Member No.:' || exact('nameLabel') !== 'Name:' || !exact('name').trim()
+      || exact('emailLabel') !== 'E-mail:' || exact('phoneLabel') !== 'Phone:' || exact('addressLabel') !== 'Address:') {
+      throw new Error('Member-update contact table labels are missing or ambiguous');
+    }
+    assertMemberUpdateFacts(binding.expected, {
+      member: exact('member'), email: exact('email'), phone: exact('phone'), address: exact('address'),
+    });
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     return this.action('extract', 'read', async () => {
