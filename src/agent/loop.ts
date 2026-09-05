@@ -108,7 +108,7 @@ export async function runDiscovery(
               `--- frame "${f.frame}"${f.frame ? '' : ' (main page; omit frame argument)'} ---\n${f.snapshot.slice(0, MAX_SNAPSHOT_CHARS)}` +
               (f.fields.length
                 ? `\nform fields in this frame (use nameAttr to target them): ${f.fields.map((x) => `${x.name} (${x.type})`).join(', ')}`
-                : '') + (f.tables?.length ? `\nObserved leaf-table structure (selectors are derived from the live DOM): ${JSON.stringify(f.tables)}` : ''),
+                : '') + (f.tables?.length ? `\nObserved leaf-table structure (selectors are derived from the live DOM): ${JSON.stringify(f.tables.map(({ selector, headers, headerCells, rows }) => ({ selector, headers, headerCells, rows })))}` : ''),
           )
           .join('\n');
       messages.push({ role: 'user', content: deps.sanitizeObservation?.(obsText) ?? obsText });
