@@ -166,13 +166,32 @@ regressions cover validated scenario forwarding, malformed-option rejection,
 same-key deduplication/conflict, and unchanged historical no-fault identity.
 No new hosted run or live acceptance is inferred from these offline checks.
 
+Local integration `1585de917e0a8fe6174eec6c5f4a39459aebe825` adds independently
+reviewed visibility repair `b15a2ad` and evaluator repair `9a83e24`. The final
+combined gate passes both typechecks, build, 413 tests / 19 files, artifact
+validation, zero dependency vulnerabilities, and diff check. An initial suite
+run collided with another worktree's fixture server on port 4199 (412 passed,
+one failed with EADDRINUSE); the unchanged source passed after coordinating
+exclusive use of that port. This is recorded as local test interference.
+
+The exact synthetic evaluator counterexamples that previously passed now fail
+closed: duplicate classification retains the mutation and reports duplicate
+classification, downgrade, and mutation-without-intent violations; absent
+mutation metadata produces an unknown/incomplete verdict. Both closed native
+absent-member discovery/replay journals were independently HMAC-authenticated
+and re-evaluated with the repaired reducer: each passes with 9 attempts and
+zero intents, matching public query parameters, distinct bound request keys,
+and unchanged journal/log hashes. Their producer remains `0baf8df`; this is
+local re-evaluation, not a new target run or write acceptance. The UI timeline
+was task/final-reviewed at `41b9ab`; live UI evidence remains at `681ab82`.
+
 | Requirement | Verified result / remaining boundary |
 | --- | --- |
 | AI SDK caller chat and assistant-ui | Genuine configured Azure model invoked an approved read through the production bundle; authoritative card/dashboard result agreement verified |
 | Shared run state, evidence, approval controls, accessibility | Offline bundled browser checks pass; live reads prove history/reconnect and typed results; live mutation approval remains a separate gate |
 | Exceptional read | Separate direct inquiry observed `business_outcome / NO_SUCH_MEMBER`; evaluator passed |
 | Model-free replay | Fresh process without provider credentials/configuration invoked the approved read through the direct UI form; evaluator passed |
-| Integrated local gates | At `34f5961`: both typechecks, build, 404 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
+| Integrated local gates | At `1585de9`: both typechecks, build, 413 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
 | Seven discovery/artifact/replay pairs | Coordinating task owns the complete matrix; this UI verification does not add write acceptance or complete the four write gates |
 | Publication / hosted checks | This task made no push, PR, remote merge or deployment; branch-head hosted checks remain outside this local result |
 
