@@ -73,7 +73,7 @@ async function fixture() {
   );
   const state = {
     runs: [] as Record<string, any>[],
-    requests: [] as { path: string; authorization?: string; body?: any; key?: string }[],
+    requests: [] as { path: string; method?: string; authorization?: string; body?: any; key?: string }[],
     invocations: new Map<string, string>(),
     decisions: [] as string[],
     offline: false,
@@ -164,6 +164,7 @@ async function fixture() {
   server.on('request', (req, res) => {
     const record = {
       path: req.url!,
+      method: req.method,
       authorization: req.headers.authorization,
       key: req.headers['idempotency-key'] as string,
       body: undefined as any,
@@ -215,7 +216,7 @@ async function fixture() {
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor();
   }
-  return { state, service, model, browser, page, connect, errors, url };
+  return { state, service, model, browser, page, connect, errors, url, evidenceDir };
 }
 async function visible(page: Page, selector: string, text: string) {
   await page.waitForFunction(
@@ -367,6 +368,153 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
 }, 30000);
+it('renders a bounded, inert recorded timeline and polls active evidence with authenticated GETs only', async () => {
+  const { page, state, connect, evidenceDir, errors } = await fixture();
+  const event = (seq: number, name: string, data: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      event: name,
+      seq,
+      ts: new Date(Date.UTC(2026, 8, 5, 12, 0, seq)).toISOString(),
+      ...data,
+    });
+  const lines = [
+    event(0, 'replay.start'),
+    event(1, 'step.start', { action: 'click', risk: 'read', stepId: 'private-step-id' }),
+    event(2, 'action.start', { action: 'click', attempt: 1, requestedRisk: 'read' }),
+    event(3, 'risk.classified', {
+      attempt: 1,
+      requestedRisk: 'read',
+      effectiveRisk: 'read',
+      mutation: false,
+      method: 'GET',
+    }),
+    event(4, 'action.end', { action: 'click', attempt: 1, effectiveRisk: 'read', status: 'success', ms: 12 }),
+    event(5, 'step.ok', { action: 'click', ms: 13, isRetry: false }),
+    event(6, 'discovery.observe', { turn: 2, url: `https://private.invalid/${hostile}` }),
+    event(7, 'discovery.decision', { turn: 2, args: { private: hostile } }),
+    ...Array.from({ length: 50 }, (_, index) => event(index + 8, 'step.resolution')),
+    event(58, 'action.start', { action: hostile, attempt: -1, error: hostile }),
+    event(58, 'replay.success'),
+    '{malformed',
+  ];
+  writeFileSync(join(evidenceDir, runId, 'log.jsonl'), `${lines.join('\n')}\n`);
+  state.runs.push(initialRun());
+  await connect();
+  expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(0);
+
+  const card = page.locator(`[data-run-id="${runId}"]`).last();
+  await card.getByText('Run details and evidence', { exact: true }).click();
+  const timeline = card.getByRole('list', { name: 'Recorded step timeline' });
+  await timeline.waitFor();
+  expect(await timeline.locator('li').count()).toBe(50);
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Showing the newest 50 of 59');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Timeline may be incomplete.');
+  expect(await card.locator('.timeline').innerText()).not.toContain(hostile);
+  expect(await card.locator('.timeline').innerText()).not.toContain('private-step-id');
+  expect(await card.locator('.timeline').innerText()).not.toContain('private.invalid');
+  await page.setViewportSize({ width: 1024, height: 900 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: join(evidencePath, 'timeline-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 900 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: join(evidencePath, 'timeline-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await card.getByRole('button', { name: 'Show 9 older events', exact: true }).click();
+  expect(await timeline.locator('li').count()).toBe(59);
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Step started');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Step completed');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Discovery turn 2');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Attempt 1');
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Sequence 0');
+  expect(
+    state.requests.find((request) => request.path.endsWith('/evidence/log.jsonl'))?.authorization,
+  ).toBe(`Bearer ${callerToken}`);
+
+  const posts = state.requests.filter((request) => request.method === 'POST').length;
+  lines.splice(-2, 2, event(59, 'replay.success'));
+  writeFileSync(join(evidenceDir, runId, 'log.jsonl'), `${lines.join('\n')}\n`);
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Replay completed successfully');
+  expect(state.requests.filter((request) => request.method === 'POST')).toHaveLength(posts);
+
+  await card.getByText('Run details and evidence', { exact: true }).click();
+  const reads = state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl')).length;
+  await page.waitForTimeout(1_200);
+  expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(reads);
+  expect(errors).toEqual([]);
+}, 30000);
+it('keeps historical timeline data on refresh errors and cancels late active reads on close or disconnect', async () => {
+  const { page, state, connect, evidenceDir, errors } = await fixture();
+  const missingRunId = '55555555-5555-4555-8555-555555555555';
+  writeFileSync(
+    join(evidenceDir, runId, 'log.jsonl'),
+    `${JSON.stringify({ event: 'replay.success', seq: 0, ts: '2026-09-05T12:00:00.000Z' })}\n`,
+  );
+  state.runs.push(
+    { ...initialRun(), state: 'success' },
+    { ...initialRun(), runId: missingRunId, state: 'success', evidence: [] },
+  );
+  await connect();
+
+  const card = page.locator(`[data-run-id="${runId}"]`).last();
+  await card.getByText('Run details and evidence', { exact: true }).click();
+  await card.getByRole('list', { name: 'Recorded step timeline' }).waitFor();
+  const completedReads = state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl')).length;
+  await page.waitForTimeout(1_200);
+  expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(completedReads);
+
+  let failedReads = 0;
+  const evidencePattern = `**/runs/${runId}/evidence/log.jsonl`;
+  await page.route(evidencePattern, (route) => {
+    failedReads++;
+    return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"offline"}' });
+  });
+  await card.getByRole('button', { name: 'Refresh timeline', exact: true }).click();
+  await visible(page, `[data-run-id="${runId}"] .timeline`, 'Last recorded entries remain shown');
+  expect(failedReads).toBe(1);
+  expect(await card.getByRole('list', { name: 'Recorded step timeline' }).count()).toBe(1);
+  await page.unroute(evidencePattern);
+
+  const missing = page.locator(`[data-run-id="${missingRunId}"]`).last();
+  await missing.getByText('Run details and evidence', { exact: true }).click();
+  await visible(page, `[data-run-id="${missingRunId}"] .timeline`, 'No recorded timeline is available');
+  expect(state.requests.some((request) => request.path.includes(missingRunId) && request.path.includes('evidence'))).toBe(false);
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let heldReads = 0;
+  await page.route(evidencePattern, async (route) => {
+    heldReads++;
+    await held;
+    await route
+      .fulfill({
+        contentType: 'application/jsonl',
+        body: `${JSON.stringify({ event: 'action.start', seq: 99, ts: '2026-09-05T12:01:39.000Z', action: 'click', attempt: 99 })}\n`,
+      })
+      .catch(() => {});
+  });
+  state.runs[0] = { ...state.runs[0], state: 'running' };
+  await page.locator('#refresh').click();
+  await vi.waitFor(() => expect(heldReads).toBe(1));
+  await page.waitForTimeout(1_200);
+  expect(heldReads).toBe(1);
+  await card.getByText('Run details and evidence', { exact: true }).click();
+  release();
+  await page.waitForTimeout(1_200);
+  expect(heldReads).toBe(1);
+  await page.unroute(evidencePattern);
+
+  await card.getByText('Run details and evidence', { exact: true }).click();
+  await vi.waitFor(() =>
+    expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl')).length).toBeGreaterThan(completedReads),
+  );
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  const disconnectedReads = state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl')).length;
+  await page.waitForTimeout(1_200);
+  expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(disconnectedReads);
+  expect(errors).toEqual([]);
+}, 30000);
 it('offline operator controls require live authority, disable expired/duplicate decisions and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
   const intervention = {
@@ -468,6 +616,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   state.runs[0]!.evidence.push('../private.json');
   await page.locator('#refresh').click();
   await page.getByText('Run details and evidence', { exact: true }).click();
+  await page.getByRole('list', { name: 'Recorded step timeline' }).waitFor();
   const requestsBefore = state.requests.length;
   await page.getByRole('button', { name: 'View ../private.json', exact: true }).click();
   await visible(page, '.evidence', 'Unsupported evidence file');

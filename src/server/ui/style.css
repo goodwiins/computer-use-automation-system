@@ -270,6 +270,30 @@ th {
 .result {
   margin: 0.75rem 0;
 }
+.timeline {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  margin-top: 0.75rem;
+  padding: 0.75rem 0 0;
+}
+.timeline ol {
+  margin: 0.75rem 0;
+  padding-left: 2rem;
+}
+.timeline li {
+  border-left: 2px solid var(--line);
+  overflow-wrap: anywhere;
+  padding: 0 0 1rem 0.75rem;
+}
+.timeline li > span {
+  display: block;
+}
+.timeline-order {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
 button {
   min-height: 44px;
 }

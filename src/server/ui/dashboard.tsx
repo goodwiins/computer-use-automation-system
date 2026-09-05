@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
+import { RecordedTimeline } from './timeline';
 
 const requested = [
   ['meridian-sign-on', 'Sign on'],
@@ -285,24 +286,18 @@ export function ApprovalPanel({ run }: { run: Run }) {
     </div>
   );
 }
-export function StepTimeline({ run }: { run: Run }) {
-  return (
-    <div>
-      <p>{run.step ? `Current step: ${run.step}` : 'No current step detail is available.'}</p>
-      <p className="muted">
-        Recorded events are available in log.jsonl. Strict logging omits raw step identifiers; this is not a
-        complete step timeline.
-      </p>
-    </div>
-  );
-}
 export function RunDetail({ run }: { run: Run }) {
+  const [open, setOpen] = useState(false);
   return (
-    <details>
+    <details onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>Run details and evidence</summary>
-      {run.inputs && <pre>{JSON.stringify({ inputs: run.inputs }, null, 2)}</pre>}
-      <StepTimeline run={run} />
-      <EvidenceViewer run={run} />
+      {open && (
+        <>
+          {run.inputs && <pre>{JSON.stringify({ inputs: run.inputs }, null, 2)}</pre>}
+          <RecordedTimeline key={run.runId} run={run} />
+          <EvidenceViewer run={run} />
+        </>
+      )}
     </details>
   );
 }
