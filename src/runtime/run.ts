@@ -51,7 +51,7 @@ export function createRuntime(options: {
     } : undefined, (event, data) => logger.log(event, data));
   let timer: ReturnType<typeof setTimeout>;
   const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
-    validateCompletion: options.artifact === 'meridian-open-share' ? surface.validateOpenShareCompletion.bind(surface) : undefined,
+    validateCompletion: openShare ? surface.validateOpenShareCompletion.bind(surface) : undefined,
     close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };
   timer = setTimeout(() => { void closeRuntime(runtime); }, 600_000);
   timer.unref();

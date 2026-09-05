@@ -33,6 +33,12 @@ const OPEN_SHARE_REVIEW_FACTS = {
   shareType: 'review:Share Type:',
   deposit: 'review:Initial Deposit:',
 } as const;
+const OPEN_SHARE_TYPE_LABELS: Record<string, string> = {
+  'Regular Shares': 'S0001',
+  'Share Draft (Checking)': 'S0070',
+  'Money Market': 'MMKT',
+  'Certificate': 'CERT',
+};
 const DISPLAY_MONEY = /^(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}$/;
 const DISPLAY_SHARE = /^([0-9]{1,12}-[A-Za-z0-9-]+) \(\$((?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2})\)$/;
 const DISPLAY_MEMBER = /^([0-9]{1,12}) - (.+)$/;
@@ -66,6 +72,11 @@ function parseDisplayType(value: string, expected: string): string {
   const match = /^([A-Za-z0-9]+) - (.+)$/.exec(value.trim());
   if (!match || match[1] !== expected || !match[2]!.trim()) return transferReviewFailed();
   return match[1]!;
+}
+
+function parseMemberTableShareType(value: string): string {
+  if (!Object.hasOwn(OPEN_SHARE_TYPE_LABELS, value)) throw new Error('Open-share result type is unrecognized');
+  return OPEN_SHARE_TYPE_LABELS[value]!;
 }
 
 type TransferBinding = {
@@ -654,13 +665,16 @@ export class GuardedSurface implements Surface {
     if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after)) return this.openShareFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.balance !== 'string' || !row.shareId.trim()) throw new Error('Open-share resulting state is incomplete');
-      return { shareId: row.shareId, shareType: row.type, deposit: row.balance };
+      return { shareId: row.shareId, type: row.type, deposit: row.balance };
     });
     if (new Set(shares.map(row => row.shareId)).size !== shares.length) throw new Error('Open-share resulting state is ambiguous');
     if (state.priorShareIds.some(id => !shares.some(row => row.shareId === id))) throw new Error('Open-share resulting state changed concurrently');
     const added = shares.filter(row => !state.priorShareIds.includes(row.shareId));
     if (added.length !== 1) throw new Error('Open-share resulting state is missing or ambiguous');
-    assertOpenShareResult(binding.expected, state.priorShareIds, { member: state.member, ...added[0]! }, outputs);
+    assertOpenShareResult(binding.expected, state.priorShareIds, {
+      member: state.member, shareId: added[0]!.shareId,
+      shareType: parseMemberTableShareType(added[0]!.type), deposit: added[0]!.deposit,
+    }, outputs);
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     return this.action('extract', 'read', async () => {

@@ -614,6 +614,26 @@ it('allows a cu-nexus runtime whose capability ID matches the canonical transfer
   await candidate.close();
 });
 
+it('keeps generic discovery named meridian-open-share free of strict completion binding', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-open-share', version: '1.0.0', policy,
+    profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
+  });
+  expect(candidate.validateCompletion).toBeUndefined();
+  await candidate.close();
+
+  const calls = [{ name: 'done', args: { summary: 'generic complete' } }];
+  const stub = guarded();
+  const client = { chat: { completions: { create: async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  await expect(runDiscovery('generic', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger: new RunLogger('discovery', new Redactor(), temp()), openai: client,
+    model: 'fixture', maxSteps: 1, validateCompletion: candidate.validateCompletion,
+  })).resolves.toMatchObject({ status: 'success' });
+});
+
 describe('MERIDIAN funds-transfer semantic checks', () => {
   const request = {
     member: '9001', sourceShare: '9001-A', destinationShare: '9001-B',
@@ -1012,20 +1032,22 @@ describe('MERIDIAN guarded transfer path', () => {
 
 describe('MERIDIAN guarded open-share path', () => {
   const request = { member: '9001', shareType: 'S0001', deposit: '5.00' };
+  const hostedTypeLabels = {
+    S0001: 'Regular Shares', S0070: 'Share Draft (Checking)', MMKT: 'Money Market', CERT: 'Certificate',
+  } as const;
   const priorRows = [
-    { shareId: '9001-S0001-OLD', type: 'S0001', balance: '2.00', status: 'OPEN' },
-    { shareId: '9001-S0070-OLD', type: 'S0070', balance: '8.00', status: 'OPEN' },
+    { shareId: '9001-S0001-OLD', type: 'Regular Shares', balance: '2.00', status: 'OPEN' },
+    { shareId: '9001-S0070-OLD', type: 'Share Draft (Checking)', balance: '8.00', status: 'OPEN' },
   ];
-  const facts = {
-    member: request.member,
-    type: request.shareType,
-    deposit: request.deposit,
-    'review:Member:': '9001 - Fixture Member',
-    'review:Share Type:': 'S0001 - Regular Shares',
-    'review:Initial Deposit:': '$5.00',
-  };
+  const reviewFacts = (expected = request) => ({
+    member: expected.member, type: expected.shareType, deposit: expected.deposit,
+    'review:Member:': `${expected.member} - Fixture Member`,
+    'review:Share Type:': `${expected.shareType} - ${hostedTypeLabels[expected.shareType as keyof typeof hostedTypeLabels]}`,
+    'review:Initial Deposit:': `$${expected.deposit}`,
+  });
+  const facts = reviewFacts();
 
-  function harness(initialRows = priorRows) {
+  function harness(initialRows = priorRows, expected = request) {
     let rows = initialRows;
     let url = `${origin}/members`;
     let navigation = 0;
@@ -1039,7 +1061,7 @@ describe('MERIDIAN guarded open-share path', () => {
       frameUrls: () => [`${origin}/frameset`, url],
       navigate: async next => { url = next; navigation++; },
       readTable: async () => rows,
-    }, gate, { artifact: 'meridian-open-share', openShare: { expected: request, memberTable: meridianTransferMemberTable } }, undefined,
+    }, gate, { artifact: 'meridian-open-share', openShare: { expected, memberTable: meridianTransferMemberTable } }, undefined,
     async expected => { url = expected.destination; navigation++; });
     const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
     const memberUrl = `${origin}/members/9001`;
@@ -1054,16 +1076,17 @@ describe('MERIDIAN guarded open-share path', () => {
     };
   }
 
-  async function reviewedOpenShare() {
-    const h = harness();
+  async function reviewedOpenShare(expected = request) {
+    const h = harness(priorRows, expected);
+    const expectedFacts = reviewFacts(expected);
     await h.run.surface.start(`${origin}/members`);
     h.setLive({ url: `${origin}/members`, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
     await h.run.surface.click(target);
     h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
     await h.run.surface.click(target);
-    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts });
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts: expectedFacts });
     await h.run.surface.click(target);
-    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts });
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts: expectedFacts });
     h.run.dispatch.mockClear();
     return h;
   }
@@ -1117,22 +1140,24 @@ describe('MERIDIAN guarded open-share path', () => {
     }
   });
 
-  it('dispatches once and verifies the extracted ID against one fresh member-table row', async () => {
-    const h = await reviewedOpenShare();
+  it.each(Object.entries(hostedTypeLabels))('maps hosted %s member-table labels before exact completion comparison', async (shareType, label) => {
+    const expected = { ...request, shareType };
+    const h = await reviewedOpenShare(expected);
     await h.run.surface.click(target);
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledOnce();
-    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'S0001', balance: '5.00', status: 'OPEN' }]);
-    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+    h.setRows([...priorRows, { shareId: `9001-${shareType}-NEW`, type: label, balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: `9001-${shareType}-NEW` })).resolves.toBeUndefined();
   });
 
   it.each([
     ['stale result', priorRows, '9001-S0001-OLD'],
-    ['wrong type', [...priorRows, { shareId: '9001-NEW', type: 'S0070', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
-    ['wrong balance', [...priorRows, { shareId: '9001-NEW', type: 'S0001', balance: '6.00', status: 'OPEN' }], '9001-NEW'],
-    ['ambiguous additions', [...priorRows, { shareId: '9001-NEW-1', type: 'S0001', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW-2', type: 'S0001', balance: '5.00', status: 'OPEN' }], '9001-NEW-1'],
-    ['duplicate resulting ID', [...priorRows, { shareId: '9001-NEW', type: 'S0001', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW', type: 'S0001', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
-    ['concurrent prior-row removal', [priorRows[0]!, { shareId: '9001-NEW', type: 'S0001', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['wrong type', [...priorRows, { shareId: '9001-NEW', type: 'Share Draft (Checking)', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['wrong balance', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '6.00', status: 'OPEN' }], '9001-NEW'],
+    ['unrecognized type', [...priorRows, { shareId: '9001-NEW', type: 'Unknown Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['ambiguous additions', [...priorRows, { shareId: '9001-NEW-1', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW-2', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW-1'],
+    ['duplicate resulting ID', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['concurrent prior-row removal', [priorRows[0]!, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
   ] as const)('rejects %s during fresh completion verification', async (_case, rows, output) => {
     const h = await reviewedOpenShare();
     await h.run.surface.click(target);
