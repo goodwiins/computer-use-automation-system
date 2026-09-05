@@ -6,12 +6,13 @@ import { expect, it, vi } from 'vitest';
 import { RunLogger } from '../src/evidence/logger.js';
 import { validateIdempotencyKey } from '../src/runtime/journal.js';
 import { meridianContracts } from '../src/runtime/contracts.js';
+import type { Surface } from '../src/surface/types.js';
 import { Redactor } from '../src/safety/redact.js';
 
 const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
 const JOURNAL_KEY = 'hmac-test-key-with-at-least-32-characters';
 const PRIVATE_FAILURE = 'PRIVATE_UNREGISTERED';
-type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close' | 'aborted';
+type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition';
 
 const boundary: {
   mode: BoundaryMode;
@@ -29,9 +30,10 @@ interface BoundaryRun {
   lockPresent: boolean;
   dispatchCount: number;
   closeCalls: number;
+  modelCalls: number;
 }
 
-async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = [], command: 'replay' | 'discover' = 'replay'): Promise<BoundaryRun> {
+async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = [], command: 'replay' | 'discover' = 'replay', condition?: { id: string; post?: boolean }): Promise<BoundaryRun> {
   const previousExitCode = process.exitCode;
   const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
@@ -50,6 +52,8 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   boundary.closeCalls = 0;
 
   vi.resetModules();
+  const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ id: 'done', type: 'function', function: { name: 'done', arguments: '{}' } }] } }] }));
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => ({ openai: { chat: { completions: { create } } }, model: 'offline' }) }));
   vi.doMock('../src/runtime/run.js', async () => {
     const actual = await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js');
     return {
@@ -60,8 +64,20 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
         const redactor = new Redactor();
         const logger = new RunLogger(options.kind, redactor, options.evidenceDir, true, options.runId);
         if (boundary.mode === 'write-failure') logger.writeResult = () => { throw new Error(PRIVATE_FAILURE); };
+        const detector = options.profile?.detectors.find(d => d.id === condition?.id);
+        const surface: Surface = {
+          mutationDispatched: false,
+          start: async () => { if (condition?.post) { boundary.beforeDispatch?.(); boundary.dispatchCount++; surface.mutationDispatched = true; } },
+          currentUrl: () => 'https://web-sample.interface-hiring.com/menu', frameUrls: () => [],
+          observe: async () => ({ url: 'https://web-sample.interface-hiring.com/menu', title: '', frames: [] }),
+          isTextVisible: async text => detector?.match.kind === 'textVisible' && text === detector.match.text,
+          navigate: async () => {}, click: async () => ({ strategyUsed: 0, kind: 'role', matches: 1 }),
+          fill: async () => { throw new Error('unexpected fill'); }, select: async () => { throw new Error('unexpected select'); },
+          readText: async () => { throw new Error('unexpected read'); }, describeTarget: async target => target,
+          screenshot: async () => {}, close: async () => {},
+        };
         return {
-          surface: { mutationDispatched: false },
+          surface,
           browser: { page: {} as never },
           logger,
           session: {} as never,
@@ -100,7 +116,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     const actual = await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js');
     return {
       ...actual,
-      runDiscovery: async () => ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' }),
+      runDiscovery: async (...args: Parameters<typeof actual.runDiscovery>) => condition ? actual.runDiscovery(...args) : ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' }),
     };
   });
 
@@ -133,7 +149,9 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     lockPresent: existsSync(join(journalDir, 'server.lock')),
     dispatchCount: boundary.dispatchCount,
     closeCalls: boundary.closeCalls,
+    modelCalls: create.mock.calls.length,
   };
+  vi.doUnmock('../src/agent/client.js');
   vi.doUnmock('../src/runtime/run.js');
   vi.doUnmock('../src/replay/executor.js');
   vi.doUnmock('../src/agent/loop.js');
@@ -463,4 +481,29 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
     process.exitCode = previousExitCode;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+it.each([
+  ['insufficient-funds', 'INSUFFICIENT_FUNDS'], ['validation', 'VALIDATION_REJECTED'],
+  ['notfound', 'NO_SUCH_MEMBER'], ['permission', 'PERMISSION_DENIED'],
+  ['timeout', 'SESSION_EXPIRED'], ['server', 'APPLICATION_ERROR'], ['maintenance', 'RECOVERY_FAILED'],
+] as const)('wires discovery profile condition %s through real loop, CLI evidence and journal', async (id, code) => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-condition-'));
+  try {
+    const run = await runReplayBoundary('condition', dir, 'condition-key', 'teller-test', [], 'discover', { id });
+    expect(run).toMatchObject({ exitCode: 1, states: ['failure'], modelCalls: 0, dispatchCount: 0, closeCalls: 1, lockPresent: false });
+    expect(JSON.parse(run.result!)).toMatchObject({ status: 'failure', failure: { code } });
+    expect(JSON.parse(run.result!)).not.toHaveProperty('artifact');
+    expect(JSON.parse(run.result!)).not.toHaveProperty('outcomeCode');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each(['validation', 'permission', 'maintenance'])('persists post-intent discovery condition %s as unknown', async id => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-condition-'));
+  try {
+    const run = await runReplayBoundary('condition', dir, 'condition-key', 'teller-test', [], 'discover', { id, post: true });
+    expect(run).toMatchObject({ exitCode: 1, states: ['POST_OUTCOME_UNKNOWN'], modelCalls: 0, dispatchCount: 1, closeCalls: 1, lockPresent: false });
+    expect(JSON.parse(run.result!)).toMatchObject({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

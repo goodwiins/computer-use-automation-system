@@ -61,6 +61,8 @@ export interface Surface {
   navigate(url: string): Promise<void>;
   // `risk` is consumed by guarding implementations to route through the
   // policy gate; unguarded implementations ignore it.
+  /** Guarded recovery only: explicit reversible-write risk, no mutation or approval. */
+  recoverClick?(target: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport>;
   click(target: TargetDescriptor, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport>;
