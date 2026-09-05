@@ -116,11 +116,13 @@ describe('standalone approval CLI transport', () => {
     const server = await startApprovalServer(runId, approval);
     const idle = createConnection(server.endpoint);
     await new Promise<void>((resolveConnect, reject) => { idle.once('connect', resolveConnect); idle.once('error', reject); });
+    const idleClosed = new Promise<void>(resolveClose => idle.once('close', () => resolveClose()));
 
     const winner = requestApproval(runId, { action: 'decide', approvalId, decision: 'abort' });
     expect(await pending).toBe('abort');
     await server.close();
     await expect(winner).resolves.toEqual({ ok: true, decision: 'abort' });
+    await idleClosed;
     expect(idle.destroyed).toBe(true);
     await expect(requestApproval(runId, { action: 'decide', approvalId, decision: 'approve' })).rejects.toThrow(/unavailable/);
   });
