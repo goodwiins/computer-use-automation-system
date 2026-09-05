@@ -33,6 +33,8 @@ const fields = {
 
 const strictResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('success') }),
+  z.object({ status: z.literal('stopped') }),
+  z.object({ status: z.literal('escalated') }),
   z.object({ status: z.literal('business_outcome'), outcomeCode: businessOutcomeCode }),
   z.object({ status: z.literal('failure'), failure: z.object({ code: failureCode.optional() }).optional() }),
 ]);
@@ -50,7 +52,7 @@ export function safeEvent(event: string, data: Record<string, unknown>) {
 export function safeResult(result: unknown) {
   const parsed = strictResult.safeParse(result);
   if (!parsed.success) return { status: 'failure', sensitiveValuesUnavailable: true, failure: { code: 'RUN_FAILED' } } as const;
-  if (parsed.data.status === 'success') return { status: parsed.data.status, sensitiveValuesUnavailable: true };
   if (parsed.data.status === 'business_outcome') return { ...parsed.data, sensitiveValuesUnavailable: true };
-  return { status: parsed.data.status, sensitiveValuesUnavailable: true, failure: { code: parsed.data.failure?.code ?? 'RUN_FAILED' } };
+  if (parsed.data.status === 'failure') return { status: parsed.data.status, sensitiveValuesUnavailable: true, failure: { code: parsed.data.failure?.code ?? 'RUN_FAILED' } };
+  return { status: parsed.data.status, sensitiveValuesUnavailable: true };
 }

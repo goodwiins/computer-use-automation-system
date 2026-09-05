@@ -1,7 +1,6 @@
 // Structured evidence for every run: a JSONL log (what happened and why),
-// per-step screenshots, and a final result.json. Everything written here
-// passes through the Redactor first — evidence must be debuggable without
-// leaking regulated data.
+// per-step screenshots, and a final result.json. Strict evidence uses fixed
+// allowlists; legacy evidence passes through the Redactor.
 
 import { appendFileSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';

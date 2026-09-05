@@ -84,6 +84,10 @@ it('keeps only validated strict terminal metadata under sensitive-value collisio
     expect(write({ status: 'failure', failure: { code, detail: 'PRIVATE' } }, [code, 'PRIVATE']))
       .toEqual({ status: 'failure', sensitiveValuesUnavailable: true, failure: { code } });
   }
+  for (const status of ['stopped', 'escalated'] as const) {
+    expect(write({ status, stopReason: 'PRIVATE', detail: 'PRIVATE', outputs: { private: 'PRIVATE' }, ignored: 'PRIVATE' }, [status, 'PRIVATE']))
+      .toEqual({ status, sensitiveValuesUnavailable: true });
+  }
   const fallback = { status: 'failure', sensitiveValuesUnavailable: true, failure: { code: 'RUN_FAILED' } };
   expect(write({ status: 'business_outcome', outcomeCode: 'PRIVATE-OUTCOME', detail: 'PRIVATE', ignored: 'PRIVATE' }, [])).toEqual(fallback);
   expect(write({ status: 'failure', failure: { code: 'PRIVATE-FAILURE', detail: 'PRIVATE' }, ignored: 'PRIVATE' }, [])).toEqual(fallback);
