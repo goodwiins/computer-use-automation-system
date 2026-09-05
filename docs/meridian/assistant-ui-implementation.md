@@ -389,3 +389,31 @@ This UI work made no hosted request, live mutation, approval or deployment. It
 does not change the source-specific live acceptance boundary: 3/7 capability
 pairs remain accepted. The four write artifact/replay pairs and genuine operator
 approvals remain incomplete, and `POST_OUTCOME_UNKNOWN` remains non-retryable.
+
+## Final local handoff checkpoint
+
+At user-requested finish, source `c89f3d45152215074d56be53eae2004d1eea33fe`
+integrates reviewed evaluator lifecycle repair `5d710702923dc2b924ba40510c0b62d29b918819`.
+Both typechecks, production build, all 418 tests across 19 files, artifact
+validation, dependency audit (zero vulnerabilities), and diff checks pass.
+The fixed fixture port was reserved for this run and released afterward.
+
+Independent synthetic checks reject array-valued action, action status, discovery
+status, and terminal code, plus the unsupported discovery failure status, as
+unknown. The earlier duplicate-classification case fails and missing mutation
+metadata remains unknown. The closed native not-found discovery/replay pair still
+authenticates and passes with nine attempts and zero mutation intents each;
+request identities are bound and journal/log hashes remain unchanged. This
+checkpoint made no hosted request.
+
+Overall live acceptance remains **3/7**. Transfer, open share, update member, and
+supervisor hold still require genuine discovery/artifact/replay acceptance with
+approved operations and resulting-state evidence. The original selected transfer
+pair includes a non-OPEN share; selecting an eligible pair and approving its exact
+posting are separate outstanding steps. No approval is inferred from silence.
+The old uncertain posting remains frozen and must not be retried.
+
+The branch remains local and unpublished. Shared documentation is owned by
+“Review plan against file”; its pending final checkpoint was not silently
+integrated or represented as reviewed here. Setup and demo commands above remain
+the handoff instructions.
