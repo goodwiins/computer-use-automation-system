@@ -221,6 +221,33 @@ it('rejects invalid canonical discovery inputs before model, journal, runtime, o
   }
 });
 
+it('keeps cu-nexus discovery generic when its capability ID matches a MERIDIAN contract', async () => {
+  const previousExitCode = process.exitCode;
+  const model = vi.fn(() => ({ openai: {}, model: 'fixture' }));
+  const createRuntime = vi.fn(() => { throw new Error('legacy runtime reached'); });
+  process.exitCode = undefined;
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: model }));
+  vi.doMock('../src/runtime/run.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js')),
+    createRuntime,
+  }));
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { runCli } = await import('../cli.js');
+    await runCli(['discover', '--profile', 'cu-nexus', '--name', 'meridian-funds-transfer', '--goal', 'Fixture']);
+    expect(model).toHaveBeenCalledOnce();
+    expect(createRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      artifact: 'meridian-funds-transfer', params: {}, profile: expect.objectContaining({ appId: 'cu-nexus' }),
+    }));
+  } finally {
+    log.mockRestore(); error.mockRestore();
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
+    process.exitCode = previousExitCode;
+  }
+});
+
 it('persists the fixed discovery cancellation code', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-boundary-'));
   try {

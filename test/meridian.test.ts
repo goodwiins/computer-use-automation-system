@@ -485,6 +485,15 @@ it('refuses an incomplete canonical transfer before allocating runtime evidence'
   expect(readdirSync(evidenceDir)).toEqual([]);
 });
 
+it('allows a cu-nexus runtime whose capability ID matches the canonical transfer', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-funds-transfer', version: '1.0.0', policy,
+    profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
+  });
+  expect(candidate.surface).toBeDefined();
+  await candidate.close();
+});
+
 describe('MERIDIAN funds-transfer semantic checks', () => {
   const request = {
     member: '9001', sourceShare: '9001-A', destinationShare: '9001-B',

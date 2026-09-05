@@ -56,3 +56,31 @@ git diff --check
 Exit 0.
 
 The audit probe `still blocks a transfer post when the transfer binding is absent` remains green (1 passed). Its incomplete-discovery case now observes `runtimeStarted: false` and `discoveryStarted: false`; the probe still expects a thrown `runCli` rejection, while the established CLI boundary catches errors and reports `process.exitCode = 1`. The committed CLI regression asserts that actual contract and also verifies no model, journal, runtime, or discovery call.
+
+## Scoped review round 1
+
+The initial guards keyed only on the capability ID and incorrectly rejected a legacy cu-nexus capability named `meridian-funds-transfer`. Both refusals are now gated by `profile.appId === 'meridian'`; the MERIDIAN runtime refusal remains before redactor, logger, session, timer, and browser allocation.
+
+RED:
+
+```sh
+npx vitest run test/meridian-cli.test.ts test/meridian.test.ts -t "cu-nexus.*capability ID"
+```
+
+Exit 1 before the profile-scope fix: 2 tests failed. The cu-nexus CLI never reached runtime construction, and direct cu-nexus runtime construction threw the canonical MERIDIAN transfer error.
+
+GREEN:
+
+```sh
+npx vitest run test/meridian-cli.test.ts test/meridian.test.ts -t "cu-nexus.*capability ID|incomplete canonical transfer"
+```
+
+Exit 0: 3 tests passed. The colliding cu-nexus CLI reaches generic runtime construction, direct cu-nexus construction succeeds and closes without launching a browser, and incomplete MERIDIAN transfer still refuses before evidence allocation.
+
+```sh
+npx vitest run test/meridian-cli.test.ts test/meridian.test.ts test/meridian-artifacts.test.ts test/schema.test.ts test/promote.test.ts test/recorder.test.ts test/runtime-lifecycle.test.ts
+```
+
+Exit 0: 7 files, 195 tests passed.
+
+`npm run typecheck` and `git diff --check` both exited 0.

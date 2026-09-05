@@ -129,7 +129,7 @@ async function discover(argv: string[]) {
   for (const key of serverParams) params[key] = `{{${key}}}`;
   if (operator) sensitive.push('password');
   const expectedTransfer = meridian && name === 'meridian-funds-transfer' ? transferFactsFromParams(params) : undefined;
-  if (name === 'meridian-funds-transfer' && !expectedTransfer) fatal('Parameters do not match the capability contract');
+  if (meridian && name === 'meridian-funds-transfer' && !expectedTransfer) fatal('Parameters do not match the capability contract');
   const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
   let record: JournalRecord | undefined;
   let runtime: ReturnType<typeof createRuntime> | undefined;
