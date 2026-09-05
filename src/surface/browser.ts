@@ -2,13 +2,15 @@
 // is the aria snapshot of every frame (framesets are first-class citizens
 // here), and locator resolution prefers role+name over structure.
 
-import { chromium, type Browser, type Frame, type Locator, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Frame, type Locator, type Page, type Route } from 'playwright';
 import type { TargetDescriptor, TargetStrategy, RiskClass, TableColumn } from '../artifact/schema.js';
 import type { FrameContext, LiveControl, AppProfile, FaultScenario } from '../runtime/profile.js';
 import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
   type Observation,
+  type ReadOnlyPageSnapshot,
+  type ReadOnlyTableRequest,
   type ResolutionReport,
   type Surface,
 } from './types.js';
@@ -38,6 +40,7 @@ export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
 export class BrowserSurface implements Surface {
   private browser!: Browser;
+  private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
   private submission?: { url: string; method: string; body: string };
@@ -85,10 +88,10 @@ export class BrowserSurface implements Surface {
     };
   }
 
-  private workingFrame(): Frame | undefined {
-    if (!this.page) return undefined;
-    const main = this.page.mainFrame();
-    const frames = this.page.frames().filter(frame => frame !== main);
+  private workingFrame(page = this.page): Frame | undefined {
+    if (!page) return undefined;
+    const main = page.mainFrame();
+    const frames = page.frames().filter(frame => frame !== main);
     const work = frames.find(frame => frame.name() === 'workarea') ?? frames[0];
     return work && work.url() !== 'about:blank' ? work : main;
   }
@@ -114,7 +117,8 @@ export class BrowserSurface implements Surface {
       args.push(`--remote-debugging-port=${n}`);
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
-    this.page = await this.browser.newPage();
+    this.context = await this.browser.newContext({ serviceWorkers: 'block' });
+    this.page = await this.context.newPage();
     this.trackFrame(this.page.mainFrame());
     this.page.on('frameattached', frame => this.trackFrame(frame));
     this.page.on('framenavigated', frame => this.bumpFrame(frame));
@@ -348,6 +352,10 @@ export class BrowserSurface implements Surface {
 
   async readTable(target: TargetDescriptor, columns: TableColumn[], timeoutMs = DEFAULT_TIMEOUT, rowSelector?: string) {
     const { locator } = await this.resolve(target, timeoutMs);
+    return this.extractTable(locator, columns, rowSelector);
+  }
+
+  private async extractTable(locator: Locator, columns: TableColumn[], rowSelector?: string) {
     const rows = await locator.evaluate((table, { cols, rows }) => [...table.querySelectorAll(rows ?? 'tr')]
       .filter(row => row.querySelector('td') && !row.querySelector('th'))
       .map(row => Object.fromEntries(cols.map(col => {
@@ -362,6 +370,108 @@ export class BrowserSurface implements Surface {
       }))), { cols: columns, rows: rowSelector });
     this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => this.opts.profile?.appId === 'meridian' || c.sensitive).map(c => row[c.name]!)));
     return rows;
+  }
+
+  async readOnlyPage(url: string, tables: ReadOnlyTableRequest[], timeoutMs = DEFAULT_TIMEOUT): Promise<ReadOnlyPageSnapshot> {
+    if (!this.context || !this.page) throw new Error('Read-only page requires an active browser session');
+    const expected = new URL(url);
+    if (!/^\/members\/\d+$/.test(expected.pathname)) throw new Error('Read-only page must be an exact member page');
+    if (!originAllowed(this.opts.allowedOrigins ?? [], expected.href)) throw new Error('Read-only page origin is not allowed');
+    const deadline = Date.now() + timeoutMs;
+    const remaining = () => timeoutRemaining(deadline);
+    const page = await this.context.newPage();
+    let violation: string | undefined;
+    const fail = (message: string) => { violation ??= message; };
+    const closeUnexpectedPage = (opened: Page) => {
+      if (opened === page || opened === this.page) return;
+      fail('Read-only page opened a popup');
+      opened.close().catch(() => {});
+    };
+    this.context.on('page', closeUnexpectedPage);
+    page.on('dialog', dialog => {
+      fail('Read-only page opened a dialog');
+      dialog.dismiss().catch(() => {});
+    });
+    page.on('popup', popup => {
+      fail('Read-only page opened a popup');
+      popup.close().catch(() => {});
+    });
+    page.on('download', download => {
+      fail('Read-only page started a download');
+      download.cancel().catch(() => {});
+    });
+    const routeReadOnlyRequest = async (route: Route) => {
+      const request = route.request();
+      let requestPage: Page | undefined;
+      try { requestPage = request.frame().page(); } catch { /* fail below */ }
+      if (requestPage === this.page) return route.fallback();
+      if (requestPage !== page) {
+        fail('Read-only page opened a popup');
+        return route.abort();
+      }
+      let requested: URL;
+      try { requested = new URL(request.url()); }
+      catch {
+        fail('Read-only page requested an invalid URL');
+        return route.abort();
+      }
+      if (requested.origin !== expected.origin || !['GET', 'HEAD'].includes(request.method())) {
+        fail('Read-only page attempted an out-of-bounds request');
+        return route.abort();
+      }
+      if (request.isNavigationRequest()
+        && (request.frame() !== page.mainFrame() || request.method() !== 'GET' || requested.href !== expected.href)) {
+        fail('Read-only page attempted another navigation');
+        return route.abort();
+      }
+      return route.continue();
+    };
+    try {
+      await this.context.route('**/*', routeReadOnlyRequest);
+      await page.goto(expected.href, { waitUntil: 'load', timeout: remaining() });
+      if (violation) throw new Error(violation);
+      const work = this.workingFrame(page);
+      if (!work) throw new Error('Read-only page has no working frame');
+      const resolved = new URL(work.url());
+      if (resolved.origin !== expected.origin || resolved.pathname !== expected.pathname || resolved.search !== expected.search) {
+        throw new Error('Read-only page redirected away from the bound member');
+      }
+      const frameUrls = page.frames().map(frame => frame.url());
+      if (frameUrls.some(frameUrl => frameUrl !== 'about:blank' && (!frameUrl.startsWith('about:') && new URL(frameUrl).origin !== expected.origin))) {
+        throw new Error('Read-only page contains a foreign frame');
+      }
+      const body = await work.locator('body').innerText({ timeout: remaining() });
+      const one = (pattern: RegExp) => {
+        const matches = [...body.matchAll(pattern)];
+        return matches.length === 1 ? matches[0]![1] : undefined;
+      };
+      const operator = one(/OPR\s+(\S+)/g);
+      const branch = one(/BR\s+(\S+)/g);
+      const session = one(/SID\s+(\S+)/g);
+      if (!operator || !branch || !session) throw new Error('Read-only page identity is missing or ambiguous');
+      this.opts.sensitive?.([operator, branch, session], [session]);
+      const results: Array<Array<Record<string, string>>> = [];
+      for (const table of tables) {
+        if (violation) throw new Error(violation);
+        const { locator } = await this.resolveOnPage(page, table.target, remaining(), false);
+        results.push(await this.extractTable(locator, table.columns, table.rowSelector));
+      }
+      if (violation) throw new Error(violation);
+      return {
+        url: work.url(),
+        frameUrls,
+        identity: {
+          operator,
+          branch,
+          trusted: !!this.identity && this.identity.operator === operator && this.identity.branch === branch && this.identity.sid === session,
+        },
+        tables: results,
+      };
+    } finally {
+      this.context.off('page', closeUnexpectedPage);
+      await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => {});
+      await page.close().catch(() => {});
+    }
   }
 
   private async verifySignon() {
@@ -423,12 +533,12 @@ export class BrowserSurface implements Surface {
 
   // ---------- Locator resolution (the determinism core) ----------
 
-  private framesToSearch(frameName?: string): Frame[] {
-    const all = this.page
+  private framesToSearch(frameName?: string, page = this.page): Frame[] {
+    const all = page
       .frames()
       .filter((f) => f.url() !== 'about:blank' && this.frameInBounds(f));
     if (frameName === undefined) return all;
-    if (frameName === '') return [this.page.mainFrame()].filter((f) => this.frameInBounds(f));
+    if (frameName === '') return [page.mainFrame()].filter((f) => this.frameInBounds(f));
     const matches = all.filter((f) => f.name() === frameName);
     if (!matches.length) throw new Error('Requested frame does not exist; omit frame for the main page or use a frame name from the observation');
     return matches;
@@ -460,13 +570,22 @@ export class BrowserSurface implements Surface {
     target: TargetDescriptor,
     timeoutMs: number,
   ): Promise<{ locator: Locator; report: ResolutionReport; frame: Frame }> {
+    return this.resolveOnPage(this.page, target, timeoutMs, true);
+  }
+
+  private async resolveOnPage(
+    page: Page,
+    target: TargetDescriptor,
+    timeoutMs: number,
+    rememberFrame: boolean,
+  ): Promise<{ locator: Locator; report: ResolutionReport; frame: Frame }> {
     const deadline = Date.now() + timeoutMs;
     let attempts: Array<{ kind: string; matches: number }> = [];
     do {
       attempts = [];
       for (let i = 0; i < target.strategies.length; i++) {
         const strategy = target.strategies[i]!;
-        for (const frame of this.framesToSearch(target.frame)) {
+        for (const frame of this.framesToSearch(target.frame, page)) {
           let locator = this.buildLocator(frame, strategy);
           let count = 0;
           try {
@@ -478,13 +597,13 @@ export class BrowserSurface implements Surface {
           if (count === 1 || (count > 1 && target.nth !== undefined)) {
             if (Date.now() >= deadline) break;
             if (count > 1) locator = locator.nth(target.nth!);
-            this.lastFrameContext = this.frameContext(frame);
+            if (rememberFrame) this.lastFrameContext = this.frameContext(frame);
             return { locator, report: { strategyUsed: i, kind: strategy.kind, matches: count }, frame };
           }
         }
       }
       if (Date.now() >= deadline) break;
-      await this.page.waitForTimeout(Math.min(250, Math.max(1, deadline - Date.now())));
+      await page.waitForTimeout(Math.min(250, Math.max(1, deadline - Date.now())));
     } while (Date.now() < deadline);
     throw new TargetResolutionError(target, attempts);
   }

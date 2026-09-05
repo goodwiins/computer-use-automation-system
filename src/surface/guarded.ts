@@ -9,7 +9,7 @@ import type { ControlSession } from '../escalation/session.js';
 
 import { moneyCents, RiskClass, type OutputValue, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
-import type { Observation, ResolutionReport, Surface } from './types.js';
+import type { Observation, ReadOnlyPageSnapshot, ResolutionReport, Surface } from './types.js';
 
 const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
@@ -210,6 +210,18 @@ export class GuardedSurface implements Surface {
     if (allowed?.test(this.path(destination))) return;
     if (artifact === 'meridian-funds-transfer') throw new Error('Funds-transfer run cannot dispatch another operation');
     throw new Error('Canonical MERIDIAN capability cannot dispatch this operation');
+  }
+
+  private assertBoundMemberNavigation(url: string): void {
+    const runtime = this.runtime;
+    if (!runtime || runtime.profile.appId !== 'meridian'
+      || !MERIDIAN_MUTATION_ROUTES[runtime.artifact as keyof typeof meridianContracts]) return;
+    const expected = runtime?.artifact === 'meridian-funds-transfer' ? runtime.transfer?.expected.member
+      : runtime?.artifact === 'meridian-open-share' ? runtime.openShare?.expected.member
+        : runtime?.artifact === 'meridian-update-member' ? runtime.memberUpdate?.expected.member
+          : runtime?.artifact === 'meridian-place-hold' ? runtime.hold?.expected.member : undefined;
+    const member = MEMBER_ROUTE.exec(this.path(url));
+    if (member && (!expected || member[1] !== expected)) throw new Error('Canonical member selection is not bound to this run');
   }
 
   private transferStage(url: string): { member: string; stage: TransferStage } | undefined {
@@ -466,38 +478,70 @@ export class GuardedSurface implements Surface {
     const binding = this.runtime?.hold;
     const route = MEMBER_ROUTE.exec(this.path(memberUrl));
     if (!binding || !route || route[1] !== binding.expected.member || !this.inner.readTable) throw new Error('Hold member selection is not eligible');
+    const deadline = Date.now() + timeoutMs;
+    const remaining = () => {
+      const value = deadline - Date.now();
+      if (!Number.isFinite(value) || value <= 0) throw new Error('Hold eligibility timeout expired');
+      return Math.max(1, value);
+    };
     const before = this.currentHoldFrame();
     if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.holdFrameFailed();
     await this.gate('extract', 'read');
     this.assertStillInBounds('extract');
-    const contact = await this.inner.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, timeoutMs, binding.contactTable.rowSelector);
+    const contact = await this.inner.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, remaining(), binding.contactTable.rowSelector);
     this.assertStillInBounds('extract');
     const contactFrame = this.inner.lastResolvedFrame?.();
     if (!contactFrame || !this.sameFrameRevision(before, contactFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())
       || this.origin(contactFrame.url) !== this.origin(memberUrl) || this.path(contactFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
-    if (contact.length !== 1) throw new Error('Hold member identity is missing or ambiguous');
+    await this.gate('extract', 'read');
+    this.assertStillInBounds('extract');
+    const rows = await this.inner.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, remaining(), binding.memberTable.rowSelector);
+    this.assertStillInBounds('extract');
+    const shareFrame = this.inner.lastResolvedFrame?.();
+    if (!shareFrame || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())
+      || this.origin(shareFrame.url) !== this.origin(memberUrl) || this.path(shareFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
+    const observed = this.parseHoldEligibility(contact, rows);
+    this.holdState = { ...observed, frame: shareFrame, stage: 'member' };
+  }
+
+  private parseHoldEligibility(contact: Array<Record<string, string>>, rows: Array<Record<string, string>>) {
+    const binding = this.runtime?.hold;
+    if (!binding || contact.length !== 1) throw new Error('Hold member identity is missing or ambiguous');
     const contactRow = contact[0]!;
     const exactContact = (name: string) => {
       const value = contactRow[name];
       if (typeof value !== 'string') throw new Error('Hold member identity is incomplete');
       return value;
     };
-    if (exactContact('memberLabel') !== 'Member No.:' || exactContact('nameLabel') !== 'Name:' || !exactContact('name').trim()) throw new Error('Hold member identity labels are missing or ambiguous');
-
-    await this.gate('extract', 'read');
-    this.assertStillInBounds('extract');
-    const rows = await this.inner.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
-    this.assertStillInBounds('extract');
-    const shareFrame = this.inner.lastResolvedFrame?.();
-    if (!shareFrame || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())
-      || this.origin(shareFrame.url) !== this.origin(memberUrl) || this.path(shareFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
+    if (exactContact('memberLabel') !== 'Member No.:' || exactContact('nameLabel') !== 'Name:' || !exactContact('name').trim()) {
+      throw new Error('Hold member identity labels are missing or ambiguous');
+    }
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.status !== 'string') throw new Error('Hold eligibility table is incomplete');
       return { share: row.shareId, type: row.type, status: row.status };
     });
     const member = exactContact('member');
     assertHoldEligibility(binding.expected, member, shares);
-    this.holdState = { member, name: exactContact('name'), selected: shares.find(row => row.share === binding.expected.share)!, frame: shareFrame, stage: 'member' };
+    return { member, name: exactContact('name'), selected: shares.find(row => row.share === binding.expected.share)! };
+  }
+
+  private async refreshHoldEligibility(live: LiveControl, timeoutMs: number): Promise<void> {
+    const binding = this.runtime?.hold;
+    const state = this.holdState;
+    if (!binding || !state || !this.inner.readOnlyPage) throw new Error('Fresh hold eligibility UI read is unavailable');
+    const memberUrl = new URL(`/members/${binding.expected.member}`, live.url).href;
+    const snapshot: ReadOnlyPageSnapshot = await this.inner.readOnlyPage(memberUrl, [
+      { target: binding.contactTable.target, columns: binding.contactTable.columns, rowSelector: binding.contactTable.rowSelector },
+      { target: binding.memberTable.target, columns: binding.memberTable.columns, rowSelector: binding.memberTable.rowSelector },
+    ], timeoutMs);
+    if (this.origin(snapshot.url) !== this.origin(memberUrl) || this.path(snapshot.url) !== this.path(memberUrl)
+      || snapshot.frameUrls.some(url => !url.startsWith('about:') && this.origin(url) !== this.origin(memberUrl))
+      || !snapshot.identity.trusted || snapshot.identity.operator !== live.operator || snapshot.identity.branch !== live.branch
+      || snapshot.tables.length !== 2) throw new Error('Fresh hold eligibility UI read is not bound to the approved review');
+    const observed = this.parseHoldEligibility(snapshot.tables[0]!, snapshot.tables[1]!);
+    if (observed.member !== state.member || observed.name !== state.name || observed.selected.type !== state.selected.type) {
+      throw new Error('Fresh hold eligibility changed after approval');
+    }
   }
 
   private assertHoldControl(live: LiveControl): void {
@@ -681,6 +725,7 @@ export class GuardedSurface implements Surface {
   async start(entryUrl: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
       if (this.runtime && this.started) throw new Error('A run can start only once');
+      this.assertBoundMemberNavigation(entryUrl);
       this.started = true;
       this.assertRoute(entryUrl);
       this.requireTransferRoute(entryUrl);
@@ -727,6 +772,7 @@ export class GuardedSurface implements Surface {
 
   async navigate(url: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
+      this.assertBoundMemberNavigation(url);
       this.assertRoute(url);
       this.preserveOperationState(url);
       await this.gate('navigate', 'read', url);
@@ -778,6 +824,7 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
+        this.assertBoundMemberNavigation(live.destination);
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
@@ -835,6 +882,14 @@ export class GuardedSurface implements Surface {
           if (openSharePost) this.assertOpenShareReview(refreshed);
           if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
           if (holdPost) this.assertHoldReview(refreshed);
+          if (holdPost) {
+            // This same-session UI reread narrows the approval-wait race. The
+            // target remains responsible for enforcing eligibility atomically.
+            await this.refreshHoldEligibility(refreshed, remaining());
+            const afterEligibility = await prepared.inspect(remaining());
+            if (JSON.stringify(afterEligibility) !== JSON.stringify(refreshed)) throw new Error('Approval invalidated by changed page state');
+            this.assertHoldReview(afterEligibility);
+          }
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
           this.assertAutomation();

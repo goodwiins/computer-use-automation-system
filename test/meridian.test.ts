@@ -1276,7 +1276,8 @@ describe('MERIDIAN guarded open-share path', () => {
   it('refuses direct member navigation when the member or resolved origin is not the request', async () => {
     const wrongMember = harness();
     await wrongMember.run.surface.start(wrongMember.startUrl);
-    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/eligible/i);
+    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/member|bound/i);
+    expect(wrongMember.navigate).not.toHaveBeenCalled();
     expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
     expect(wrongMember.run.surface.mutationDispatched).toBe(false);
 
@@ -1287,6 +1288,15 @@ describe('MERIDIAN guarded open-share path', () => {
     await expect(wrongOrigin.run.surface.navigate(wrongOrigin.memberUrl)).rejects.toThrow(/frame/i);
     expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
     expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects a wrong-member open-share link before native dispatch', async () => {
+    const h = harness();
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: `${origin}/members/9999`, method: 'GET', control: '9999 - Other Member', submit: false, facts: {} });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/member|bound/i);
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1640,6 +1650,12 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     gate?: () => Promise<boolean>;
     allowedOrigins?: string[];
     redirectCompletion?: boolean;
+    afterEligibilityRead?: (description: string) => void;
+    freshUrl?: string;
+    freshFrameUrls?: string[];
+    freshIdentity?: { operator: string; branch: string; trusted: boolean };
+    freshError?: Error;
+    readOnlyUnavailable?: boolean;
   } = {}) {
     let shares = options.shares ?? eligibleRows;
     let contacts = options.contacts ?? [contactRow()];
@@ -1665,6 +1681,16 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
       redirectNextNavigationOrigin = undefined;
       navigation++;
     });
+    const eligibilityTimeouts: Array<number | undefined> = [];
+    const readOnlyPage = vi.fn(async (requestedUrl: string) => {
+      if (options.freshError) throw options.freshError;
+      return {
+        url: options.freshUrl ?? requestedUrl,
+        frameUrls: options.freshFrameUrls ?? [requestedUrl],
+        identity: options.freshIdentity ?? { operator: 'SUPER1', branch: 'MAIN-001', trusted: true },
+        tables: [contacts, shares],
+      };
+    });
     const run = guarded({
       start,
       currentUrl: () => url,
@@ -1672,10 +1698,13 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
       lastResolvedFrame: frame,
       frameUrls: () => [`${operationOrigin}/frameset`, url],
       navigate,
-      readTable: async descriptor => {
+      readTable: async (descriptor, _columns, timeoutMs) => {
         if (replaceFrameDuringRead) frameId = 'replacement-workarea';
+        eligibilityTimeouts.push(timeoutMs);
+        options.afterEligibilityRead?.(descriptor.description);
         return descriptor.description.includes('contact') ? contacts : shares;
       },
+      readOnlyPage: options.readOnlyUnavailable ? undefined : readOnlyPage,
     }, gate, {
       artifact: 'meridian-place-hold', role: options.role ?? 'SUPERVISOR',
       hold: { expected, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable },
@@ -1689,6 +1718,8 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     return {
       run, gate, start, navigate, startUrl: `${operationOrigin}/members`, memberUrl, holdUrl, reviewUrl, postUrl,
       currentUrl: () => url,
+      eligibilityTimeouts,
+      readOnlyPage,
       setLive,
       setShares(next: Array<Record<string, string>>) { shares = next; },
       setContacts(next: Array<Record<string, string>>) { contacts = next; },
@@ -1755,6 +1786,19 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.surface.mutationDispatched).toBe(false);
   });
 
+  it('shares one timeout budget across sequential hold eligibility reads', async () => {
+    let now = 1_000;
+    const h = harness({ afterEligibilityRead: description => {
+      if (description.includes('contact')) now += 400;
+    } });
+    await h.run.surface.start(h.startUrl);
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: 'Select', submit: false, facts: {} });
+
+    await h.run.surface.click(target, 1_000);
+    expect(h.eligibilityTimeouts).toEqual([1_000, 600]);
+  });
+
   it('runs the normal member to hold to review flow and dispatches one approved final POST', async () => {
     const h = await reviewedHold();
     await h.run.surface.click(target);
@@ -1762,6 +1806,64 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledOnce();
     expect(h.run.surface.mutationDispatched).toBe(true);
+    expect(h.readOnlyPage).toHaveBeenCalledOnce();
+  });
+
+  it.each(['HOLD', 'CLOSED'] as const)('rejects a selected share changed to %s during approval with zero intent', async status => {
+    let h!: ReturnType<typeof harness>;
+    h = await reviewedHold({ gate: vi.fn(async () => {
+      h.setShares([{ ...eligibleRows[0]!, status }, eligibleRows[1]!]);
+      return true;
+    }) });
+
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.readOnlyPage).toHaveBeenCalledOnce();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it.each([
+    ['changed type', [{ ...eligibleRows[0]!, type: 'Share Draft (Checking)' }, eligibleRows[1]!], undefined],
+    ['ambiguous share', [eligibleRows[0]!, eligibleRows[0]!, eligibleRows[1]!], undefined],
+    ['missing share', [eligibleRows[1]!], undefined],
+    ['redirected member read', eligibleRows, `${origin}/members/9999`],
+  ] as const)('rejects a fresh hold eligibility read with %s before intent', async (_case, shares, freshUrl) => {
+    let h!: ReturnType<typeof harness>;
+    h = await reviewedHold({ freshUrl, gate: vi.fn(async () => {
+      h.setShares([...shares]);
+      return true;
+    }) });
+
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the fresh hold eligibility primitive is missing or times out', async () => {
+    const missing = await reviewedHold({ readOnlyUnavailable: true });
+    await expect(missing.run.surface.click(target)).rejects.toThrow(/UI read is unavailable/i);
+    expect(missing.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const timedOut = await reviewedHold({ freshError: new Error('Action timeout expired') });
+    await expect(timedOut.run.surface.click(target)).rejects.toThrow(/timeout/i);
+    expect(timedOut.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(timedOut.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects changed fresh member identity and an untrusted session before intent', async () => {
+    let changed!: ReturnType<typeof harness>;
+    changed = await reviewedHold({ gate: vi.fn(async () => {
+      changed.setContacts([contactRow({ name: 'Changed Member' })]);
+      return true;
+    }) });
+    await expect(changed.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(changed.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const untrusted = await reviewedHold({ freshIdentity: { operator: 'SUPER1', branch: 'MAIN-001', trusted: false } });
+    await expect(untrusted.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(untrusted.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(untrusted.run.dispatch).not.toHaveBeenCalled();
   });
 
   it.each(['start', 'navigate'] as const)('captures hold eligibility after direct member %s and completes the valid flow', async entry => {
@@ -1785,9 +1887,16 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
   });
 
   it('refuses direct hold member navigation for a wrong member or resolved origin with zero approval or intent', async () => {
+    const wrongStart = harness();
+    await expect(wrongStart.run.surface.start(`${origin}/members/9999`)).rejects.toThrow(/member|bound/i);
+    expect(wrongStart.start).not.toHaveBeenCalled();
+    expect(wrongStart.gate).not.toHaveBeenCalled();
+    expect(wrongStart.run.beforeDispatch).not.toHaveBeenCalled();
+
     const wrongMember = harness();
     await wrongMember.run.surface.start(wrongMember.startUrl);
-    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/eligible/i);
+    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/member|bound/i);
+    expect(wrongMember.navigate).not.toHaveBeenCalled();
     expect(wrongMember.gate).not.toHaveBeenCalled();
     expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
     expect(wrongMember.run.surface.mutationDispatched).toBe(false);
@@ -1800,6 +1909,15 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(wrongOrigin.gate).not.toHaveBeenCalled();
     expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
     expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects a wrong-member hold link before native dispatch', async () => {
+    const h = harness();
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: `${origin}/members/9999`, method: 'GET', control: '9999 - Other Member', submit: false, facts: {} });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/member|bound/i);
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
   });
 
   it('rejects a cross-operation Continue before approval, intent, or dispatch', async () => {
@@ -2389,6 +2507,51 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
     const dir = temp(); const logger = new RunLogger('replay', new Redactor(), dir, true); logger.log('error', { password: 'PRIVATE', params: { member: 'PRIVATE' }, observed: 'PRIVATE' }); logger.writeResult({ status: 'success', outputs: { name: 'PRIVATE' } });
     expect(readdirSync(logger.dir).map(f => readFileSync(join(logger.dir, f), 'utf8')).join('')).not.toContain('PRIVATE');
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
+  const app = express(); let posted = 0; let redirectFresh = false;
+  const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
+  const contact = '<table><tbody><tr><td>Member No.:</td><td>9001</td><td>Name:</td><td>Fixture Member</td></tr><tr><td>E-mail:</td><td>member@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>';
+  const shares = '<table><tbody><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001-1</td><td>Regular Shares</td><td>$8.00</td><td>OPEN</td></tr></tbody></table>';
+  const member = `${identity}<table><tbody><tr></tr><tr></tr><tr><td>${contact}${shares}<a href="/members/9001/hold">Place Hold</a></td></tr></tbody></table>`;
+  const hold = `${identity}<form method="post" action="/members/9001/hold/review"><input type="hidden" name="_token" value="TOKEN"><select name="share"><option selected value="9001-S0001-1">share</option></select><select name="reason"><option selected value="FRAUD">reason</option></select><textarea name="notes">fixture</textarea><input type="submit" value="Continue"></form>`;
+  const review = `${identity}<form method="post" action="/members/9001/hold/post"><input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="share" value="9001-S0001-1"><input type="hidden" name="reason" value="FRAUD"><input type="hidden" name="notes" value="fixture"><table><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">Share:</td><td>9001-S0001-1 - Regular Shares</td></tr><tr><td class="lbl">Reason:</td><td>FRAUD</td></tr><tr><td class="lbl">Notes:</td><td>fixture</td></tr></table><input type="submit" value="Apply Hold"></form>`;
+  app.use(express.urlencoded({ extended: false }));
+  app.get('/menu', (_req, res) => res.send(`<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p>${identity}`));
+  app.get('/members/9001', (_req, res) => redirectFresh ? res.redirect('/members/9999') : res.send(member));
+  app.get('/members/9999', (_req, res) => res.send(member));
+  app.get('/members/9001/hold', (_req, res) => res.send(hold));
+  app.post('/members/9001/hold/review', (_req, res) => res.send(review));
+  app.post('/members/9001/hold/post', (_req, res) => { posted++; res.send('held'); });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+  const button = (name: string) => ({ description: name, strategies: [{ kind: 'role' as const, role: 'button', name }] });
+  try {
+    await browser.start(`${localOrigin}/menu`);
+    await browser.navigate(`${localOrigin}/members/9001`);
+    const enter = await browser.prepareClick({ description: 'Place Hold', strategies: [{ kind: 'role', role: 'link', name: 'Place Hold' }] });
+    await enter.dispatch(await enter.inspect());
+    const proceed = await browser.prepareClick(button('Continue'));
+    await proceed.dispatch(await proceed.inspect());
+    const prepared = await browser.prepareClick(button('Apply Hold'));
+    const before = await prepared.inspect();
+    const snapshot = await browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable, meridianTransferMemberTable], 3000);
+    expect(snapshot).toMatchObject({
+      url: `${localOrigin}/members/9001`,
+      identity: { operator: 'SUPER1', branch: 'MAIN-001', trusted: true },
+      tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })], [expect.objectContaining({ shareId: '9001-S0001-1', status: 'OPEN' })]],
+    });
+    expect(browser.currentUrl()).toBe(`${localOrigin}/members/9001/hold/review`);
+    expect(browser.page.context().pages()).toHaveLength(1);
+    expect(await prepared.inspect()).toEqual(before);
+    await prepared.dispatch(before, 3000);
+    expect(posted).toBe(1);
+    redirectFresh = true;
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/navigation|redirected/i);
+    expect(browser.page.context().pages()).toHaveLength(1);
+  } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
 it('extracts one canonical transfer row from a vertical receipt and persists only its table structure', async () => {
