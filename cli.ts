@@ -52,6 +52,12 @@ function fatal(msg: string): never {
   process.exit(1);
 }
 
+function faultScenario(flags: Record<string, string | boolean>, meridian: boolean): FaultScenario | undefined {
+  if (flags.inject === undefined && flags['fault-route'] === undefined) return undefined;
+  if (!meridian) throw new RequestError(400, 'Fault scenarios require the MERIDIAN profile');
+  return FaultScenario.parse({ kind: flags.inject, path: flags['fault-route'] });
+}
+
 function updateJournal(journal: Journal | undefined, runId: string | undefined, state: JournalRecord['state']): void {
   if (!journal || !runId) return;
   const current = journal.records.get(runId)?.state;
@@ -111,6 +117,7 @@ async function discover(argv: string[]) {
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
   const profile = loadProfile(typeof flags.profile === 'string' ? flags.profile : 'cu-nexus');
   const meridian = profile.appId === 'meridian';
+  const fault = faultScenario(flags, meridian);
   if (meridian) {
     if (!Object.hasOwn(meridianContracts, name)) fatal('Unknown MERIDIAN capability contract');
     if (['operator', 'password', 'branch'].some(parameter => Object.hasOwn(params, parameter))) fatal('Caller cannot override server parameters');
@@ -136,7 +143,11 @@ async function discover(argv: string[]) {
   let runtime: ReturnType<typeof createRuntime> | undefined;
   let candidate: CapabilityArtifact | undefined;
   try {
-    const request = { mode: 'discovery', name, goal, params, operator: operator && { operator: operator.operator, branch: operator.branch, role: operator.role } };
+    const request = {
+      mode: 'discovery', name, goal, params,
+      operator: operator && { operator: operator.operator, branch: operator.branch, role: operator.role },
+      ...(fault ? { fault } : {}),
+    };
     if (journal) {
       const existing = journal.lookup('operator', key, request).existing;
       if (existing) { console.log(`Existing discovery run: ${existing.runId} (${existing.state})`); return; }
@@ -144,7 +155,7 @@ async function discover(argv: string[]) {
     record = journal?.reserve('operator', key, name, '1.0.0', request, 'discovery');
     const headful = meridian || !!flags.headful;
     try {
-      runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, params, sensitive, operator, headful,
+      runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, fault, params, sensitive, operator, headful,
         runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,
         gate: async (action, risk, reason, context) => {
           if (!headful) return false;
@@ -272,6 +283,7 @@ async function replay(argv: string[]) {
   // them the same way. A sensitive value arriving from a default must reach the
   // redactor too, or it lands unmasked in the log, the result and screenshots.
   const meridian = profile.appId === 'meridian';
+  const fault = faultScenario(flags, meridian);
   const key = typeof flags['idempotency-key'] === 'string' ? flags['idempotency-key'] : '';
   if (meridian) validateIdempotencyKey(key);
   if ((artifact.app.appId === 'meridian') !== meridian) fatal('Artifact and runtime profile do not match');
@@ -283,8 +295,6 @@ async function replay(argv: string[]) {
     params[parameter.name] = operator[parameter.name as 'operator' | 'password' | 'branch'];
   }
   if (meridian) params = normalizeParams(artifact, params);
-  const fault = flags.inject || flags['fault-route'] ? FaultScenario.parse({ kind: flags.inject, path: flags['fault-route'] }) : undefined;
-  if (fault && !meridian) fatal('Fault scenarios require the MERIDIAN profile');
   const request = { mode: 'replay', fault: fault ?? null, id: artifact.id, version: artifact.version, params: Object.fromEntries(Object.entries(params).filter(([key]) => key !== 'password')), role: operator?.role ?? null };
   const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
   let record: JournalRecord | undefined;
