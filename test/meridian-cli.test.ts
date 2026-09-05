@@ -602,9 +602,10 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
 it.each([
   { capability: 'meridian-open-share', goal: 'Open share', key: 'cli-open-share', params: ['member=9001', 'shareType=S0001', 'deposit=5.00'] },
   { capability: 'meridian-update-member', goal: 'Update member', key: 'cli-update-member', params: ['member=9001', 'email=member@example.test', 'phone=5550001111', 'address=1 Main Street'] },
+  { capability: 'meridian-place-hold', goal: 'Place hold', key: 'cli-place-hold', params: ['member=9001', 'share=9001-S0001-1', 'reason=FRAUD', 'notes=fixture'] },
 ] as const)('supplies the runtime $capability completion validator to discovery', async fixture => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-completion-'));
-  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   const validateCompletion = vi.fn(async () => {});
@@ -612,7 +613,8 @@ it.each([
   process.exitCode = undefined;
   Object.assign(process.env, {
     OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir, JOURNAL_HMAC_KEY: JOURNAL_KEY,
-    MERIDIAN_TELLER_OPERATOR: 'teller-test', MERIDIAN_TELLER_PASSWORD: 'offline-test-only', MERIDIAN_BRANCH: 'MAIN-001',
+    MERIDIAN_TELLER_OPERATOR: 'teller-test', MERIDIAN_TELLER_PASSWORD: 'offline-test-only',
+    MERIDIAN_SUPERVISOR_OPERATOR: 'supervisor-test', MERIDIAN_SUPERVISOR_PASSWORD: 'offline-test-only', MERIDIAN_BRANCH: 'MAIN-001',
   });
   vi.resetModules();
   vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => ({ openai: {}, model: 'fixture' }) }));
@@ -639,7 +641,7 @@ it.each([
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const { runCli } = await import('../cli.js');
     await runCli(['discover', '--name', fixture.capability, '--goal', fixture.goal, '--profile', 'meridian', '--entry', `${ORIGIN}/signon`, '--idempotency-key', fixture.key,
-      ...fixture.params.flatMap(param => ['--param', param])]);
+      ...(fixture.capability === 'meridian-place-hold' ? ['--operator', 'SUPERVISOR'] : []), ...fixture.params.flatMap(param => ['--param', param])]);
     expect(supplied).toBe(validateCompletion);
   } finally {
     vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();

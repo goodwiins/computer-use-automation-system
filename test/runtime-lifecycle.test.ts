@@ -134,6 +134,7 @@ it('closes a constructed runtime before releasing the slot after setup fails', a
 it.each(['replay', 'discovery', 'recovery'])('treats denied posting approval as terminal in %s', async mode => {
   const inner = fixtureSurface();
   const live: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false, frame: { id: 'hold-workarea', name: 'workarea', url: `${origin}/members/1/hold/review`, navigation: 0 } };
+
   const dispatch = vi.fn(async () => report);
   inner.prepareClick = async () => ({ inspect: async () => live, dispatch });
   const gate = vi.fn(async () => false); const beforeDispatch = vi.fn();

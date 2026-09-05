@@ -36,6 +36,19 @@ export interface ResolutionReport {
   matches: number;
 }
 
+export interface ReadOnlyPageSnapshot {
+  url: string;
+  frameUrls: string[];
+  identity: { operator: string; branch: string; trusted: boolean };
+  tables: Array<Array<Record<string, string>>>;
+}
+
+export interface ReadOnlyTableRequest {
+  target: TargetDescriptor;
+  columns: TableColumn[];
+  rowSelector?: string;
+}
+
 export class TargetResolutionError extends Error {
   constructor(
     public readonly descriptor: TargetDescriptor,
@@ -54,6 +67,8 @@ export interface Surface {
   effectiveRisk?: RiskClass;
   setStep?(id: string): void;
   readTable?(target: TargetDescriptor, columns: TableColumn[], timeoutMs?: number, rowSelector?: string): Promise<Array<Record<string, string>>>;
+  /** Read an exact page in a temporary tab in the current authenticated browser context. */
+  readOnlyPage?(url: string, tables: ReadOnlyTableRequest[], timeoutMs?: number): Promise<ReadOnlyPageSnapshot>;
   start(entryUrl: string): Promise<void>;
   observe(): Promise<Observation>;
   currentUrl(): string;
