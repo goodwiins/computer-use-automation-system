@@ -259,6 +259,7 @@ it.each(['validation-injected', 'permission', 'maintenance'])('keeps post-intent
 
 it('discards a stale observation after bound operation recovery before asking the model', async () => {
   const surface = fixtureSurface();
+  Object.defineProperty(surface, 'strictOperationRecovery', { value: true });
   let maintenance = false;
   let observations = 0;
   surface.observe = vi.fn(async () => {
@@ -281,6 +282,24 @@ it('discards a stale observation after bound operation recovery before asking th
   expect(create).toHaveBeenCalledOnce();
   expect(JSON.stringify(create.mock.calls[0]![0])).toContain('observation-3');
   expect(JSON.stringify(create.mock.calls[0]![0])).not.toContain('observation-1');
+});
+
+it('does not fall back to a copied click when strict discovery lacks the trusted hook', async () => {
+  const surface = fixtureSurface();
+  Object.defineProperty(surface, 'strictOperationRecovery', { value: true });
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS');
+  surface.recoverClick = vi.fn(async () => report);
+  const create = vi.fn();
+  const escalate = vi.fn(async () => 'retry' as const);
+  const result = await runDiscovery('open share', `${origin}/signon`, {}, [origin], {
+    surface, logger: new RunLogger('discovery', new Redactor(), temp(), true),
+    openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+    model: 'offline', maxSteps: 1, detectors: profile.detectors, escalate,
+  });
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'RECOVERY_FAILED', trace: [] });
+  expect(surface.recoverClick).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  expect(escalate).not.toHaveBeenCalled();
 });
 
 it('does not retry a failed replay action after strict operation recovery', async () => {
@@ -318,6 +337,62 @@ it('runs the next recorded replay step once after one strict operation recovery'
   expect(validateCompletion).toHaveBeenCalledOnce();
 });
 
+it('requires the trusted hook when a canonical v2 artifact omits its copied resume marker', async () => {
+  const surface = fixtureSurface();
+  let maintenance = true;
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
+  surface.recoverClick = vi.fn(async () => { maintenance = false; return report; });
+  const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
+  const artifact = fixtureArtifact();
+  artifact.id = 'meridian-open-share';
+  artifact.name = 'meridian-open-share';
+  artifact.detectors = [{ ...detector, recovery: { action: 'click', target: { description: 'artifact-controlled target', strategies: [{ kind: 'css', selector: '#untrusted' }] } } }];
+  const escalate = vi.fn(async () => 'retry' as const);
+  const result = await runReplay(artifact, {}, {
+    surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, escalate, validateCompletion: vi.fn(),
+  });
+  expect(result).toMatchObject({ status: 'failure', failure: { code: 'RECOVERY_FAILED' }, escalated: false });
+  expect(surface.recoverClick).not.toHaveBeenCalled();
+  expect(escalate).not.toHaveBeenCalled();
+});
+
+it('uses the trusted hook for canonical v2 recovery even when copied recovery fields are altered', async () => {
+  const surface = fixtureSurface();
+  let maintenance = true;
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
+  surface.recoverOperation = vi.fn(async id => { expect(id).toBe('maintenance'); maintenance = false; });
+  surface.recoverClick = vi.fn(async () => report);
+  const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
+  const artifact = fixtureArtifact();
+  artifact.id = 'meridian-open-share';
+  artifact.name = 'meridian-open-share';
+  artifact.detectors = [{ ...detector, recovery: { action: 'none' } }];
+  const result = await runReplay(artifact, {}, {
+    surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: vi.fn(),
+  });
+  expect(result).toMatchObject({ status: 'success', recoveries: ['verify:maintenance'] });
+  expect(surface.recoverOperation).toHaveBeenCalledExactlyOnceWith('maintenance');
+  expect(surface.recoverClick).not.toHaveBeenCalled();
+});
+
+it('does not turn a claimed v1 canonical artifact into a legacy recovery bypass', async () => {
+  const surface = fixtureSurface();
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS');
+  surface.recoverOperation = vi.fn(async () => {});
+  surface.recoverClick = vi.fn(async () => report);
+  const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
+  const artifact = CapabilityArtifact.parse({
+    ...fixtureArtifact(), schemaVersion: 1, id: 'meridian-open-share', name: 'meridian-open-share',
+    detectors: [{ ...detector, recovery: { action: 'click', target } }],
+  });
+  const result = await runReplay(artifact, {}, {
+    surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: vi.fn(),
+  });
+  expect(result).toMatchObject({ status: 'failure', failure: { code: 'RECOVERY_FAILED' }, escalated: false });
+  expect(surface.recoverOperation).not.toHaveBeenCalled();
+  expect(surface.recoverClick).not.toHaveBeenCalled();
+});
+
 it.each(['business', 'abort', 'unknown'] as const)('retains typed discovery terminal precedence: %s', async mode => {
   const f = discoveryConditionFixture();
   f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: { name: 'click', arguments: JSON.stringify({ text: 'Continue', reason: 'fixture' }) } }] } }] });
@@ -348,7 +423,7 @@ it.each(['discovery', 'replay'] as const)('requires guarded recovery support in 
   expect(click).not.toHaveBeenCalled(); expect(f.escalate).not.toHaveBeenCalled(); expect(f.create).not.toHaveBeenCalled();
 });
 
-it.each(['discovery', 'replay'] as const)('uses inspected nonmutation recovery only in %s', async mode => {
+it.each(['discovery', 'replay'] as const)('refuses standalone recovery for strict MERIDIAN %s', async mode => {
   for (const hazard of ['none', 'mutation', 'approval', 'post-intent'] as const) {
     const f = discoveryConditionFixture(); f.show('maintenance');
     const live: LiveControl = { url: f.inner.currentUrl(), destination: `${origin}/menu`, method: 'GET', control: 'Continue', submit: false, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: {}, tokenPresent: true, error: false };
@@ -362,8 +437,8 @@ it.each(['discovery', 'replay'] as const)('uses inspected nonmutation recovery o
     const result = mode === 'discovery' ? await f.run() : hazard === 'post-intent'
       ? await surface.recoverClick(profile.detectors.find(d => d.id === 'maintenance')!.recovery!.target!).then(() => 'unexpected', () => ({ status: 'failure' }))
       : await runReplay({ ...fixtureArtifact(), detectors: profile.detectors }, {}, { surface, logger: f.logger, policy: recoveryPolicy, escalate: f.escalate });
-    expect(result).toHaveProperty('status', mode === 'discovery' ? 'stopped' : hazard === 'none' ? 'success' : 'failure');
-    expect(dispatch).toHaveBeenCalledTimes(hazard === 'none' ? 1 : 0);
+    expect(result).toHaveProperty('status', mode === 'discovery' ? 'stopped' : 'failure');
+    expect(dispatch).not.toHaveBeenCalled();
     expect(gate).not.toHaveBeenCalled(); expect(beforeDispatch).not.toHaveBeenCalled(); expect(f.escalate).not.toHaveBeenCalled();
     expect(f.create).not.toHaveBeenCalled();
   }

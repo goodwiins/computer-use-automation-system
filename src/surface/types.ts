@@ -62,6 +62,8 @@ export class TargetResolutionError extends Error {
 }
 
 export interface Surface {
+  /** True when runtime conditions must use guarded operation recovery. */
+  readonly strictOperationRecovery?: boolean;
   prepareClick?(target: TargetDescriptor, timeoutMs?: number): Promise<{ inspect(timeoutMs?: number): Promise<LiveControl>; dispatch(expected: LiveControl, timeoutMs?: number): Promise<ResolutionReport> }>;
   mutationDispatched?: boolean;
   effectiveRisk?: RiskClass;

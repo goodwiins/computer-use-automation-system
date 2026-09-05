@@ -2253,6 +2253,7 @@ it.each([
   ];
   let discoveryUrl = `${origin}/signon`;
   const discoverySurface: Surface = {
+    strictOperationRecovery: true,
     mutationDispatched: false,
     start: async url => { discoveryUrl = url; },
     observe: async () => ({ url: discoveryUrl, title: '', frames: [] }), currentUrl: () => discoveryUrl, frameUrls: () => [discoveryUrl],

@@ -139,6 +139,9 @@ export class GuardedSurface implements Surface {
   private memberUpdateOrigin?: string;
   private holdState?: HoldState;
   private maintenanceAttempted = false;
+  get strictOperationRecovery() {
+    return this.runtime?.profile.appId === 'meridian';
+  }
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 

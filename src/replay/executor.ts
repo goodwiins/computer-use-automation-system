@@ -131,33 +131,37 @@ export async function runReplay(
           logger.writeResult(result);
           return result;
         }
-        const strictRecovery = artifact.schemaVersion === 2
-          && artifact.app.appId === 'meridian'
-          && artifact.id === 'meridian-open-share'
-          && d.recovery?.resume === 'open-share-member-entry';
+        const strictMeridian = artifact.app.appId === 'meridian';
+        const strictRecovery = strictMeridian && artifact.schemaVersion === 2
+          && d.classification === 'recoverable';
+        if (strictMeridian && artifact.schemaVersion !== 2 && d.classification === 'recoverable') {
+          return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'a schema-version-2 guarded operation recovery', observed: 'Legacy MERIDIAN recovery is not permitted' });
+        }
         if (strictRecovery && !allowStrictRecovery) {
           return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'maintenance only at a successful action boundary', observed: 'The condition appeared after an uncertain action failure' });
         }
         if (strictRecovery && strictRecoveryAttempted) {
           return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'one bounded operation recovery', observed: 'The runtime condition appeared again after recovery' });
         }
+        if (strictRecovery) {
+          strictRecoveryAttempted = true;
+          recoveries.push(`${stepId}:${d.id}`);
+          logger.log('detector.recovering', { detector: d.id, action: 'click' });
+          try {
+            if (!surface.recoverOperation) throw new Error('Guarded operation recovery is unavailable');
+            surface.setStep?.(stepId);
+            await surface.recoverOperation(d.id);
+            strictRecoveryCount++;
+            continue;
+          } catch (err) {
+            if (surface.mutationDispatched) return fail({ code: 'POST_OUTCOME_UNKNOWN', stepId, intent: 'recover from runtime condition', expected: 'known dispatch outcome', observed: 'Dispatch began before recovery failed' });
+            if (err instanceof RunAbortedError) return aborted(stepId);
+            return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'an allowed bound operation recovery', observed: 'Guarded recovery could not complete' });
+          }
+        }
         if (d.classification === 'recoverable' && d.recovery && !recoveries.includes(`${stepId}:${d.id}`)) {
           recoveries.push(`${stepId}:${d.id}`);
           logger.log('detector.recovering', { detector: d.id, action: d.recovery.action });
-          if (strictRecovery) {
-            strictRecoveryAttempted = true;
-            try {
-              if (!surface.recoverOperation) throw new Error('Guarded operation recovery is unavailable');
-              surface.setStep?.(stepId);
-              await surface.recoverOperation(d.id);
-              strictRecoveryCount++;
-              continue;
-            } catch (err) {
-              if (surface.mutationDispatched) return fail({ code: 'POST_OUTCOME_UNKNOWN', stepId, intent: 'recover from runtime condition', expected: 'known dispatch outcome', observed: 'Dispatch began before recovery failed' });
-              if (err instanceof RunAbortedError) return aborted(stepId);
-              return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'an allowed bound operation recovery', observed: 'Guarded recovery could not complete' });
-            }
-          }
           if (d.recovery.action === 'click' && d.recovery.target) {
             // Recovery actions come from config, not the reviewed step list —
             // pass an explicit risk so they go through the policy gate like

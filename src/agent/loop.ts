@@ -317,15 +317,15 @@ export async function runDiscovery(
       logger.log('detector.hit', { classification: detector.classification });
       if (detector.classification !== 'recoverable') return stopForDetector(detector);
       const recovery = detector.recovery;
-      const operationRecovery = recovery?.resume === 'open-share-member-entry' && !!surface.recoverOperation;
-      const clickRecovery = recovery?.action === 'click' && !!recovery.target && !!surface.recoverClick;
-      if (operationRecovery && !allowOperationRecovery) return finish('stopped', 'RECOVERY_FAILED');
-      if (recoveryAttempted || (!operationRecovery && !clickRecovery)) return finish('stopped', 'RECOVERY_FAILED');
+      const strictRecovery = surface.strictOperationRecovery === true;
+      const clickRecovery = !strictRecovery && recovery?.action === 'click' && !!recovery.target && !!surface.recoverClick;
+      if (strictRecovery && !allowOperationRecovery) return finish('stopped', 'RECOVERY_FAILED');
+      if (recoveryAttempted || (strictRecovery ? !surface.recoverOperation : !clickRecovery)) return finish('stopped', 'RECOVERY_FAILED');
       recoveryAttempted = true;
       recovering = true;
       logger.log('detector.recovering', { action: 'click' });
       surface.setStep?.('(discovery-recovery)');
-      if (recovery?.resume === 'open-share-member-entry') {
+      if (strictRecovery) {
         await surface.recoverOperation!(detector.id);
         if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
         return RECOVERED;
