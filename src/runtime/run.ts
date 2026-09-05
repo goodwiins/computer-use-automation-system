@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { CapabilityArtifact } from '../artifact/schema.js';
 import { ControlSession, type InterventionDecision, type InterventionRequest } from '../escalation/session.js';
 import { RunLogger } from '../evidence/logger.js';
@@ -40,13 +41,14 @@ export function createRuntime(options: {
   const redactor = new Redactor();
   const promptRedactor = new Redactor();
   if (options.operator) promptRedactor.addSensitiveValues([options.operator.password]);
+  if (!strict) promptRedactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   redactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   if (options.operator) redactor.addSensitiveValues([options.operator.password]);
-  const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId, options.onEvent);
+  const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId ?? randomUUID(), options.onEvent);
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
   const browser = new BrowserSurface({ headful: options.headful, fault, allowedOrigins: options.policy.allowedOrigins, onClose: options.onClose,
-    ...(strict ? { profile: options.profile, sensitive: (values: string[], secrets: string[] = []) => { redactor.addSensitiveValues(values); promptRedactor.addSensitiveValues(secrets); } } : {}) });
+    ...(strict ? { profile: options.profile, sensitive: (values: string[], secrets: string[] = [], credentials: string[] = []) => { redactor.addSensitiveValues(values); promptRedactor.addSensitiveValues(secrets, true); promptRedactor.addSensitiveValues(credentials); } } : {}) });
   const surface = new GuardedSurface(browser, options.policy, options.gate, e => logger.log('policy.decision', e),
     strict ? { profile: options.profile!, session, deadline, runId: logger.runId, artifact: options.artifact, version: options.version,
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,

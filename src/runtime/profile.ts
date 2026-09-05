@@ -24,6 +24,7 @@ export interface FrameContext {
 export interface LiveControl {
   url: string; destination: string; method: string; control: string; submit: boolean;
   operator: string; branch: string; role: string; conditions: string[]; facts: Record<string, string>; tokenPresent: boolean;
+  visibleFacts?: Record<string, string>;
   error: boolean;
   frame?: FrameContext;
 }

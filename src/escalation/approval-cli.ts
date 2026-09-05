@@ -2,7 +2,8 @@ import { chmodSync, lstatSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
-import type { Approval, PendingIntervention } from '../runtime/approval.js';
+import { publicIntervention, type Approval, type PendingIntervention } from '../runtime/approval.js';
+import { Redactor } from '../safety/redact.js';
 import { RequestError } from '../runtime/journal.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,27 +73,12 @@ function validateSocket(path: string): void {
   if ((stat.mode & 0o077) !== 0) throw new RequestError(503, 'Approval endpoint permissions must be owner-only');
 }
 
-export function describePendingApproval(pending: PendingIntervention | undefined): PublicPendingApproval {
+export function describePendingApproval(pending: PendingIntervention | undefined, redactor = new Redactor()): PublicPendingApproval {
   if (!pending || pending.request.kind !== 'risk_approval') throw new RequestError(409, 'No pending risk approval');
-  const action = pending.action && {
-    ...pending.action,
-    destination: safeUrl(pending.action.destination),
-    facts: Object.fromEntries(Object.entries(pending.action.facts).filter(([key]) => !/token|password|secret|cookie|authorization|body/i.test(key))),
-  };
-  return {
-    approvalId: pending.id,
-    expiresAt: pending.expiresAt,
-    capability: pending.request.capability,
-    goal: pending.request.goal,
-    reason: pending.request.reason,
-    url: safeUrl(pending.request.url),
-    ...(action ? { action } : {}),
-  };
-}
-
-function safeUrl(value: string): string {
-  try { const parsed = new URL(value); return `${parsed.origin}${parsed.pathname}`; }
-  catch { return '(unavailable)'; }
+  const safe = publicIntervention(pending, redactor);
+  return { approvalId: safe.id, expiresAt: safe.expiresAt, capability: safe.request.capability,
+    goal: safe.request.goal, reason: safe.request.reason, url: safe.request.url,
+    ...(safe.action ? { action: safe.action } : {}) };
 }
 
 function parseRequest(raw: Buffer, runId: string): ApprovalRequest {
@@ -124,7 +110,7 @@ function responseBody(response: ApprovalResponse): Buffer {
   return body;
 }
 
-export async function startApprovalServer(runIdValue: string, approval: Approval): Promise<{ endpoint: string; close: () => Promise<void> }> {
+export async function startApprovalServer(runIdValue: string, approval: Approval, redactor = new Redactor()): Promise<{ endpoint: string; close: () => Promise<void> }> {
   const runId = requireUuid(runIdValue, '--run');
   const endpoint = socketPath(runId, true);
   try { lstatSync(endpoint); throw new RequestError(409, 'Approval endpoint already exists'); }
@@ -157,7 +143,7 @@ export async function startApprovalServer(runIdValue: string, approval: Approval
       let response: ApprovalResponse;
       try {
         const request = parseRequest(Buffer.concat(chunks), runId);
-        if (request.action === 'status') response = { ok: true, pending: describePendingApproval(approval.pending) };
+        if (request.action === 'status') response = { ok: true, pending: describePendingApproval(approval.pending, redactor) };
         else {
           approval.decide(request.approvalId, request.decision);
           response = { ok: true, decision: request.decision };

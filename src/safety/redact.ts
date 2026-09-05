@@ -15,18 +15,43 @@ const escapeRegexChars = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export class Redactor {
   private sensitiveValues: string[] = [];
+  private protectedValues = new Set<string>();
 
   /** Register concrete runtime values that must never be logged. */
-  addSensitiveValues(values: Array<string | number>): void {
+  addSensitiveValues(values: Array<string | number>, allowVisible = false): void {
     for (const v of values) {
       const s = String(v);
       if (s.length === 0) continue;
       if (!this.sensitiveValues.includes(s)) this.sensitiveValues.push(s);
       // Values surface URL-encoded in query strings and form bodies too.
       const enc = encodeURIComponent(s);
+      if (!allowVisible) { this.protectedValues.add(s); this.protectedValues.add(enc); }
       if (enc !== s && !this.sensitiveValues.includes(enc)) this.sensitiveValues.push(enc);
     }
     this.sensitiveValues.sort((a, b) => b.length - a.length);
+  }
+
+  /** Exempt only corroborated business values registered as hidden, never credentials. */
+  forVisibleValues(values: string[]): Redactor {
+    const visible = new Set(values.flatMap(value => [value, encodeURIComponent(value)]));
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(this.sensitiveValues.filter(value => !visible.has(value) || this.protectedValues.has(value)));
+    return redactor;
+  }
+
+  /** Original string spans, merged so overlapping credentials cannot leave a suffix exposed. */
+  private ranges(s: string): Array<[number, number]> {
+    const patterns = [CREDENTIAL_RE, ...this.sensitiveValues.map(value => new RegExp(value.length >= MIN_SUBSTRING_LEN
+      ? escapeRegexChars(value) : `(?<![A-Za-z0-9])${escapeRegexChars(value)}(?![A-Za-z0-9])`, 'g'))];
+    const matches = patterns.flatMap(pattern => Array.from(s.matchAll(pattern), match => [match.index, match.index + match[0].length] as [number, number]))
+      .sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [start, end] of matches) {
+      const previous = merged.at(-1);
+      if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+      else merged.push([start, end]);
+    }
+    return merged;
   }
 
   redactString(s: string): string {
@@ -39,6 +64,32 @@ export class Redactor {
       else out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegexChars(v)}(?![A-Za-z0-9])`, 'g'), MASK);
     }
     return out;
+  }
+
+  /** Mask decoded secrets while retaining every original URL byte outside those spans. */
+  redactUrlComponent(raw: string): string {
+    let decoded = '';
+    const positions: Array<[number, number]> = [];
+    for (let offset = 0; offset < raw.length;) {
+      let character = String.fromCodePoint(raw.codePointAt(offset)!);
+      let width = character.length;
+      if (/^%[0-9a-f]{2}$/i.test(raw.slice(offset, offset + 3))) {
+        const byte = Number.parseInt(raw.slice(offset + 1, offset + 3), 16);
+        const bytes = byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1;
+        width = bytes * 3;
+        try { character = decodeURIComponent(raw.slice(offset, offset + width)); }
+        catch { width = 3; character = raw.slice(offset, offset + width); }
+      }
+      // An undecodable byte stays literal; valid UTF-8 nearby still participates in masking.
+      const end = offset + width;
+      for (let unit = 0; unit < character.length; unit++) positions.push([offset, end]);
+      decoded += character;
+      offset = end;
+    }
+    for (const [start, end] of this.ranges(decoded).reverse()) {
+      raw = raw.slice(0, positions[start]![0]) + encodeURIComponent(MASK) + raw.slice(positions[end - 1]![1]);
+    }
+    return raw;
   }
 
   /** Concrete values registered for masking (e.g. for screenshot input masking). */
