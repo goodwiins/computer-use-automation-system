@@ -163,12 +163,20 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const tools = buildTools(service, key);
         if (Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
         const result = await generateText(modelOptions(model ?? makeChatModel(), body.messages, tools));
+        const localResults = result.toolResults.filter(toolResult => toolResult.providerExecuted !== true
+          && result.toolCalls.some(toolCall => toolCall.dynamic !== true && toolCall.providerExecuted !== true
+            && toolCall.toolCallId === toolResult.toolCallId && toolCall.toolName === toolResult.toolName));
+        const accepted = localResults.find(toolResult => {
+          const output = toolResult.output as ToolOutput;
+          return toolResult.toolName !== 'run_status' && output.kind === 'run';
+        });
         const invalid = result.dynamicToolCalls.find(call => call.invalid);
-        if (invalid) throw new RequestError(403, NoSuchToolError.isInstance(invalid.error) ? 'Capability or operator context is not authorized' : 'Request does not match the contract');
-        const output = result.toolResults[0]?.output as ToolOutput | undefined;
+        if (!accepted && invalid) throw new RequestError(403, NoSuchToolError.isInstance(invalid.error) ? 'Capability or operator context is not authorized' : 'Request does not match the contract');
+        const selected = accepted ?? localResults.find(toolResult => (toolResult.output as ToolOutput).kind === 'error') ?? localResults[0];
+        const output = selected?.output as ToolOutput | undefined;
         if (!output) return void res.json({ message: result.text || 'Please supply the required capability inputs.' });
         if (output.kind === 'error') throw new RequestError(output.status, output.error);
-        const isStatus = result.toolCalls[0]?.toolName === 'run_status';
+        const isStatus = selected?.toolName === 'run_status';
         const message = isStatus
           ? output.state === 'awaiting-human' ? 'Waiting for an operator.'
             : output.state === 'recovering' ? 'Trying a known recovery.'
@@ -187,7 +195,7 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         requireConversation(messages);
         const tools = buildTools(service, key);
         if (Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
-        const result = streamText({ ...modelOptions(model ?? makeChatModel(), messages, tools), streamRetries: 0 });
+        const result = streamText({ ...modelOptions(model ?? makeChatModel(), messages, tools), streamRetries: 0, onError: () => {} });
         await pipeUIMessageStreamToResponse({
           response: res,
           stream: toUIMessageStream({

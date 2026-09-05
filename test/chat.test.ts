@@ -168,6 +168,34 @@ describe('AI SDK chat boundary', () => {
     expect(unknownService.invoke).not.toHaveBeenCalled();
   });
 
+  it('returns an accepted capability when status and unknown calls share the model response', async () => {
+    const model = mockModel();
+    model.doGenerate = vi.fn(async () => generateResult([
+      ...toolContent('run_status', { runId }, 'call-status'),
+      ...toolContent('member-hold', { member: '123', share: '1-A' }, 'call-capability'),
+      ...toolContent('approve', { runId }, 'call-forged'),
+    ]));
+    const chatService = service();
+    const { request } = await start(model, chatService);
+    const response = await request('/chat', legacyBody(), 'mixed-key');
+    expect(response).toMatchObject({ status: 202, json: { kind: 'run', runId, capability: 'member-hold', state: 'running' } });
+    expect(chatService.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('sanitizes streamed provider errors without logging their raw details', async () => {
+    const privateDetail = 'SYNTHETIC_PRIVATE_PROVIDER_DETAIL';
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request } = await start(mockModel(undefined, [
+      { type: 'stream-start', warnings: [] },
+      { type: 'error', error: new Error(privateDetail) },
+      { type: 'finish', finishReason: { unified: 'error', raw: 'error' }, usage },
+    ]));
+    const response = await request('/api/chat', uiBody(), 'provider-error-key');
+    expect(response.text).toContain('Request failed; inspect safe run evidence or server configuration');
+    expect(response.text).not.toContain(privateDetail);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+  });
+
   it('drops client system, tool definitions, and displayed tool output before inference', async () => {
     let prompt = '';
     const model = mockModel();
