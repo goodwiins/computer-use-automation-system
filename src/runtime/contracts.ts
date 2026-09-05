@@ -129,7 +129,7 @@ export function assertTransferOutputs(expected: TransferFacts, outputs: Record<s
   const fields = ['member', 'sourceShare', 'destinationShare', 'amount', 'memo', 'confirmation'];
   if (!row || typeof row !== 'object' || Object.keys(row).length !== fields.length || fields.some(field => !Object.hasOwn(row, field) || typeof row[field] !== 'string')) return transferCheckFailed();
   if (row.confirmation !== outputs.confirmation) return transferCheckFailed();
-  assertTransferFacts(expected, {
+  assertTransferFacts({ ...expected, memo: expected.memo.trim() }, {
     member: row.member!,
     sourceShare: row.sourceShare!,
     destinationShare: row.destinationShare!,

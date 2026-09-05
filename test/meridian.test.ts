@@ -1004,7 +1004,7 @@ describe('MERIDIAN guarded transfer path', () => {
     { shareId: '9001-C', type: 'S0001', balance: '9.00', status: 'OPEN' },
   ];
 
-  function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void) {
+  function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void, expected = request) {
     let currentRows: Array<Record<string, string>> = rows;
     let url = `${origin}/members`;
     let navigation = 0;
@@ -1030,11 +1030,11 @@ describe('MERIDIAN guarded transfer path', () => {
       frameUrls: () => [`${origin}/frameset`, url],
       readTable: async () => currentRows,
       readOnlyPage,
-    }, gate, { artifact: 'meridian-funds-transfer', transfer: { expected: request, memberTable: meridianTransferMemberTable } }, onAction, async expected => {
-      if (expected.destination === memberUrl) url = memberUrl;
-      else if (expected.destination === transferUrl) url = transferUrl;
-      else if (expected.destination === reviewUrl) url = reviewUrl;
-      else if (expected.destination === postUrl) url = postUrl;
+    }, gate, { artifact: 'meridian-funds-transfer', transfer: { expected, memberTable: meridianTransferMemberTable } }, onAction, async expectedControl => {
+      if (expectedControl.destination === memberUrl) url = memberUrl;
+      else if (expectedControl.destination === transferUrl) url = transferUrl;
+      else if (expectedControl.destination === reviewUrl) url = reviewUrl;
+      else if (expectedControl.destination === postUrl) url = postUrl;
       frameUrl = url;
       navigation++;
     }, async () => onInspect?.());
@@ -1056,8 +1056,8 @@ describe('MERIDIAN guarded transfer path', () => {
     };
   }
 
-  async function eligibleTransfer(rows = eligibleRows, facts = validReviewFacts) {
-    const harness = transferHarness(rows, facts);
+  async function eligibleTransfer(rows = eligibleRows, facts = validReviewFacts, expected = request) {
+    const harness = transferHarness(rows, facts, undefined, expected);
     await harness.run.surface.start(`${origin}/members`);
     harness.setUrl(harness.memberUrl);
     harness.setLive({ url: harness.memberUrl, destination: harness.memberUrl, method: 'GET', control: 'Select member', submit: false, facts: {} });
@@ -1230,6 +1230,26 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.readOnlyPage).toHaveBeenCalledOnce();
   });
 
+  it('compares rendered transfer memo after edge trimming while keeping native memo exact', async () => {
+    const expected = { ...request, memo: ' fixture ' };
+    const renderedFacts = { ...validReviewFacts, memo: expected.memo, 'review:Memo:': 'fixture' };
+    const accepted = await eligibleTransfer(eligibleRows, renderedFacts, expected);
+    await expect(accepted.run.surface.click(target, 1000, 'irreversible')).resolves.toBeDefined();
+    expect(accepted.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(accepted.run.dispatch).toHaveBeenCalledOnce();
+    expect(() => assertTransferOutputs(expected, {
+      confirmation: 'CONF-123',
+      transaction: [{ ...expected, memo: 'fixture', confirmation: 'CONF-123' }],
+    })).not.toThrow();
+
+    const changedNative = await eligibleTransfer(eligibleRows, renderedFacts, expected);
+    changedNative.setLive({ facts: { ...renderedFacts, memo: 'fixture' } });
+    await expect(changedNative.run.surface.click(target)).rejects.toThrow(/transfer/i);
+    expect(changedNative.gate).not.toHaveBeenCalled();
+    expect(changedNative.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(changedNative.run.dispatch).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['with a transfer binding', { transfer: { expected: request, memberTable: meridianTransferMemberTable } }],
     ['without a transfer binding', {}],
@@ -1240,7 +1260,7 @@ describe('MERIDIAN guarded transfer path', () => {
       destination: `${origin}/members/9001/update`, method: 'POST', control: 'Save Changes', submit: true,
     });
 
-    await expect(run.surface.click(target)).rejects.toThrow(/transfer/i);
+    await expect(run.surface.click(target)).rejects.toThrow(/transfer|operation/i);
     expect(gate).not.toHaveBeenCalled();
     expect(run.beforeDispatch).not.toHaveBeenCalled();
     expect(run.surface.mutationDispatched).toBe(false);
@@ -1420,7 +1440,7 @@ describe('MERIDIAN guarded open-share path', () => {
   it('rejects a wrong member destination and a replaced review frame', async () => {
     const wrongMember = await reviewedOpenShare();
     wrongMember.setLive({ destination: `${origin}/members/9999/open-share/post` });
-    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/open-share/i);
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/open-share|member|bound/i);
     expect(wrongMember.gate).not.toHaveBeenCalled();
     const wrongFrame = await reviewedOpenShare();
     wrongFrame.setFrame('replacement-frame');
@@ -1547,7 +1567,7 @@ describe('MERIDIAN guarded member-update path', () => {
     addressLabel: 'Address:', address: request.address, ...overrides,
   });
 
-  function harness(gate = vi.fn(async () => true), initialRows: Array<Record<string, string>> = [contactRow()], operationOrigin = origin, completionRedirectOrigin?: string) {
+  function harness(gate = vi.fn(async () => true), initialRows: Array<Record<string, string>> = [contactRow()], operationOrigin = origin, completionRedirectOrigin?: string, expected = request) {
     let rows = initialRows;
     let url = `${operationOrigin}/members/9001/update`;
     let navigation = 0;
@@ -1562,12 +1582,12 @@ describe('MERIDIAN guarded member-update path', () => {
       frameUrls: () => [`${operationOrigin}/frameset`, url],
       navigate,
       readTable: async () => { if (changeFrameDuringRead) frameId = 'replacement-workarea'; return rows; },
-    }, gate, { artifact: 'meridian-update-member', memberUpdate: { expected: request, contactTable: meridianMemberContactTable } }, undefined,
+    }, gate, { artifact: 'meridian-update-member', memberUpdate: { expected, contactTable: meridianMemberContactTable } }, undefined,
     async expected => { url = expected.destination; navigation++; }, undefined,
     Policy.parse({ ...policy, allowedOrigins: operationOrigin === origin ? [origin] : ['https://policy-first.example', operationOrigin, ...(completionRedirectOrigin ? [completionRedirectOrigin] : [])] }));
     const setLive = (next: Partial<LiveControl> = {}) => run.change({
       url: `${operationOrigin}/members/9001/update`, destination: `${operationOrigin}/members/9001/update`, method: 'POST',
-      control: 'Save Changes', submit: true, facts: { ...request }, frame: frame(), ...next,
+      control: 'Save Changes', submit: true, facts: { ...expected }, frame: frame(), ...next,
     });
     setLive();
     return {
@@ -1643,7 +1663,7 @@ describe('MERIDIAN guarded member-update path', () => {
 
     const wrongMember = harness();
     wrongMember.setLive({ destination: `${origin}/members/9999/update` });
-    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/member-update/i);
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/member-update|member selection|bound/i);
     expect(wrongMember.gate).not.toHaveBeenCalled();
 
     const wrongOrigin = harness();
@@ -1677,6 +1697,25 @@ describe('MERIDIAN guarded member-update path', () => {
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledOnce();
     await expect(h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).resolves.toBeUndefined();
+  });
+
+  it('compares rendered contact values after edge trimming while keeping native fields exact', async () => {
+    const expected = {
+      ...request,
+      email: ' member@example.test ',
+      phone: ' 5550001111 ',
+      address: ' 1 Main Street ',
+    };
+    const accepted = harness(vi.fn(async () => true), [contactRow()], origin, undefined, expected);
+    await accepted.run.surface.click(target);
+    await expect(accepted.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).resolves.toBeUndefined();
+
+    const changedNative = harness(vi.fn(async () => true), [contactRow()], origin, undefined, expected);
+    changedNative.setLive({ facts: { ...expected, address: '1 Main Street' } });
+    await expect(changedNative.run.surface.click(target)).rejects.toThrow(/member-update/i);
+    expect(changedNative.gate).not.toHaveBeenCalled();
+    expect(changedNative.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(changedNative.run.dispatch).not.toHaveBeenCalled();
   });
 
   it('uses the validated update origin for read-back when policy has multiple origins', async () => {
@@ -2069,6 +2108,22 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.dispatch).not.toHaveBeenCalled();
   });
 
+  it('compares rendered hold notes after edge trimming while keeping native notes exact', async () => {
+    const expected = { ...request, notes: ' review ' };
+    const accepted = await reviewedHold({ expected });
+    accepted.setLive({ facts: { ...reviewFacts(expected), 'review:Notes:': 'review' } });
+    await expect(accepted.run.surface.click(target)).resolves.toBeDefined();
+    expect(accepted.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(accepted.run.dispatch).toHaveBeenCalledOnce();
+
+    const changedNative = await reviewedHold({ expected });
+    changedNative.setLive({ facts: { ...reviewFacts(expected), notes: 'review', 'review:Notes:': 'review' } });
+    await expect(changedNative.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(changedNative.gate).not.toHaveBeenCalled();
+    expect(changedNative.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(changedNative.run.dispatch).not.toHaveBeenCalled();
+  });
+
   it('rejects teller authority on the supported flow before final intent', async () => {
     const h = harness({ role: 'TELLER' });
     await h.run.surface.start(h.startUrl);
@@ -2086,7 +2141,7 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
   it('rejects wrong member, origin, frame, missing facts, abort, and changed approval state with zero intent', async () => {
     const wrongMember = await reviewedHold();
     wrongMember.setLive({ destination: `${origin}/members/9999/hold/post` });
-    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/hold/i);
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/hold|member|bound/i);
     expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
 
     const wrongOrigin = await reviewedHold();

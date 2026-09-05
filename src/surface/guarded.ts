@@ -609,7 +609,7 @@ export class GuardedSurface implements Surface {
     if (fact(HOLD_REVIEW_FACTS.member) !== `${binding.expected.member} - ${state.name}`
       || fact(HOLD_REVIEW_FACTS.share) !== `${binding.expected.share} - ${state.selected.type}`
       || fact(HOLD_REVIEW_FACTS.reason) !== binding.expected.reason
-      || fact(HOLD_REVIEW_FACTS.notes) !== binding.expected.notes) throw new Error('Hold review facts failed validation');
+      || fact(HOLD_REVIEW_FACTS.notes) !== binding.expected.notes.trim()) throw new Error('Hold review facts failed validation');
   }
 
   private requireTransferRoute(url: string): void {
@@ -732,7 +732,7 @@ export class GuardedSurface implements Surface {
     assertTransferFacts(binding.expected, {
       member: fact('member'), sourceShare: fact('from'), destinationShare: fact('to'), amount: fact('amount'), memo: fact('memo'),
     });
-    assertTransferFacts(binding.expected, {
+    assertTransferFacts({ ...binding.expected, memo: binding.expected.memo.trim() }, {
       member: parseDisplayMember(fact(REVIEW_FACTS.member), binding.expected.member),
       sourceShare: parseDisplayShare(fact(REVIEW_FACTS.sourceShare), binding.expected.sourceShare),
       destinationShare: parseDisplayShare(fact(REVIEW_FACTS.destinationShare), binding.expected.destinationShare),
@@ -1047,7 +1047,12 @@ export class GuardedSurface implements Surface {
       || exact('emailLabel') !== 'E-mail:' || exact('phoneLabel') !== 'Phone:' || exact('addressLabel') !== 'Address:') {
       throw new Error('Member-update contact table labels are missing or ambiguous');
     }
-    assertMemberUpdateFacts(binding.expected, {
+    assertMemberUpdateFacts({
+      ...binding.expected,
+      email: binding.expected.email.trim(),
+      phone: binding.expected.phone.trim(),
+      address: binding.expected.address.trim(),
+    }, {
       member: exact('member'), email: exact('email'), phone: exact('phone'), address: exact('address'),
     });
   }
