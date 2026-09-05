@@ -1415,15 +1415,16 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
     ]) }));
     await page.goto(`http://127.0.0.1:${address.port}`); await page.locator('#credential').fill('o'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
     expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
     expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 2.5 s' }).count()).toBe(1);
     expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 0 ms' }).count()).toBe(1);
     const historical = page.locator('#runs article').filter({ hasText: 'Historical sensitive values are unavailable.' });
     expect(await historical.count()).toBe(1); expect(await historical.getByText(/Elapsed:/).count()).toBe(0);
-    await page.route('**/chat', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: '<img src=x onerror=alert(1)>' }) }));
+    await page.route('**/api/chat', route => route.fulfill({ contentType: 'text/event-stream', headers: { 'x-vercel-ai-ui-message-stream': 'v1' }, body: [{ type: 'start', messageId: 'hostile' }, { type: 'text-start', id: 'text' }, { type: 'text-delta', id: 'text', delta: '<img src=x onerror=alert(1)>' }, { type: 'text-end', id: 'text' }, { type: 'finish' }].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n' }));
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
-    await page.locator('#messages p').first().waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
+    await page.getByText('<img src=x onerror=alert(1)>', { exact: true }).waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     await page.locator('#credential').fill('c'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('status')?.textContent?.includes('Connected as caller'));

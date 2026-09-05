@@ -23,8 +23,8 @@ export function createApp(service: InvocationService, config: { callerToken: str
     next();
   });
   app.use(express.json({ limit: '32kb' }));
-  app.get('/', (_req, res) => res.sendFile(resolve('src/server/public/index.html')));
-  for (const file of ['app.js', 'style.css']) app.get(`/${file}`, (_req, res) => res.sendFile(resolve('src/server/public', file)));
+  app.get('/', (_req, res) => res.sendFile(resolve('dist/ui/index.html')));
+  app.use('/assets', express.static(resolve('dist/ui/assets'), { index: false, dotfiles: 'deny' }));
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
