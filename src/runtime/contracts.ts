@@ -9,6 +9,9 @@ export type TransferShare = { share: string; status: string; balance: string };
 export type OpenShareFacts = { member: string; shareType: string; deposit: string };
 export type OpenShareResult = OpenShareFacts & { shareId: string };
 export type MemberUpdateFacts = { member: string; email: string; phone: string; address: string };
+export type HoldFacts = { member: string; share: string; reason: string; notes: string };
+export type HoldResult = { member: string; share: string; status: string };
+export type HoldShare = { share: string; type: string; status: string };
 
 /** Observed in the approved member-record extraction; values are never interpolated into its selectors. */
 export const meridianTransferMemberTable: {
@@ -68,9 +71,16 @@ export function memberUpdateFactsFromParams(params: Record<string, string | numb
   return Object.fromEntries(names.map(name => [name, params[name]!])) as MemberUpdateFacts;
 }
 
+export function holdFactsFromParams(params: Record<string, string | number>): HoldFacts | undefined {
+  const names = ['member', 'share', 'reason', 'notes'] as const;
+  if (!names.every(name => typeof params[name] === 'string')) return undefined;
+  return Object.fromEntries(names.map(name => [name, params[name]!])) as HoldFacts;
+}
+
 const transferCheckFailed = (): never => { throw new Error('Transfer facts failed validation'); };
 const openShareCheckFailed = (): never => { throw new Error('Open-share facts failed validation'); };
 const memberUpdateCheckFailed = (): never => { throw new Error('Member-update facts failed validation'); };
+const holdCheckFailed = (): never => { throw new Error('Hold facts failed validation'); };
 
 function positiveCents(value: string): number {
   try {
@@ -145,6 +155,24 @@ export function assertOpenShareResult(expected: OpenShareFacts, priorShareIds: r
 
 export function assertMemberUpdateFacts(expected: MemberUpdateFacts, actual: MemberUpdateFacts): void {
   if (expected.member !== actual.member || expected.email !== actual.email || expected.phone !== actual.phone || expected.address !== actual.address) return memberUpdateCheckFailed();
+}
+
+export function assertHoldFacts(expected: HoldFacts, actual: HoldFacts, role: 'TELLER' | 'SUPERVISOR'): void {
+  if (role !== 'SUPERVISOR' || !expected.member || !expected.share || !expected.reason
+    || !['FRAUD', 'LEGAL', 'DECEASED'].includes(expected.reason)
+    || expected.member !== actual.member || expected.share !== actual.share
+    || expected.reason !== actual.reason || expected.notes !== actual.notes) return holdCheckFailed();
+}
+
+export function assertHoldEligibility(expected: HoldFacts, actualMember: string, shares: readonly HoldShare[]): void {
+  if (actualMember !== expected.member) return holdCheckFailed();
+  const matches = shares.filter(row => row.share === expected.share);
+  if (matches.length !== 1 || !matches[0]!.type.trim() || matches[0]!.status !== 'OPEN') return holdCheckFailed();
+}
+
+export function assertHoldResult(expected: HoldFacts, actual: HoldResult, outputs: Record<string, OutputValue>): void {
+  if (actual.member !== expected.member || actual.share !== expected.share || actual.status !== 'HOLD'
+    || Object.keys(outputs).length !== 1 || typeof outputs.heldShare !== 'string' || outputs.heldShare !== actual.share) return holdCheckFailed();
 }
 
 const TRANSFER_TRANSACTION_COLUMNS = [

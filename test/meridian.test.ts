@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
-import { applyMeridianContract, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
+import { applyMeridianContract, assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
@@ -41,6 +41,7 @@ const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
 const requestOpenShare = () => ({ member: '9001', shareType: 'S0001', deposit: '5.00' });
 const requestMemberUpdate = () => ({ member: '9001', email: 'member@example.test', phone: '5550001111', address: '1 Main Street' });
+const requestHold = () => ({ member: '9001', share: '9001-S0001-1', reason: 'FRAUD', notes: 'fixture' });
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
 const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false,
   frame: { id: 'fixture-workarea', name: 'workarea', url: `${origin}/members/1/hold/review`, navigation: 1 } };
@@ -318,15 +319,15 @@ describe('single-use interventions and live controls', () => {
   });
   it.each([
     ['meridian-place-hold', '/members/9001/hold/review', '/members/9001/hold/post', 'Apply Hold'],
-  ] as const)('permits the canonical write destination for %s', async (artifact, url, destination, controlName) => {
+  ] as const)('fails closed when canonical %s has no request binding', async (artifact, url, destination, controlName) => {
     const gate = vi.fn(async () => true);
     const run = guarded({}, gate, { artifact });
     run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName,
       frame: { ...control.frame!, url: `${origin}${url}` } });
-    await run.surface.click(target, 100, 'read');
-    expect(gate).toHaveBeenCalledOnce();
-    expect(run.beforeDispatch).toHaveBeenCalledOnce();
-    expect(run.dispatch).toHaveBeenCalledOnce();
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/hold/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
   });
   it('rejects a strict hold mutation without source-frame origin evidence', async () => {
     const gate = vi.fn(async () => true);
@@ -695,6 +696,15 @@ it('refuses an incomplete canonical member update before allocating runtime evid
   expect(readdirSync(evidenceDir)).toEqual([]);
 });
 
+it('refuses an incomplete canonical hold before allocating runtime evidence', () => {
+  const evidenceDir = temp();
+  expect(() => runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-place-hold', version: '1.0.0', policy, profile,
+    params: { member: '9001', share: '9001-S0001-1', reason: 'FRAUD' }, sensitive: [], gate: async () => false, evidenceDir,
+  })).toThrow(/complete request/i);
+  expect(readdirSync(evidenceDir)).toEqual([]);
+});
+
 it('creates the canonical open-share runtime with a completion boundary', async () => {
   const candidate = runtime.createRuntime({
     kind: 'replay', artifact: 'meridian-open-share', version: '1.0.0', policy, profile,
@@ -717,6 +727,17 @@ it('creates the canonical member-update runtime with a completion boundary', asy
   await candidate.close();
 });
 
+it('creates the canonical supervisor-hold runtime with a completion boundary', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'replay', artifact: 'meridian-place-hold', version: '1.0.0', policy, profile,
+    params: requestHold(), sensitive: [], gate: async () => false, evidenceDir: temp(),
+    operator: { operator: 'supervisor-test', password: 'secret', branch: 'MAIN-001', role: 'SUPERVISOR' },
+    beforeDispatch: () => {},
+  });
+  expect(candidate.validateCompletion).toBeTypeOf('function');
+  await candidate.close();
+});
+
 it('allows a cu-nexus runtime whose capability ID matches the canonical transfer', async () => {
   const candidate = runtime.createRuntime({
     kind: 'discovery', artifact: 'meridian-funds-transfer', version: '1.0.0', policy,
@@ -726,7 +747,7 @@ it('allows a cu-nexus runtime whose capability ID matches the canonical transfer
   await candidate.close();
 });
 
-it.each(['meridian-open-share', 'meridian-update-member'])('keeps generic discovery named %s free of strict completion binding', async artifact => {
+it.each(['meridian-open-share', 'meridian-update-member', 'meridian-place-hold'])('keeps generic discovery named %s free of strict completion binding', async artifact => {
   const candidate = runtime.createRuntime({
     kind: 'discovery', artifact, version: '1.0.0', policy,
     profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
@@ -1591,6 +1612,271 @@ describe('MERIDIAN guarded member-update path', () => {
   });
 });
 
+describe('MERIDIAN guarded supervisor-hold path', () => {
+  const request = requestHold();
+  const contactRow = (overrides: Record<string, string> = {}) => ({
+    memberLabel: 'Member No.:', member: request.member, nameLabel: 'Name:', name: 'Fixture Member',
+    emailLabel: 'E-mail:', email: 'member@example.test', phoneLabel: 'Phone:', phone: '5550001111',
+    addressLabel: 'Address:', address: '1 Main Street', ...overrides,
+  });
+  const eligibleRows = [
+    { shareId: request.share, type: 'Regular Shares', balance: '8.00', status: 'OPEN' },
+    { shareId: '9001-S0070-1', type: 'Share Draft (Checking)', balance: '2.00', status: 'OPEN' },
+  ];
+  const nativeFacts = (expected = request) => ({ member: expected.member, share: expected.share, reason: expected.reason, notes: expected.notes });
+  const reviewFacts = (expected = request) => ({
+    ...nativeFacts(expected),
+    'review:Member:': `${expected.member} - Fixture Member`,
+    'review:Share:': `${expected.share} - Regular Shares`,
+    'review:Reason:': expected.reason,
+    'review:Notes:': expected.notes,
+  });
+
+  function harness(options: {
+    shares?: Array<Record<string, string>>;
+    contacts?: Array<Record<string, string>>;
+    expected?: typeof request;
+    role?: 'TELLER' | 'SUPERVISOR';
+    gate?: () => Promise<boolean>;
+    allowedOrigins?: string[];
+    redirectCompletion?: boolean;
+  } = {}) {
+    let shares = options.shares ?? eligibleRows;
+    let contacts = options.contacts ?? [contactRow()];
+    const expected = options.expected ?? request;
+    const allowedOrigins = options.allowedOrigins ?? [origin];
+    const operationOrigin = allowedOrigins.at(-1)!;
+    let url = `${operationOrigin}/members`;
+    let navigation = 0;
+    let frameId = 'hold-workarea';
+    let replaceFrameDuringRead = false;
+    const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
+    const gate = options.gate ?? vi.fn(async () => true);
+    const navigate = vi.fn(async next => {
+      url = options.redirectCompletion ? `${allowedOrigins[0]}/members/${expected.member}` : next;
+      navigation++;
+    });
+    const run = guarded({
+      currentUrl: () => url,
+      currentFrame: frame,
+      lastResolvedFrame: frame,
+      frameUrls: () => [`${operationOrigin}/frameset`, url],
+      navigate,
+      readTable: async descriptor => {
+        if (replaceFrameDuringRead) frameId = 'replacement-workarea';
+        return descriptor.description.includes('contact') ? contacts : shares;
+      },
+    }, gate, {
+      artifact: 'meridian-place-hold', role: options.role ?? 'SUPERVISOR',
+      hold: { expected, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable },
+    }, undefined, async expectedControl => { url = expectedControl.destination; navigation++; }, undefined,
+    Policy.parse({ ...policy, allowedOrigins }));
+    const memberUrl = `${operationOrigin}/members/${expected.member}`;
+    const holdUrl = `${memberUrl}/hold`;
+    const reviewUrl = `${holdUrl}/review`;
+    const postUrl = `${holdUrl}/post`;
+    const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
+    return {
+      run, gate, navigate, startUrl: `${operationOrigin}/members`, memberUrl, holdUrl, reviewUrl, postUrl,
+      currentUrl: () => url,
+      setLive,
+      setShares(next: Array<Record<string, string>>) { shares = next; },
+      setContacts(next: Array<Record<string, string>>) { contacts = next; },
+      replaceFrame() { frameId = 'replacement-workarea'; },
+      replaceFrameDuringRead() { replaceFrameDuringRead = true; },
+    };
+  }
+
+  async function reviewedHold(options: Parameters<typeof harness>[0] = {}) {
+    const h = harness(options);
+    const expected = options.expected ?? request;
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: `${expected.member} - Fixture Member`, submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.holdUrl, method: 'GET', control: 'Place Hold', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.holdUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts: nativeFacts(expected) });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Apply Hold', submit: true, facts: reviewFacts(expected) });
+    h.run.dispatch.mockClear();
+    return h;
+  }
+
+  it('requires exact supervisor facts, one eligible OPEN share, and one exact HOLD result', () => {
+    expect(() => assertHoldFacts(request, { ...request }, 'SUPERVISOR')).not.toThrow();
+    expect(() => assertHoldFacts(request, { ...request }, 'TELLER')).toThrow(/hold/i);
+    for (const field of ['member', 'share', 'reason', 'notes'] as const) {
+      expect(() => assertHoldFacts(request, { ...request, [field]: 'different' }, 'SUPERVISOR')).toThrow(/hold/i);
+    }
+    expect(() => assertHoldEligibility(request, request.member, eligibleRows.map(row => ({ share: row.shareId, type: row.type, status: row.status })))).not.toThrow();
+    expect(() => assertHoldEligibility(request, '9999', eligibleRows.map(row => ({ share: row.shareId, type: row.type, status: row.status })))).toThrow(/hold/i);
+    expect(() => assertHoldResult(request, { member: request.member, share: request.share, status: 'HOLD' }, { heldShare: request.share })).not.toThrow();
+    expect(() => assertHoldResult(request, { member: request.member, share: '9001-S0001-2', status: 'HOLD' }, { heldShare: request.share })).toThrow(/hold/i);
+    expect(() => assertHoldResult(request, { member: request.member, share: request.share, status: 'HOLD' }, {})).toThrow(/hold/i);
+  });
+
+  it.each([
+    ['already held', [{ ...eligibleRows[0]!, status: 'HOLD' }, eligibleRows[1]!]],
+    ['closed', [{ ...eligibleRows[0]!, status: 'CLOSED' }, eligibleRows[1]!]],
+    ['missing', [eligibleRows[1]!]],
+    ['duplicate', [eligibleRows[0]!, eligibleRows[0]!, eligibleRows[1]!]],
+  ] as const)('rejects a selected share that is %s before entering the hold form', async (_case, shares) => {
+    const h = harness({ shares: [...shares] });
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: 'Select', submit: false, facts: {} });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it.each([
+    ['wrong member', [contactRow({ member: '9999' })]],
+    ['wrong member label', [contactRow({ memberLabel: 'Member:' })]],
+    ['missing name', [contactRow({ name: '' })]],
+    ['missing member row', []],
+    ['ambiguous member rows', [contactRow(), contactRow()]],
+  ] as const)('rejects %s before entering the hold form', async (_case, contacts) => {
+    const h = harness({ contacts: [...contacts] });
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: 'Select', submit: false, facts: {} });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('runs the normal member to hold to review flow and dispatches one approved final POST', async () => {
+    const h = await reviewedHold();
+    await h.run.surface.click(target);
+    expect(h.gate).toHaveBeenCalledOnce();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).toHaveBeenCalledOnce();
+    expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it.each([
+    ['native member', 'member', '9999'],
+    ['native share', 'share', '9001-S0070-1'],
+    ['native reason', 'reason', 'LEGAL'],
+    ['native notes', 'notes', 'changed'],
+    ['visible member', 'review:Member:', '9001 - Another Member'],
+    ['visible share', 'review:Share:', '9001-S0001-1 - Share Draft (Checking)'],
+    ['visible reason', 'review:Reason:', 'Suspected fraud'],
+    ['visible notes', 'review:Notes:', 'changed'],
+  ] as const)('rejects changed %s before approval and mutation intent', async (_case, key, value) => {
+    const h = await reviewedHold();
+    h.setLive({ facts: { ...reviewFacts(), [key]: value } });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects teller authority on the supported flow before final intent', async () => {
+    const h = harness({ role: 'TELLER' });
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: 'Select', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.holdUrl, method: 'GET', control: 'Place Hold', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.holdUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts: nativeFacts() });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects wrong member, origin, frame, missing facts, abort, and changed approval state with zero intent', async () => {
+    const wrongMember = await reviewedHold();
+    wrongMember.setLive({ destination: `${origin}/members/9999/hold/post` });
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/hold/i);
+    expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const wrongOrigin = await reviewedHold();
+    wrongOrigin.setLive({ destination: 'https://other.example/members/9001/hold/post' });
+    await expect(wrongOrigin.run.surface.click(target)).rejects.toThrow(/hold|origin|allow/i);
+    expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const unrelated = await reviewedHold();
+    unrelated.setLive({ destination: `${origin}/members/9001/update`, control: 'Save Changes' });
+    await expect(unrelated.run.surface.click(target)).rejects.toThrow(/operation/i);
+    expect(unrelated.gate).not.toHaveBeenCalled();
+    expect(unrelated.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const wrongFrame = await reviewedHold();
+    wrongFrame.replaceFrame();
+    await expect(wrongFrame.run.surface.click(target)).rejects.toThrow(/frame/i);
+    expect(wrongFrame.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const missing = await reviewedHold();
+    const missingFacts = { ...reviewFacts() } as Record<string, string>;
+    delete missingFacts['review:Reason:'];
+    missing.setLive({ facts: missingFacts });
+    await expect(missing.run.surface.click(target)).rejects.toThrow(/facts/i);
+    expect(missing.run.beforeDispatch).not.toHaveBeenCalled();
+
+    const aborted = await reviewedHold({ gate: vi.fn(async () => false) });
+    await expect(aborted.run.surface.click(target)).rejects.toThrow(/aborted/i);
+    expect(aborted.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(aborted.run.dispatch).not.toHaveBeenCalled();
+
+    let changed: Awaited<ReturnType<typeof reviewedHold>>;
+    const changingGate = vi.fn(async () => { changed.setLive({ facts: { ...reviewFacts(), notes: 'changed' } }); return true; });
+    changed = await reviewedHold({ gate: changingGate });
+    await expect(changed.run.surface.click(target)).rejects.toThrow(/invalidated/i);
+    expect(changed.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(changed.run.dispatch).not.toHaveBeenCalled();
+
+    let changedRole: Awaited<ReturnType<typeof reviewedHold>>;
+    const roleChangingGate = vi.fn(async () => { changedRole.setLive({ role: 'TELLER' }); return true; });
+    changedRole = await reviewedHold({ gate: roleChangingGate });
+    await expect(changedRole.run.surface.click(target)).rejects.toThrow(/invalidated/i);
+    expect(changedRole.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(changedRole.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('accepts one fresh exact HOLD row from the bound operation origin', async () => {
+    const boundOrigin = 'https://member-system.example';
+    const h = await reviewedHold({ allowedOrigins: [origin, boundOrigin] });
+    await h.run.surface.click(target);
+    h.setShares([{ ...eligibleRows[0]!, status: 'HOLD' }, eligibleRows[1]!]);
+    await expect(h.run.surface.validateHoldCompletion({ heldShare: request.share })).resolves.toBeUndefined();
+    expect(h.navigate).toHaveBeenCalledWith(h.memberUrl);
+    expect(h.currentUrl()).toBe(h.memberUrl);
+  });
+
+  it.each([
+    ['stale status', [{ ...eligibleRows[0]!, status: 'OPEN' }, eligibleRows[1]!], [contactRow()], request.share],
+    ['wrong selected share', [{ ...eligibleRows[1]!, status: 'HOLD' }], [contactRow()], request.share],
+    ['duplicate selected share', [{ ...eligibleRows[0]!, status: 'HOLD' }, { ...eligibleRows[0]!, status: 'HOLD' }], [contactRow()], request.share],
+    ['wrong member', [{ ...eligibleRows[0]!, status: 'HOLD' }], [contactRow({ member: '9999' })], request.share],
+    ['missing member', [{ ...eligibleRows[0]!, status: 'HOLD' }], [], request.share],
+    ['ambiguous member', [{ ...eligibleRows[0]!, status: 'HOLD' }], [contactRow(), contactRow()], request.share],
+    ['wrong output', [{ ...eligibleRows[0]!, status: 'HOLD' }], [contactRow()], '9001-S0070-1'],
+  ] as const)('rejects %s during fresh completion verification', async (_case, shares, contacts, heldShare) => {
+    const h = await reviewedHold();
+    await h.run.surface.click(target);
+    h.setShares([...shares]);
+    h.setContacts([...contacts]);
+    await expect(h.run.surface.validateHoldCompletion({ heldShare })).rejects.toThrow(/hold/i);
+  });
+
+  it('requires dispatch, a stable frame, and the exact bound origin for completion', async () => {
+    const undispatched = await reviewedHold();
+    await expect(undispatched.run.surface.validateHoldCompletion({ heldShare: request.share })).rejects.toThrow(/dispatched/i);
+
+    const changedFrame = await reviewedHold();
+    await changedFrame.run.surface.click(target);
+    changedFrame.setShares([{ ...eligibleRows[0]!, status: 'HOLD' }]);
+    changedFrame.replaceFrameDuringRead();
+    await expect(changedFrame.run.surface.validateHoldCompletion({ heldShare: request.share })).rejects.toThrow(/frame/i);
+
+    const redirected = await reviewedHold({ allowedOrigins: [origin, 'https://member-system.example'], redirectCompletion: true });
+    await redirected.run.surface.click(target);
+    redirected.setShares([{ ...eligibleRows[0]!, status: 'HOLD' }]);
+    await expect(redirected.run.surface.validateHoldCompletion({ heldShare: request.share })).rejects.toThrow(/origin|frame/i);
+  });
+});
+
 it('awaits delayed discovery completion rejection and keeps the dispatched outcome unknown', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
   const calls = [
@@ -1641,8 +1927,9 @@ it('runs discovery completion validation before emitting success', async () => {
 });
 
 it.each([
-  { capability: 'meridian-open-share', action: 'open share', params: requestOpenShare(), receiptPath: 'open-share/post', checkpoint: 'Share opened', outputName: 'shareId', outputValue: '9001-S0001-NEW', sensitive: ['member', 'deposit'] },
-  { capability: 'meridian-update-member', action: 'save member', params: requestMemberUpdate(), receiptPath: 'update', checkpoint: 'Member saved', outputName: 'saved', outputValue: 'Member saved', sensitive: ['member', 'email', 'phone', 'address'] },
+  { capability: 'meridian-open-share', action: 'open share', params: requestOpenShare(), receiptPath: 'open-share/post', checkpoint: { kind: 'textVisible', text: 'Share opened' }, outputName: 'shareId', outputValue: '9001-S0001-NEW', sensitive: ['member', 'deposit'] },
+  { capability: 'meridian-update-member', action: 'save member', params: requestMemberUpdate(), receiptPath: 'update', checkpoint: { kind: 'textVisible', text: 'Member saved' }, outputName: 'saved', outputValue: 'Member saved', sensitive: ['member', 'email', 'phone', 'address'] },
+  { capability: 'meridian-place-hold', action: 'place hold', params: requestHold(), receiptPath: 'hold/post', checkpoint: { kind: 'urlMatches', pattern: '/members/9001/hold/post$' }, outputName: 'heldShare', outputValue: '9001-S0001-1', sensitive: ['member', 'share', 'notes'] },
 ] as const)('records the $capability endpoint before completion read-back and replays the generated checkpoint', async fixture => {
   const receiptUrl = `${origin}/members/9001/${fixture.receiptPath}`;
   const memberUrl = `${origin}/members/9001`;
@@ -1650,7 +1937,7 @@ it.each([
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
   const calls = [
     { name: 'click', args: { nameAttr: 'submit', reason: fixture.action, risk: 'irreversible' } },
-    { name: 'assert', args: { kind: 'textVisible', text: fixture.checkpoint, reason: 'verify receipt' } },
+    { name: 'assert', args: { ...fixture.checkpoint, reason: 'verify result endpoint' } },
     { name: 'extract', args: { nameAttr: fixture.outputName, outputName: fixture.outputName, reason: 'read result' } },
     { name: 'done', args: { summary: 'complete' } },
   ];
@@ -1662,7 +1949,7 @@ it.each([
     navigate: async url => { discoveryUrl = url; },
     click: vi.fn(async () => { discoverySurface.mutationDispatched = true; discoveryUrl = receiptUrl; return report; }),
     fill: async () => report, select: async () => report,
-    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => text === fixture.checkpoint && discoveryUrl === receiptUrl,
+    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => fixture.checkpoint.kind === 'textVisible' && text === fixture.checkpoint.text && discoveryUrl === receiptUrl,
     describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
   };
   const create = vi.fn(async () => {
@@ -1696,7 +1983,7 @@ it.each([
     navigate: async url => { replayUrl = url; },
     click: vi.fn(async () => { replaySurface.mutationDispatched = true; replayUrl = receiptUrl; return report; }),
     fill: async () => report, select: async () => report,
-    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => text === fixture.checkpoint && replayUrl === receiptUrl,
+    readText: async () => ({ text: fixture.outputValue, report }), isTextVisible: async text => fixture.checkpoint.kind === 'textVisible' && text === fixture.checkpoint.text && replayUrl === receiptUrl,
     describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
   };
   const replayCompletion = vi.fn(async () => { await replaySurface.navigate(memberUrl); });
@@ -1710,8 +1997,9 @@ it.each([
 });
 
 it.each([
-  { capability: 'meridian-open-share', params: requestOpenShare(), path: 'open-share/post', checkpoint: 'Share opened', outputName: 'shareId', outputValue: '9001-S0001-NEW' },
-  { capability: 'meridian-update-member', params: requestMemberUpdate(), path: 'update', checkpoint: 'Member saved', outputName: 'saved', outputValue: 'Member saved' },
+  { capability: 'meridian-open-share', params: requestOpenShare(), path: 'open-share/post', checkpoint: { kind: 'textVisible', text: 'Share opened' }, outputName: 'shareId', outputValue: '9001-S0001-NEW' },
+  { capability: 'meridian-update-member', params: requestMemberUpdate(), path: 'update', checkpoint: { kind: 'textVisible', text: 'Member saved' }, outputName: 'saved', outputValue: 'Member saved' },
+  { capability: 'meridian-place-hold', params: requestHold(), path: 'hold/post', checkpoint: { kind: 'urlMatches', pattern: '/members/9001/hold/post$' }, outputName: 'heldShare', outputValue: '9001-S0001-1' },
 ] as const)('awaits replay $capability completion and keeps delayed rejection unknown after one dispatch', async fixture => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
@@ -1721,10 +2009,10 @@ it.each([
     outputs: [{ name: fixture.outputName, type: 'string', description: 'Result', sensitive: true }],
     steps: [
       { id: 'post', intent: 'post change', action: 'click', target, risk: 'irreversible' },
-      { id: 'checkpoint', intent: 'verify result', action: 'assert', assert: { kind: 'textVisible', text: fixture.checkpoint }, risk: 'read' },
+      { id: 'checkpoint', intent: 'verify result', action: 'assert', assert: fixture.checkpoint, risk: 'read' },
       { id: 'result', intent: 'read result', action: 'extract', target, extract: { output: fixture.outputName }, risk: 'read' },
     ],
-    successCondition: { kind: 'textVisible', text: fixture.checkpoint }, detectors: [],
+    successCondition: fixture.checkpoint, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
   });
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
@@ -1734,7 +2022,7 @@ it.each([
     currentUrl: () => `${origin}/members/9001/${fixture.path}`, frameUrls: () => [`${origin}/members/9001/${fixture.path}`],
     navigate: async () => {}, click: vi.fn(async () => { surface.mutationDispatched = true; return report; }),
     fill: async () => report, select: async () => report, readText: async () => ({ text: fixture.outputValue, report }),
-    isTextVisible: async text => text === fixture.checkpoint, describeTarget: async descriptor => descriptor,
+    isTextVisible: async text => fixture.checkpoint.kind === 'textVisible' && text === fixture.checkpoint.text, describeTarget: async descriptor => descriptor,
     screenshot: async () => {}, close: async () => {},
   };
   const validateCompletion = vi.fn(async () => { await Promise.resolve(); throw new Error('Open-share resulting state is not OPEN'); });
@@ -1749,13 +2037,14 @@ it.each([
 it.each([
   ['meridian-open-share', requestOpenShare()],
   ['meridian-update-member', requestMemberUpdate()],
+  ['meridian-place-hold', requestHold()],
 ] as const)('fails canonical %s replay preflight when completion validation is absent', async (capability, params) => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
     id: capability, name: capability, description: capability, version: '1.0.0', status: 'approved',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
     parameters: meridianContracts[capability].parameters,
-    outputs: [{ name: capability === 'meridian-open-share' ? 'shareId' : 'saved', type: 'string', description: 'Result' }],
+    outputs: [{ name: capability === 'meridian-open-share' ? 'shareId' : capability === 'meridian-update-member' ? 'saved' : 'heldShare', type: 'string', description: 'Result' }],
     steps: [{ id: 'checkpoint', intent: 'fixture', action: 'assert', assert: { kind: 'urlMatches', pattern: '.*' }, risk: 'read' }],
     successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },

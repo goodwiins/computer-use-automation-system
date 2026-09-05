@@ -1,6 +1,6 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile, type FrameContext, type LiveControl } from '../runtime/profile.js';
-import { assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, meridianContracts, type MemberUpdateFacts, type OpenShareFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
+import { assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, meridianContracts, type HoldFacts, type HoldShare, type MemberUpdateFacts, type OpenShareFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
 // Policy enforcement as a Surface decorator. Every actor — the LLM during
@@ -16,6 +16,7 @@ const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
 const OPEN_SHARE_ROUTE = /^\/members\/(\d+)\/open-share(?:\/(review|post))?$/;
 const MEMBER_ROUTE = /^\/members\/(\d+)$/;
 const UPDATE_ROUTE = /^\/members\/(\d+)\/update$/;
+const HOLD_ROUTE = /^\/members\/(\d+)\/hold(?:\/(review|post))?$/;
 const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
   'meridian-funds-transfer': /^\/members\/\d+\/transfer\/post$/,
   'meridian-open-share': /^\/members\/\d+\/open-share\/post$/,
@@ -33,6 +34,12 @@ const OPEN_SHARE_REVIEW_FACTS = {
   member: 'review:Member:',
   shareType: 'review:Share Type:',
   deposit: 'review:Initial Deposit:',
+} as const;
+const HOLD_REVIEW_FACTS = {
+  member: 'review:Member:',
+  share: 'review:Share:',
+  reason: 'review:Reason:',
+  notes: 'review:Notes:',
 } as const;
 const OPEN_SHARE_TYPE_LABELS: Record<string, string> = {
   'Regular Shares': 'S0001',
@@ -96,6 +103,13 @@ type MemberUpdateBinding = {
   expected: MemberUpdateFacts;
   contactTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
 };
+type HoldBinding = {
+  expected: HoldFacts;
+  memberTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
+  contactTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
+};
+type HoldStage = 'member' | 'hold' | 'review';
+type HoldState = { member: string; name: string; selected: HoldShare; frame: FrameContext; stage: HoldStage };
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -120,6 +134,7 @@ export class GuardedSurface implements Surface {
   private transferEligibility?: TransferEligibility;
   private openShareState?: OpenShareState;
   private memberUpdateOrigin?: string;
+  private holdState?: HoldState;
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -141,6 +156,7 @@ export class GuardedSurface implements Surface {
       transfer?: TransferBinding;
       openShare?: OpenShareBinding;
       memberUpdate?: MemberUpdateBinding;
+      hold?: HoldBinding;
     },
     private readonly onAction?: (event: string, data: Record<string, unknown>) => void,
   ) {}
@@ -277,6 +293,7 @@ export class GuardedSurface implements Surface {
   private preserveOperationState(url: string): void {
     this.preserveTransferState(url);
     this.preserveOpenShareState(url);
+    this.preserveHoldState(url);
   }
 
   private advanceOpenShareState(url: string, expectedFrame?: FrameContext): void {
@@ -384,6 +401,139 @@ export class GuardedSurface implements Surface {
     assertMemberUpdateFacts(binding.expected, {
       member: fact('member'), email: fact('email'), phone: fact('phone'), address: fact('address'),
     });
+  }
+
+  private holdStage(url: string): { member: string; stage: HoldStage } | undefined {
+    const member = MEMBER_ROUTE.exec(this.path(url));
+    if (member) return { member: member[1]!, stage: 'member' };
+    const hold = HOLD_ROUTE.exec(this.path(url));
+    if (!hold || hold[2] === 'post') return undefined;
+    return { member: hold[1]!, stage: hold[2] === 'review' ? 'review' : 'hold' };
+  }
+
+  private holdFrameFailed(): never {
+    this.holdState = undefined;
+    throw new Error('Hold frame is no longer bound to this run');
+  }
+
+  private currentHoldFrame(): FrameContext {
+    const frame = this.inner.currentFrame?.();
+    if (!frame) throw new Error('Hold frame identity is unavailable');
+    return frame;
+  }
+
+  private preserveHoldState(url: string): void {
+    const binding = this.runtime?.hold;
+    if (!binding || this.mutationDispatched) return;
+    const route = this.holdStage(url);
+    if (!route || route.member !== binding.expected.member) {
+      this.holdState = undefined;
+      return;
+    }
+    if (!this.holdState && route.stage === 'member') return;
+    const state = this.holdState;
+    if (!state || state.member !== binding.expected.member || state.stage !== route.stage) throw new Error('Hold eligibility has not been verified for this run');
+    const current = this.currentHoldFrame();
+    if (!this.sameFrameRevision(current, state.frame) || this.path(current.url) !== this.path(url)) return this.holdFrameFailed();
+  }
+
+  private advanceHoldState(url: string, expectedFrame?: FrameContext): void {
+    const binding = this.runtime?.hold;
+    const route = this.holdStage(url);
+    if (!binding || !route || route.member !== binding.expected.member) return this.holdFrameFailed();
+    const state = this.holdState;
+    if (!state) {
+      if (route.stage === 'member') return;
+      return this.holdFrameFailed();
+    }
+    if (expectedFrame && !this.sameFrameRevision(expectedFrame, state.frame)) return this.holdFrameFailed();
+    const current = this.currentHoldFrame();
+    if (this.path(current.url) !== this.path(url) || !this.sameFrame(current, state.frame)) return this.holdFrameFailed();
+    const validTransition = state.stage === route.stage
+      || (state.stage === 'member' && route.stage === 'hold')
+      || (state.stage === 'hold' && route.stage === 'review');
+    if (!validTransition || (state.stage !== route.stage && current.navigation === state.frame.navigation)) return this.holdFrameFailed();
+    state.frame = current;
+    state.stage = route.stage;
+  }
+
+  private async captureHoldState(memberPath: string, timeoutMs: number): Promise<void> {
+    const binding = this.runtime?.hold;
+    const route = MEMBER_ROUTE.exec(this.path(memberPath));
+    if (!binding || !route || route[1] !== binding.expected.member || !this.inner.readTable) throw new Error('Hold member selection is not eligible');
+    const before = this.currentHoldFrame();
+    if (this.path(before.url) !== this.path(memberPath)) return this.holdFrameFailed();
+    await this.gate('extract', 'read');
+    this.assertStillInBounds('extract');
+    const contact = await this.inner.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, timeoutMs, binding.contactTable.rowSelector);
+    this.assertStillInBounds('extract');
+    const contactFrame = this.inner.lastResolvedFrame?.();
+    if (!contactFrame || !this.sameFrameRevision(before, contactFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())) return this.holdFrameFailed();
+    if (contact.length !== 1) throw new Error('Hold member identity is missing or ambiguous');
+    const contactRow = contact[0]!;
+    const exactContact = (name: string) => {
+      const value = contactRow[name];
+      if (typeof value !== 'string') throw new Error('Hold member identity is incomplete');
+      return value;
+    };
+    if (exactContact('memberLabel') !== 'Member No.:' || exactContact('nameLabel') !== 'Name:' || !exactContact('name').trim()) throw new Error('Hold member identity labels are missing or ambiguous');
+
+    await this.gate('extract', 'read');
+    this.assertStillInBounds('extract');
+    const rows = await this.inner.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    this.assertStillInBounds('extract');
+    const shareFrame = this.inner.lastResolvedFrame?.();
+    if (!shareFrame || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame()) || this.path(shareFrame.url) !== this.path(memberPath)) return this.holdFrameFailed();
+    const shares = rows.map(row => {
+      if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.status !== 'string') throw new Error('Hold eligibility table is incomplete');
+      return { share: row.shareId, type: row.type, status: row.status };
+    });
+    const member = exactContact('member');
+    assertHoldEligibility(binding.expected, member, shares);
+    this.holdState = { member, name: exactContact('name'), selected: shares.find(row => row.share === binding.expected.share)!, frame: shareFrame, stage: 'member' };
+  }
+
+  private assertHoldControl(live: LiveControl): void {
+    const binding = this.runtime?.hold;
+    const source = this.holdStage(live.url);
+    const destination = this.holdStage(live.destination);
+    if (!binding || !source || source.member !== binding.expected.member || !live.frame
+      || new URL(live.url, this.policy.allowedOrigins[0]).origin !== new URL(live.destination, this.policy.allowedOrigins[0]).origin) return this.holdFrameFailed();
+    if (destination && destination.member !== binding.expected.member) return this.holdFrameFailed();
+    const current = this.currentHoldFrame();
+    const state = this.holdState;
+    if (!state || state.stage !== source.stage || !this.sameFrameRevision(state.frame, live.frame)
+      || !this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url)) return this.holdFrameFailed();
+  }
+
+  private assertHoldNativeFacts(live: LiveControl): void {
+    const binding = this.runtime?.hold;
+    if (!binding || (this.runtime!.role !== 'TELLER' && this.runtime!.role !== 'SUPERVISOR')) throw new Error('Hold authority is invalid');
+    const fact = (name: keyof HoldFacts) => {
+      const value = live.facts[name];
+      if (typeof value !== 'string') throw new Error('Hold form facts are missing or ambiguous');
+      return value;
+    };
+    assertHoldFacts(binding.expected, { member: fact('member'), share: fact('share'), reason: fact('reason'), notes: fact('notes') }, this.runtime.role);
+  }
+
+  private assertHoldReview(live: LiveControl): void {
+    const binding = this.runtime?.hold;
+    const state = this.holdState;
+    const destination = HOLD_ROUTE.exec(this.path(live.destination));
+    if (!binding || !state || !destination || destination[1] !== binding.expected.member || destination[2] !== 'post'
+      || this.holdStage(live.url)?.stage !== 'review') throw new Error('Hold review is not bound to the requested member');
+    this.assertHoldControl(live);
+    this.assertHoldNativeFacts(live);
+    const fact = (name: string) => {
+      const value = live.facts[name];
+      if (typeof value !== 'string') throw new Error('Hold review facts are missing or ambiguous');
+      return value;
+    };
+    if (fact(HOLD_REVIEW_FACTS.member) !== `${binding.expected.member} - ${state.name}`
+      || fact(HOLD_REVIEW_FACTS.share) !== `${binding.expected.share} - ${state.selected.type}`
+      || fact(HOLD_REVIEW_FACTS.reason) !== binding.expected.reason
+      || fact(HOLD_REVIEW_FACTS.notes) !== binding.expected.notes) throw new Error('Hold review facts failed validation');
   }
 
   private requireTransferRoute(url: string): void {
@@ -539,7 +689,7 @@ export class GuardedSurface implements Surface {
   // the shot, and dropping them here would render them in the clear in every
   // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
   screenshot(path: string, opts?: { maskValues?: string[] }) { return this.inner.screenshot(path, opts); }
-  close() { this.transferEligibility = undefined; this.openShareState = undefined; this.memberUpdateOrigin = undefined; return this.inner.close(); }
+  close() { this.transferEligibility = undefined; this.openShareState = undefined; this.memberUpdateOrigin = undefined; this.holdState = undefined; return this.inner.close(); }
   drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
@@ -569,6 +719,7 @@ export class GuardedSurface implements Surface {
       if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
       if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(url))) await this.captureOpenShareState(url, DEFAULT_TIMEOUT);
       else if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.hold && this.holdState) this.advanceHoldState(this.inner.currentUrl());
       this.preserveOperationState(this.inner.currentUrl());
     });
   }
@@ -614,6 +765,8 @@ export class GuardedSurface implements Surface {
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
         if (this.runtime.openShare && (this.openShareStage(live.url) || (openShareDestination && openShareDestination.stage !== 'member'))) this.assertOpenShareControl(live);
+        const holdDestination = this.runtime.hold ? this.holdStage(live.destination) : undefined;
+        if (this.runtime.hold && (this.holdStage(live.url) || (holdDestination && holdDestination.stage !== 'member'))) this.assertHoldControl(live);
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
@@ -621,14 +774,19 @@ export class GuardedSurface implements Surface {
         const openSharePost = OPEN_SHARE_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         const memberUpdatePost = this.runtime.artifact === 'meridian-update-member' && rule?.mutation === true
           && UPDATE_ROUTE.test(this.path(live.destination));
+        const holdPost = !!this.runtime.hold && HOLD_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
+        const holdReview = this.runtime.hold && this.holdStage(live.url)?.stage === 'hold' && holdDestination?.stage === 'review';
         if (rule?.mutation) {
           this.assertMeridianMutationOrigin(live);
           this.assertCapabilityOperation(live.destination);
           if (this.runtime.transfer && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
+          if (this.runtime.artifact === 'meridian-place-hold' && !this.runtime.hold) throw new Error('Canonical hold request is not bound');
         }
         if (transferPost) this.assertTransferReview(live);
         if (openSharePost) this.assertOpenShareReview(live);
         if (memberUpdatePost) this.assertMemberUpdateControl(live);
+        if (holdReview) this.assertHoldNativeFacts(live);
+        if (holdPost) this.assertHoldReview(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
         if (recovery && (rule?.mutation || checkAction(this.policy, 'click', live.destination, this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
@@ -650,6 +808,7 @@ export class GuardedSurface implements Surface {
           if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
           if (this.runtime.openShare && this.openShareStage(live.url)) this.assertOpenShareControl(live);
           if (memberUpdatePost) this.assertMemberUpdateControl(live);
+          if (this.runtime.hold && this.holdStage(live.url)) this.assertHoldControl(live);
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
@@ -658,6 +817,7 @@ export class GuardedSurface implements Surface {
           }
           if (openSharePost) this.assertOpenShareReview(refreshed);
           if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
+          if (holdPost) this.assertHoldReview(refreshed);
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
           this.assertAutomation();
@@ -677,6 +837,8 @@ export class GuardedSurface implements Surface {
         else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl(), live.frame);
         if (!this.mutationDispatched && this.runtime.openShare && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureOpenShareState(this.inner.currentUrl(), remaining());
         else if (!this.mutationDispatched && this.runtime.openShare && this.openShareStage(this.inner.currentUrl())) this.advanceOpenShareState(this.inner.currentUrl(), live.frame);
+        if (!this.mutationDispatched && this.runtime.hold && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureHoldState(this.inner.currentUrl(), remaining());
+        else if (!this.mutationDispatched && this.runtime.hold && this.holdStage(this.inner.currentUrl())) this.advanceHoldState(this.inner.currentUrl(), live.frame);
         this.preserveOperationState(this.inner.currentUrl());
         return report;
       }
@@ -779,6 +941,30 @@ export class GuardedSurface implements Surface {
     assertMemberUpdateFacts(binding.expected, {
       member: exact('member'), email: exact('email'), phone: exact('phone'), address: exact('address'),
     });
+  }
+  async validateHoldCompletion(outputs: Record<string, OutputValue>): Promise<void> {
+    const binding = this.runtime?.hold;
+    const state = this.holdState;
+    if (!binding || !state || !this.mutationDispatched || state.member !== binding.expected.member) throw new Error('Hold completion is not bound to a dispatched request');
+    const memberUrl = new URL(`/members/${binding.expected.member}`, state.frame.url).toString();
+    const boundOrigin = new URL(state.frame.url).origin;
+    await this.navigate(memberUrl);
+    const before = this.currentHoldFrame();
+    if (new URL(before.url).origin !== boundOrigin || this.path(before.url) !== this.path(memberUrl)) return this.holdFrameFailed();
+    const contacts = await this.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, undefined, binding.contactTable.rowSelector);
+    const contactFrame = this.inner.lastResolvedFrame?.();
+    if (!contactFrame || !this.sameFrameRevision(before, contactFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())) return this.holdFrameFailed();
+    if (contacts.length !== 1) throw new Error('Hold resulting member identity is missing or ambiguous');
+    const contact = contacts[0]!;
+    if (contact.memberLabel !== 'Member No.:' || contact.nameLabel !== 'Name:' || typeof contact.member !== 'string' || typeof contact.name !== 'string' || !contact.name.trim()) {
+      throw new Error('Hold resulting member identity is incomplete');
+    }
+    const rows = await this.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, undefined, binding.memberTable.rowSelector);
+    const shareFrame = this.inner.lastResolvedFrame?.();
+    if (!shareFrame || new URL(shareFrame.url).origin !== boundOrigin || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame()) || this.path(shareFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
+    const matches = rows.filter(row => row.shareId === binding.expected.share);
+    if (matches.length !== 1 || typeof matches[0]!.status !== 'string') throw new Error('Hold resulting share is missing or ambiguous');
+    assertHoldResult(binding.expected, { member: contact.member, share: matches[0]!.shareId as string, status: matches[0]!.status }, outputs);
   }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     return this.action('extract', 'read', async () => {

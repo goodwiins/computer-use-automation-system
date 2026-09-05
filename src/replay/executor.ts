@@ -53,7 +53,7 @@ export async function runReplay(
   // Per-tenant defaults (from an overlay) fill in under the caller's params.
   params = { ...artifact.paramDefaults, ...params };
   const transfer = artifact.app.appId === 'meridian' ? transferFactsFromParams(params) : undefined;
-  const requiresFreshCompletion = artifact.app.appId === 'meridian' && ['meridian-open-share', 'meridian-update-member'].includes(artifact.id);
+  const requiresFreshCompletion = artifact.app.appId === 'meridian' && ['meridian-open-share', 'meridian-update-member', 'meridian-place-hold'].includes(artifact.id);
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
