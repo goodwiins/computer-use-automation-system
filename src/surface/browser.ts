@@ -387,6 +387,7 @@ export class BrowserSurface implements Surface {
     const page = await this.context.newPage();
     let violation: string | undefined;
     let navigation = 0;
+    let navigationRequests = 0;
     let stableNavigation: number | undefined;
     let stableFrames: string | undefined;
     const unexpectedPages = new Set<Page>();
@@ -435,10 +436,16 @@ export class BrowserSurface implements Surface {
         fail('Read-only page attempted an out-of-bounds request');
         return route.abort();
       }
-      if (request.isNavigationRequest()
-        && (request.frame() !== page.mainFrame() || request.method() !== 'GET' || requested.href !== expected.href)) {
-        fail('Read-only page attempted another navigation');
-        return route.abort();
+      if (request.isNavigationRequest()) {
+        if (request.frame() !== page.mainFrame() || request.method() !== 'GET' || requested.href !== expected.href) {
+          fail('Read-only page attempted another navigation');
+          return route.abort();
+        }
+        navigationRequests++;
+        if (navigationRequests > 1) {
+          fail('Read-only page changed during eligibility extraction');
+          return route.abort();
+        }
       }
       return route.continue();
     };

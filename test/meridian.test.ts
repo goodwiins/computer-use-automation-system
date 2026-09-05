@@ -2558,7 +2558,7 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
   const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false;
-  let websocketUpgrades = 0; let websocketMessages = 0;
+  let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0;
   const upgradeSockets = new Set<Duplex>();
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
   const contact = '<table><tbody><tr><td>Member No.:</td><td>9001</td><td>Name:</td><td>Fixture Member</td></tr><tr><td>E-mail:</td><td>member@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>';
@@ -2579,6 +2579,7 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     </script>`)
     : redirectFresh ? res.redirect('/members/9999') : res.send(member));
   app.get('/members/9999', (_req, res) => res.send(member));
+  app.get('/members/8888', (_req, res) => { forbiddenMemberGets++; res.send(member); });
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
   app.post('/members/9001/hold/review', (_req, res) => res.send(review));
   app.post('/members/9001/hold/post', (_req, res) => { posted++; res.send('held'); });
@@ -2654,10 +2655,11 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     browser.page.context().off('page', sabotageClose);
     expect(auxiliary?.isClosed()).toBe(false);
     closeSpy?.mockRestore();
-    await auxiliary?.evaluate(() => fetch('/members/9001/hold/post', { method: 'POST' }).catch(() => {}));
-    expect(posted).toBe(1);
+    if (!auxiliary) throw new Error('Fixture auxiliary page was not captured');
+    await expect(auxiliary.goto(`${localOrigin}/members/8888`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
+    expect(forbiddenMemberGets).toBe(0);
     await browser.page.context().unroute('**/*');
-    await auxiliary?.close();
+    await auxiliary.close();
   } finally {
     for (const socket of upgradeSockets) socket.destroy();
     await browser.close();
