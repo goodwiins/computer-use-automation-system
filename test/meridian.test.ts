@@ -1650,13 +1650,23 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     let navigation = 0;
     let frameId = 'hold-workarea';
     let replaceFrameDuringRead = false;
+    let redirectNextNavigationOrigin: string | undefined;
     const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
     const gate = options.gate ?? vi.fn(async () => true);
+    const start = vi.fn(async next => {
+      url = redirectNextNavigationOrigin ? new URL(new URL(next).pathname, redirectNextNavigationOrigin).toString() : next;
+      redirectNextNavigationOrigin = undefined;
+      navigation++;
+    });
     const navigate = vi.fn(async next => {
-      url = options.redirectCompletion ? `${allowedOrigins[0]}/members/${expected.member}` : next;
+      url = redirectNextNavigationOrigin
+        ? new URL(new URL(next).pathname, redirectNextNavigationOrigin).toString()
+        : options.redirectCompletion ? `${allowedOrigins[0]}/members/${expected.member}` : next;
+      redirectNextNavigationOrigin = undefined;
       navigation++;
     });
     const run = guarded({
+      start,
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
@@ -1677,13 +1687,14 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     const postUrl = `${holdUrl}/post`;
     const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
     return {
-      run, gate, navigate, startUrl: `${operationOrigin}/members`, memberUrl, holdUrl, reviewUrl, postUrl,
+      run, gate, start, navigate, startUrl: `${operationOrigin}/members`, memberUrl, holdUrl, reviewUrl, postUrl,
       currentUrl: () => url,
       setLive,
       setShares(next: Array<Record<string, string>>) { shares = next; },
       setContacts(next: Array<Record<string, string>>) { contacts = next; },
       replaceFrame() { frameId = 'replacement-workarea'; },
       replaceFrameDuringRead() { replaceFrameDuringRead = true; },
+      redirectNextNavigationTo(nextOrigin: string) { redirectNextNavigationOrigin = nextOrigin; },
     };
   }
 
@@ -1751,6 +1762,44 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledOnce();
     expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it.each(['start', 'navigate'] as const)('captures hold eligibility after direct member %s and completes the valid flow', async entry => {
+    const h = harness();
+    if (entry === 'start') await h.run.surface.start(h.memberUrl);
+    else {
+      await h.run.surface.start(h.startUrl);
+      await h.run.surface.navigate(h.memberUrl);
+    }
+    h.setLive({ url: h.memberUrl, destination: h.holdUrl, method: 'GET', control: 'Place Hold', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.holdUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts: nativeFacts() });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Apply Hold', submit: true, facts: reviewFacts() });
+    await h.run.surface.click(target);
+    h.setShares([{ ...eligibleRows[0]!, status: 'HOLD' }, eligibleRows[1]!]);
+    await expect(h.run.surface.validateHoldCompletion({ heldShare: request.share })).resolves.toBeUndefined();
+    expect(h.gate).toHaveBeenCalledOnce();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it('refuses direct hold member navigation for a wrong member or resolved origin with zero approval or intent', async () => {
+    const wrongMember = harness();
+    await wrongMember.run.surface.start(wrongMember.startUrl);
+    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/eligible/i);
+    expect(wrongMember.gate).not.toHaveBeenCalled();
+    expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongMember.run.surface.mutationDispatched).toBe(false);
+
+    const otherOrigin = 'https://member-system.example';
+    const wrongOrigin = harness({ allowedOrigins: [otherOrigin, origin] });
+    await wrongOrigin.run.surface.start(wrongOrigin.startUrl);
+    wrongOrigin.redirectNextNavigationTo(otherOrigin);
+    await expect(wrongOrigin.run.surface.navigate(wrongOrigin.memberUrl)).rejects.toThrow(/frame|origin/i);
+    expect(wrongOrigin.gate).not.toHaveBeenCalled();
+    expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
   });
 
   it('rejects a cross-operation Continue before approval, intent, or dispatch', async () => {

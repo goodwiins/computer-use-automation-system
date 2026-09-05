@@ -462,18 +462,19 @@ export class GuardedSurface implements Surface {
     state.stage = route.stage;
   }
 
-  private async captureHoldState(memberPath: string, timeoutMs: number): Promise<void> {
+  private async captureHoldState(memberUrl: string, timeoutMs: number): Promise<void> {
     const binding = this.runtime?.hold;
-    const route = MEMBER_ROUTE.exec(this.path(memberPath));
+    const route = MEMBER_ROUTE.exec(this.path(memberUrl));
     if (!binding || !route || route[1] !== binding.expected.member || !this.inner.readTable) throw new Error('Hold member selection is not eligible');
     const before = this.currentHoldFrame();
-    if (this.path(before.url) !== this.path(memberPath)) return this.holdFrameFailed();
+    if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.holdFrameFailed();
     await this.gate('extract', 'read');
     this.assertStillInBounds('extract');
     const contact = await this.inner.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, timeoutMs, binding.contactTable.rowSelector);
     this.assertStillInBounds('extract');
     const contactFrame = this.inner.lastResolvedFrame?.();
-    if (!contactFrame || !this.sameFrameRevision(before, contactFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())) return this.holdFrameFailed();
+    if (!contactFrame || !this.sameFrameRevision(before, contactFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())
+      || this.origin(contactFrame.url) !== this.origin(memberUrl) || this.path(contactFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
     if (contact.length !== 1) throw new Error('Hold member identity is missing or ambiguous');
     const contactRow = contact[0]!;
     const exactContact = (name: string) => {
@@ -488,7 +489,8 @@ export class GuardedSurface implements Surface {
     const rows = await this.inner.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
     this.assertStillInBounds('extract');
     const shareFrame = this.inner.lastResolvedFrame?.();
-    if (!shareFrame || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame()) || this.path(shareFrame.url) !== this.path(memberPath)) return this.holdFrameFailed();
+    if (!shareFrame || !this.sameFrameRevision(before, shareFrame) || !this.sameFrameRevision(before, this.currentHoldFrame())
+      || this.origin(shareFrame.url) !== this.origin(memberUrl) || this.path(shareFrame.url) !== this.path(memberUrl)) return this.holdFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.status !== 'string') throw new Error('Hold eligibility table is incomplete');
       return { share: row.shareId, type: row.type, status: row.status };
@@ -687,6 +689,8 @@ export class GuardedSurface implements Surface {
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
       if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
         await this.captureOpenShareState(entryUrl, DEFAULT_TIMEOUT);
+      } else if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(entryUrl))) {
+        await this.captureHoldState(entryUrl, DEFAULT_TIMEOUT);
       } else this.preserveOperationState(this.inner.currentUrl());
     });
   }
@@ -731,7 +735,8 @@ export class GuardedSurface implements Surface {
       if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
       if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(url))) await this.captureOpenShareState(url, DEFAULT_TIMEOUT);
       else if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
-      if (!this.mutationDispatched && this.runtime?.hold && this.holdState) this.advanceHoldState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(url))) await this.captureHoldState(url, DEFAULT_TIMEOUT);
+      else if (!this.mutationDispatched && this.runtime?.hold && this.holdState) this.advanceHoldState(this.inner.currentUrl());
       this.preserveOperationState(this.inner.currentUrl());
     });
   }
