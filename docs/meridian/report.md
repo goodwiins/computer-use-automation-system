@@ -1,7 +1,7 @@
 # MERIDIAN current acceptance checkpoint
 
 Date: September 5, 2026
-Current integrated `dev`: `245ba838499212ee36ee556e0a6de7c671b01f76`
+Current integrated runtime `dev`: `601e2660cc7f23572a4f65f4677e6ec84af174b4`
 
 This is a partial Task 9 checkpoint, not final delivery or production readiness. Live acceptance remains **3/7**: sign-on, member inquiry and member record have genuine model discoveries, approved artifacts and deterministic replays. Funds transfer, open share, contact update and supervisor hold still lack accepted complete recording/replay evidence. The long, source-specific history remains in [live evidence](live-evidence.md); historical run IDs and producing SHAs are not relabeled as current runs.
 
@@ -17,6 +17,7 @@ The current baseline includes these reviewed repairs:
 - PR #46: a risk approval stays in Terminal with explicit `approve` + Return guidance while the runner owns the browser post; head `c4279ac9fb78edcd4847a8b7ad1146d7d259b920`, merge `8e625cc0db83ebc37ad62f2bc60f1d8feeec1d8c`, 276 tests/17 files, head workflow `33949006345` / `101260137449`, merge workflow `33949275807` / `101260869453`.
 - PR #47: evidence metadata no longer lets payload fields replace trusted event/result status; head `66a9fb0b14450a81311c515e0d61b07a0a2449cb`, merge `2c7f4ed4577fe01bbfb441525b7cccc14128c46b`, identical tree `4c45496eb20e5c93a8f01ed8f0f00b0fb6187386`, 278 tests/17 files, final review, head workflow `33950233434` / `101263489851` and merge workflow `33950705840` / `101264800819` passed.
 - PR #49: canonical discovery preflight, exact public-input declarations and executable promotion bindings were repaired offline; head `e507e8a`, merge `245ba838499212ee36ee556e0a6de7c671b01f76`, identical tree `654065a59c060920524af07ab12d2e7bffcae320`, 197 focused and 288 full tests, head workflow `33952285341` / `101269200295` and merge workflow `33952963465` / `101271025160` passed, and hosted code/security reviews reported no findings.
+- PRs #50–#54: shared discovery condition handling and fault wiring, visible duplicate-text detection, and scoped evaluator classification/event-type integrity are integrated through runtime `601e266`; their recorded head/merge gates passed. These repairs add no live capability acceptance.
 
 These gates verify source and offline behavior. They do not promote the transfer draft or prove a live write. The semantic member/share/amount/memo/completion comparators are currently transfer-specific; equivalent binding and completion evidence for the other writes remain missing.
 
@@ -30,7 +31,9 @@ Business outcomes, recoverable conditions and hard errors stay distinct. Valid u
 
 ## Current audit status and remaining acceptance
 
-The discovery-input defect found at `8e625cc` is fixed in current source by PR #49: canonical inputs are checked before runtime/model work, public declarations must be exact, and every required public input must remain executable after promotion. A separate current audit confirms discovery still does not run the profile detectors used by replay, so known business, fatal or recoverable pages can reach model work or lower-layer success. This is not evidence of an artifact or POST bypass. PR #49 changed no accepted artifact or live operation; detector parity, result observation and write-specific semantics for the four unaccepted capabilities remain open. PR #47 did not rewrite old private evidence.
+The discovery-input defect found at `8e625cc` is fixed by PR #49: canonical inputs are checked before runtime/model work, public declarations must be exact, and every required public input must remain executable after promotion. PRs #50–#51 integrated shared discovery profile detectors and fault-scenario wiring; PRs #52–#54 added visible condition detection and scoped evaluator integrity repairs. This source/offline closure is not evidence of an accepted artifact, live operation or POST bypass. Result observation and write-specific semantics for the four unaccepted capabilities remain open. PR #47 did not rewrite old private evidence.
+
+EXC-03 requires both an injected `notfound` / 404 discovery/replay case and a natural absent-member case. The current native absent-member discovery/replay pair verifies only the natural portion with `NO_SUCH_MEMBER`, zero mutation intents and zero observed non-sign-on POST requests. The older injected probe is read-only route evidence, not a discovery/replay pair. The injected portion remains pending, so overall EXC-03 is in progress.
 
 Final acceptance still requires recordings, reviewed promotions and separately approved replays for all four writes; observed results; operation-specific exception checks; same-browser repair; approval keyboard checks; an integrated write rehearsal; sanitized ledger updates; and final local and hosted gates. Result extraction is unresolved, so no selector or output shape is promised.
 
