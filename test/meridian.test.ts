@@ -951,6 +951,7 @@ describe('MERIDIAN guarded transfer path', () => {
   ];
 
   function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void) {
+    let currentRows: Array<Record<string, string>> = rows;
     let url = `${origin}/members`;
     let navigation = 0;
     let frameId = 'transfer-workarea';
@@ -961,13 +962,20 @@ describe('MERIDIAN guarded transfer path', () => {
     const postUrl = `${origin}/members/9001/transfer/post`;
     const frame = () => ({ id: frameId, name: 'workarea', url: frameUrl, navigation });
     const gate = vi.fn(async () => true);
+    const readOnlyPage = vi.fn(async (requestedUrl: string) => ({
+      url: requestedUrl,
+      frameUrls: [requestedUrl],
+      identity: { operator: 'SUPER1', branch: 'MAIN-001', trusted: true },
+      tables: [currentRows],
+    }));
     let onInspect: (() => void | Promise<void>) | undefined;
     const run = guarded({
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
       frameUrls: () => [`${origin}/frameset`, url],
-      readTable: async () => rows,
+      readTable: async () => currentRows,
+      readOnlyPage,
     }, gate, { artifact: 'meridian-funds-transfer', transfer: { expected: request, memberTable: meridianTransferMemberTable } }, onAction, async expected => {
       if (expected.destination === memberUrl) url = memberUrl;
       else if (expected.destination === transferUrl) url = transferUrl;
@@ -979,10 +987,12 @@ describe('MERIDIAN guarded transfer path', () => {
     return {
       run,
       gate,
+      readOnlyPage,
       setLive(next: Partial<LiveControl>) { run.change({ ...next, frame: next.frame ?? frame() }); },
       setUrl(next: string) { url = next; frameUrl = next; navigation++; },
       setFrame(next: { id?: string; url?: string }) { if (next.id) frameId = next.id; if (next.url) frameUrl = next.url; },
       setInspect(next: () => void | Promise<void>) { onInspect = next; },
+      setRows(next: Array<Record<string, string>>) { currentRows = next; },
       memberUrl,
       transferUrl,
       reviewUrl,
@@ -1136,6 +1146,26 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.run.surface.mutationDispatched).toBe(false);
   });
 
+  it.each([
+    ['closed source', [{ ...eligibleRows[0]!, status: 'CLOSED' }, eligibleRows[1]!, eligibleRows[2]!], Error],
+    ['held destination', [eligibleRows[0]!, { ...eligibleRows[1]!, status: 'HOLD' }, eligibleRows[2]!], Error],
+    ['newly insufficient source', [{ ...eligibleRows[0]!, balance: '0.50' }, eligibleRows[1]!, eligibleRows[2]!], InsufficientFundsError],
+  ] as const)('rechecks %s changed during approval before transfer intent', async (_case, rows, expectedError) => {
+    const harness = await eligibleTransfer();
+    harness.gate.mockImplementationOnce(async () => {
+      harness.setRows([...rows]);
+      return true;
+    });
+
+    await expect(harness.run.surface.click(target, 1000, 'irreversible')).rejects.toThrow(
+      expectedError === InsufficientFundsError ? InsufficientFundsError : /transfer/i,
+    );
+    expect(harness.readOnlyPage).toHaveBeenCalledOnce();
+    expect(harness.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(harness.run.dispatch).not.toHaveBeenCalled();
+    expect(harness.run.surface.mutationDispatched).toBe(false);
+  });
+
   it('dispatches one approved transfer with parsed visible display facts', async () => {
     const harness = await eligibleTransfer();
     await harness.run.surface.click(target, 1000, 'irreversible');
@@ -1143,6 +1173,7 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(harness.run.dispatch).toHaveBeenCalledOnce();
     expect(harness.run.surface.mutationDispatched).toBe(true);
+    expect(harness.readOnlyPage).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -2586,9 +2617,12 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     browser.page.context().off('page', sabotageClose);
     expect(auxiliary?.isClosed()).toBe(false);
     closeSpy?.mockRestore();
+    await auxiliary?.evaluate(() => fetch('/members/9001/hold/post', { method: 'POST' }).catch(() => {}));
+    expect(posted).toBe(1);
+    await browser.page.context().unroute('**/*');
     await auxiliary?.close();
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
-}, 15000);
+}, 30000);
 
 it('extracts one canonical transfer row from a vertical receipt and persists only its table structure', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };

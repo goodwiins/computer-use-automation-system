@@ -535,14 +535,19 @@ export class GuardedSurface implements Surface {
       { target: binding.contactTable.target, columns: binding.contactTable.columns, rowSelector: binding.contactTable.rowSelector },
       { target: binding.memberTable.target, columns: binding.memberTable.columns, rowSelector: binding.memberTable.rowSelector },
     ], timeoutMs);
-    if (this.origin(snapshot.url) !== this.origin(memberUrl) || this.path(snapshot.url) !== this.path(memberUrl)
-      || snapshot.frameUrls.some(url => !url.startsWith('about:') && this.origin(url) !== this.origin(memberUrl))
-      || !snapshot.identity.trusted || snapshot.identity.operator !== live.operator || snapshot.identity.branch !== live.branch
-      || snapshot.tables.length !== 2) throw new Error('Fresh hold eligibility UI read is not bound to the approved review');
-    const observed = this.parseHoldEligibility(snapshot.tables[0]!, snapshot.tables[1]!);
+    const tables = this.assertFreshMemberSnapshot(snapshot, memberUrl, live, 2);
+    const observed = this.parseHoldEligibility(tables[0]!, tables[1]!);
     if (observed.member !== state.member || observed.name !== state.name || observed.selected.type !== state.selected.type) {
       throw new Error('Fresh hold eligibility changed after approval');
     }
+  }
+
+  private assertFreshMemberSnapshot(snapshot: ReadOnlyPageSnapshot, memberUrl: string, live: LiveControl, tableCount: number) {
+    if (this.origin(snapshot.url) !== this.origin(memberUrl) || this.path(snapshot.url) !== this.path(memberUrl)
+      || snapshot.frameUrls.some(url => !url.startsWith('about:') && this.origin(url) !== this.origin(memberUrl))
+      || !snapshot.identity.trusted || snapshot.identity.operator !== live.operator || snapshot.identity.branch !== live.branch
+      || snapshot.tables.length !== tableCount) throw new Error('Fresh hold or transfer member eligibility UI read is not bound to the approved review');
+    return snapshot.tables;
   }
 
   private assertHoldControl(live: LiveControl): void {
@@ -668,6 +673,23 @@ export class GuardedSurface implements Surface {
     });
     assertTransferEligibility(binding.expected, member[1]!, shares);
     this.transferEligibility = { member: member[1]!, shares, frame: resolved, stage: 'member' };
+  }
+
+  private async refreshTransferEligibility(live: LiveControl, timeoutMs: number): Promise<void> {
+    const binding = this.runtime?.transfer;
+    if (!binding || !this.transferEligibility || !this.inner.readOnlyPage) throw new Error('Fresh transfer eligibility UI read is unavailable');
+    const memberUrl = new URL(`/members/${binding.expected.member}`, live.url).href;
+    const snapshot = await this.inner.readOnlyPage(memberUrl, [
+      { target: binding.memberTable.target, columns: binding.memberTable.columns, rowSelector: binding.memberTable.rowSelector },
+    ], timeoutMs);
+    const rows = this.assertFreshMemberSnapshot(snapshot, memberUrl, live, 1)[0]!;
+    const shares = rows.map(row => {
+      if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') {
+        throw new Error('Fresh transfer eligibility table is incomplete');
+      }
+      return { share: row.shareId, status: row.status, balance: row.balance };
+    });
+    assertTransferEligibility(binding.expected, binding.expected.member, shares);
   }
 
   private assertTransferControl(live: LiveControl): void {
@@ -883,13 +905,15 @@ export class GuardedSurface implements Surface {
           if (openSharePost) this.assertOpenShareReview(refreshed);
           if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
           if (holdPost) this.assertHoldReview(refreshed);
-          if (holdPost) {
+          if (transferPost || holdPost) {
             // This same-session UI reread narrows the approval-wait race. The
             // target remains responsible for enforcing eligibility atomically.
-            await this.refreshHoldEligibility(refreshed, remaining());
+            if (transferPost) await this.refreshTransferEligibility(refreshed, remaining());
+            else await this.refreshHoldEligibility(refreshed, remaining());
             const afterEligibility = await prepared.inspect(remaining());
             if (JSON.stringify(afterEligibility) !== JSON.stringify(refreshed)) throw new Error('Approval invalidated by changed page state');
-            this.assertHoldReview(afterEligibility);
+            if (transferPost) this.assertTransferReview(afterEligibility);
+            else this.assertHoldReview(afterEligibility);
           }
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
