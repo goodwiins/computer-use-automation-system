@@ -44,7 +44,7 @@ Historical transfer draft and its run remain unchanged. Open-share run `222ebecd
 
 ## Execution status — September 5, 2026
 
-Receipt extraction and observation-bound work from PRs #59 and #60 are merged, and the open-share completion work from PR #61 is integrated. PR #62 for member update remains open. Reviewed source work for supervisor hold and maintenance recovery is complete offline and remains pending publication and genuine discovery/replay acceptance. The implemented work advances offline guard, completion, observation and recovery behavior; it does not establish 7/7 live capability coverage.
+Receipt extraction and observation-bound work from PRs #59 and #60 are merged; PRs #61 (open share) and #62 (member update) are now merged. PR #63 (supervisor hold and shared fresh transfer eligibility) remains open under CI/review repair. Maintenance recovery is integrated offline and remains pending publication. Live acceptance remains 3/7; genuine recordings/replays and the UI-last delivery remain outstanding.
 
 ## Delivery sequence and file ownership
 
