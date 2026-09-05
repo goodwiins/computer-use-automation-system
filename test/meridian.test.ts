@@ -1484,6 +1484,22 @@ describe('MERIDIAN guarded open-share path', () => {
     expect(h.gate).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
   });
+
+  it('does not let public recovery reverse the ordinary open-share stage', async () => {
+    const h = harness();
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({ url: h.openUrl, destination: h.memberUrl, method: 'GET', control: 'Continue', submit: false, facts: {} });
+    const maintenance = profile.detectors.find(detector => detector.id === 'maintenance')!;
+    await expect(h.run.surface.recoverClick(maintenance.recovery!.target!)).rejects.toThrow(/transition/i);
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+  });
 });
 
 it('recovers the observed open-share maintenance path through one fresh member checkpoint', async () => {
@@ -2253,7 +2269,6 @@ it.each([
   ];
   let discoveryUrl = `${origin}/signon`;
   const discoverySurface: Surface = {
-    strictOperationRecovery: true,
     mutationDispatched: false,
     start: async url => { discoveryUrl = url; },
     observe: async () => ({ url: discoveryUrl, title: '', frames: [] }), currentUrl: () => discoveryUrl, frameUrls: () => [discoveryUrl],

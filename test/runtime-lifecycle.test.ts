@@ -33,6 +33,14 @@ function fixtureSurface(): Surface {
 function fixtureArtifact(click = false) {
   return CapabilityArtifact.parse({ schemaVersion: 2, id: 'hold', name: 'hold', description: 'fixture hold', version: '1.0.0', status: 'approved', app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] }, parameters: [], outputs: [], steps: click ? [{ id: 'post', action: 'click', intent: 'post', target, risk: 'irreversible' }] : [{ id: 'verify', action: 'assert', intent: 'verify', assert: { kind: 'textVisible', text: 'done' } }], successCondition: { kind: 'textVisible', text: 'done' }, provenance: { discoveredAt: '', model: 'offline', discoveryRunId: 'offline', goal: 'offline failure injection' } });
 }
+function canonicalOpenShareArtifact(click = false, schemaVersion: 1 | 2 = 2) {
+  const base = fixtureArtifact(click);
+  return CapabilityArtifact.parse({
+    ...base, schemaVersion, id: 'meridian-open-share', name: 'meridian-open-share',
+    outputs: [{ name: 'shareId', type: 'string', description: 'Result' }],
+    steps: [...base.steps, { id: 'result', action: 'extract', intent: 'read result', target, extract: { output: 'shareId' }, risk: 'read' }],
+  });
+}
 
 it('releases the API slot and finalizes the journal when runtime construction fails', () => {
   vi.stubEnv('MERIDIAN_TELLER_OPERATOR', 'fixture'); vi.stubEnv('MERIDIAN_TELLER_PASSWORD', 'fixture'); vi.stubEnv('MERIDIAN_BRANCH', 'MAIN-001');
@@ -308,9 +316,7 @@ it('does not retry a failed replay action after strict operation recovery', asyn
   surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' && maintenance);
   surface.recoverOperation = vi.fn(async () => { maintenance = false; });
   surface.click = vi.fn(async () => { maintenance = true; throw new Error('interrupted action'); });
-  const artifact = fixtureArtifact(true);
-  artifact.id = 'meridian-open-share';
-  artifact.name = 'meridian-open-share';
+  const artifact = canonicalOpenShareArtifact(true);
   artifact.detectors = profile.detectors;
   const logger = new RunLogger('replay', new Redactor(), temp(), true);
   const result = await runReplay(artifact, {}, { surface, logger, policy, validateCompletion: vi.fn() });
@@ -324,9 +330,7 @@ it('runs the next recorded replay step once after one strict operation recovery'
   let maintenance = true;
   surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
   surface.recoverOperation = vi.fn(async () => { maintenance = false; });
-  const artifact = fixtureArtifact();
-  artifact.id = 'meridian-open-share';
-  artifact.name = 'meridian-open-share';
+  const artifact = canonicalOpenShareArtifact();
   artifact.detectors = profile.detectors;
   const logger = new RunLogger('replay', new Redactor(), temp(), true);
   const validateCompletion = vi.fn();
@@ -343,9 +347,7 @@ it('requires the trusted hook when a canonical v2 artifact omits its copied resu
   surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
   surface.recoverClick = vi.fn(async () => { maintenance = false; return report; });
   const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
-  const artifact = fixtureArtifact();
-  artifact.id = 'meridian-open-share';
-  artifact.name = 'meridian-open-share';
+  const artifact = canonicalOpenShareArtifact();
   artifact.detectors = [{ ...detector, recovery: { action: 'click', target: { description: 'artifact-controlled target', strategies: [{ kind: 'css', selector: '#untrusted' }] } } }];
   const escalate = vi.fn(async () => 'retry' as const);
   const result = await runReplay(artifact, {}, {
@@ -363,9 +365,7 @@ it('uses the trusted hook for canonical v2 recovery even when copied recovery fi
   surface.recoverOperation = vi.fn(async id => { expect(id).toBe('maintenance'); maintenance = false; });
   surface.recoverClick = vi.fn(async () => report);
   const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
-  const artifact = fixtureArtifact();
-  artifact.id = 'meridian-open-share';
-  artifact.name = 'meridian-open-share';
+  const artifact = canonicalOpenShareArtifact();
   artifact.detectors = [{ ...detector, recovery: { action: 'none' } }];
   const result = await runReplay(artifact, {}, {
     surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: vi.fn(),
@@ -381,10 +381,8 @@ it('does not turn a claimed v1 canonical artifact into a legacy recovery bypass'
   surface.recoverOperation = vi.fn(async () => {});
   surface.recoverClick = vi.fn(async () => report);
   const detector = profile.detectors.find(candidate => candidate.id === 'maintenance')!;
-  const artifact = CapabilityArtifact.parse({
-    ...fixtureArtifact(), schemaVersion: 1, id: 'meridian-open-share', name: 'meridian-open-share',
-    detectors: [{ ...detector, recovery: { action: 'click', target } }],
-  });
+  const artifact = canonicalOpenShareArtifact(false, 1);
+  artifact.detectors = [{ ...detector, recovery: { action: 'click', target } }];
   const result = await runReplay(artifact, {}, {
     surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: vi.fn(),
   });

@@ -965,7 +965,7 @@ export class GuardedSurface implements Surface {
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
-        if (this.runtime.openShare && (this.openShareStage(live.url) || (openShareDestination && openShareDestination.stage !== 'member'))) this.assertOpenShareControl(live);
+        if (!recoveryBoundary && this.runtime.openShare && (this.openShareStage(live.url) || (openShareDestination && openShareDestination.stage !== 'member'))) this.assertOpenShareControl(live);
         const holdDestination = this.runtime.hold ? this.holdStage(live.destination) : undefined;
         if (this.runtime.hold && (this.holdStage(live.url) || (holdDestination && holdDestination.stage !== 'member'))) this.assertHoldControl(live);
         const signOn = new URL(live.destination).pathname === '/signon';
