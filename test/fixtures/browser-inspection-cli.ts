@@ -12,10 +12,12 @@ const transferRows = [
   ['Memo:', 'fixture'],
 ].map(([label, value]) => `<tr><td class="lbl">${label}</td><td>${value}</td></tr>`).join('');
 const reviewBox = `<div class="box"><table>${transferRows}</table></div>`;
-const transferForm = (submit = 'Post Transfer') => `<form method="post" action="/members/9001/transfer/post"><input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="from" value="9001-A"><input type="hidden" name="to" value="9001-B"><input type="hidden" name="amount" value="1.00"><input type="hidden" name="memo" value="fixture"><input type="submit" value="${submit}"></form>`;
+const transferForm = (submit = 'Post Transfer', override = false) => `<form method="${override ? 'get' : 'post'}" action="${override ? '/noop' : '/members/9001/transfer/post'}"><input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="from" value="9001-A"><input type="hidden" name="to" value="9001-B"><input type="hidden" name="amount" value="1.00"><input type="hidden" name="memo" value="fixture"><input type="submit" value="${submit}"${override ? ' formmethod="post" formaction="/members/9001/transfer/post"' : ''}></form>`;
 const reviewPage = (variant: string) => {
   const boxes = variant === 'ambiguous-review' ? `${reviewBox}${reviewBox}` : variant === 'outside-cell' ? '' : reviewBox;
-  const forms = variant === 'ambiguous-form' ? `${transferForm()}${transferForm('Other Post')}` : transferForm();
+  const forms = variant === 'ambiguous-form' ? `${transferForm()}${transferForm('Other Post')}`
+    : variant === 'nested-form' ? `${transferForm()}<div>${transferForm('Nested Post')}</div>`
+      : transferForm('Post Transfer', variant === 'submit-override');
   const content = `<td id="content"><h1>CONFIRM FUNDS TRANSFER</h1><br>${boxes}<br><font class="err"></font><br><br>${forms}</td>`;
   return `<table><tr>${variant === 'outside-cell' ? `<td>${reviewBox}</td>` : ''}${content}</tr></table>`;
 };
@@ -47,11 +49,28 @@ try {
   await post.dispatch(inspected, 3000);
   assert.equal(posted, 1);
 
-  for (const variant of ['ambiguous-review', 'ambiguous-form', 'outside-cell']) {
+  for (const variant of ['ambiguous-review', 'ambiguous-form', 'nested-form', 'outside-cell']) {
     await browser.navigate(`${origin}/members/9001/transfer/review?variant=${variant}`);
     const unsafe = await browser.prepareClick(postTarget);
     await assert.rejects(unsafe.inspect(), /missing or ambiguous/);
   }
+
+  await browser.navigate(`${origin}/members/9001/transfer/review?variant=submit-override`);
+  const override = await browser.prepareClick(postTarget);
+  const overridden = await override.inspect();
+  assert.equal(overridden.method, 'POST');
+  assert.equal(overridden.destination, `${origin}/members/9001/transfer/post`);
+
+  await browser.navigate(`${origin}/members/9001/transfer/review`);
+  const changed = await browser.prepareClick(postTarget);
+  const approved = await changed.inspect();
+  await browser.page.locator('#content').evaluate(cell => {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = '<form method="post" action="/members/9001/transfer/post"><input type="submit" value="Nested Post"></form>';
+    cell.append(wrapper);
+  });
+  await assert.rejects(changed.dispatch(approved, 1000), /missing or ambiguous/);
+  assert.equal(posted, 1);
 } finally {
   await browser.close();
   server.closeAllConnections();

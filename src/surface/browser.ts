@@ -595,10 +595,8 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     siblingReviewTables(reviewForm: HTMLFormElement) {
       const cell = reviewForm.parentElement;
       if (!cell?.matches('td')) return [];
-      const postingForms = Array.from(cell.children).filter(child => child instanceof HTMLFormElement
-        && child.method.toUpperCase() === 'POST'
-        && /^\/members\/\d+\/transfer\/post$/.test(new URL(child.action).pathname));
-      if (postingForms.length !== 1 || postingForms[0] !== reviewForm) return [];
+      const forms = Array.from(cell.querySelectorAll('form'));
+      if (forms.length !== 1 || forms[0] !== reviewForm) return [];
       return Array.from(cell.children)
         .filter(child => child.matches('div.box'))
         .flatMap(box => Array.from(box.children).filter(child => child instanceof HTMLTableElement));
@@ -611,13 +609,13 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
       }
     }
     const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
+    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
+      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
-      ...siblingReviewTables(form!),
+      ...(transferReview ? siblingReviewTables(form!) : []),
     ])) as HTMLTableElement[];
-    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
-      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
     let reviewTable: HTMLTableElement | null;
     let reviewLabels: Element[];
     if (transferReview) {
