@@ -26,7 +26,7 @@
 
 ## Verified implementation and PR ledger — September 5, 2026
 
-Current runtime baseline: `2c7f4ed4577fe01bbfb441525b7cccc14128c46b`. Passing runtime and integration checks do not establish live acceptance.
+Current runtime baseline: `245ba838499212ee36ee556e0a6de7c671b01f76`. Passing runtime and integration checks do not establish live acceptance.
 
 | PR | Reviewed/final source | Integrated result | Reuse boundary |
 | --- | --- | --- | --- |
@@ -39,19 +39,20 @@ Current runtime baseline: `2c7f4ed4577fe01bbfb441525b7cccc14128c46b`. Passing ru
 | [#45](https://github.com/goodwiins/computer-use-automation-system/pull/45) | Reviewed head `4789be8` | Merged as `5c18923`; 275 tests/17 files and head/merge CI passed | Sibling transfer review/form association and submit overrides |
 | [#46](https://github.com/goodwiins/computer-use-automation-system/pull/46) | Reviewed head `c4279ac` | Merged as `8e625cc`; 276 tests/17 files and head/merge CI passed | Terminal-only CLI approval guidance |
 | [#47](https://github.com/goodwiins/computer-use-automation-system/pull/47) | Reviewed head `66a9fb0` | Merged as `2c7f4ed`; 278 tests/17 files, final review and head/merge CI passed | Trusted event/result metadata; historical evidence unchanged |
+| [#49](https://github.com/goodwiins/computer-use-automation-system/pull/49) | Reviewed head `e507e8a` | Merged as `245ba838`, equal tree `654065a`; 197 focused/288 full tests and head/merge CI passed | Canonical discovery preflight, exact declarations and executable promotion bindings; no live artifact or operation |
 
 No listed PR contains an approved transfer, open-share, update-member, or place-hold artifact. The runtime fixes do not promote the transfer draft. Current live acceptance remains `3/7`, and the producing SHAs in the evidence ledger remain source-specific.
 
-The separate discovery-input audit remains open from this baseline and confirmed canonical discovery can reach runtime/model work with missing public inputs and can compile literal values for non-transfer capabilities; the transfer post backstop remains effective. That shared preflight/promotion repair is queued. PR #47 and the open audit do not close a live capability.
+PR #49 fixed the canonical discovery-input preflight and promotion-binding gap offline. A separate current audit confirms discovery still does not run replay's profile detectors, so known business, fatal or recoverable pages can reach model work or lower-layer success. This is not an artifact or POST bypass claim. The detector repair and EXC-02 through EXC-07 acceptance remain pending, and neither source audit closes a live capability.
 
 ### What §2 already has, and what remains
 
 | Assignment requirement | Existing code/evidence | Remaining delivery |
 | --- | --- | --- |
-| Hosted sign-on; operator/password/branch; idle timeout | `config/app-profiles/meridian.json`, `config/policy-meridian.json`, `src/runtime/run.ts`; approved sign-on artifact | [Natural bad-login replay](../meridian/evidence/natural-bad-login/summary.json) is verified for shared-runtime/artifact scope; discovery/API login and idle-expiry acceptance remain open |
+| Hosted sign-on; operator/password/branch; idle timeout | `config/app-profiles/meridian.json`, `config/policy-meridian.json`, `src/runtime/run.ts`; approved sign-on artifact | [Natural bad-login replay](../meridian/evidence/natural-bad-login/summary.json) is verified for shared-runtime/artifact scope. A [540008 ms natural idle probe](../meridian/evidence/natural-idle/summary.json) completed a read without expiry, mutation or relogin; idle-expiry acceptance remains open |
 | Member inquiry by number/name and unambiguous selection | Approved inquiry artifact; #37 read acceptance | Retain number/name/ambiguous/not-found evidence; refresh after target reset |
 | Member record with balances/share status | Approved record artifact; #37 read acceptance | Retain read baseline; never infer current funds from old evidence |
-| Transfer: input → review → approved post | #39 comparators and guard; #43–#46 outcome/loader/review/approval repairs; draft discovery exists only in the preserved acceptance worktree | Execution Tasks 5c–5d: observed result extraction, genuine recording, reviewed promotion, separately approved replay |
+| Transfer: input → review → approved post | #39 comparators and guard; #43–#46 outcome/loader/review/approval repairs; #49 canonical discovery contract checks; draft discovery exists only in the preserved acceptance worktree | Execution Tasks 5c–5d: observed result extraction, genuine recording, reviewed promotion, separately approved replay |
 | Open share: type/deposit → review → approved post | Profile route/form and parameter/output declarations exist | Execution Task 6: observe result, bind requested facts, record and accept |
 | Contact update: email/phone/address → save | Profile and declarations exist | Execution Task 7: direct-save approval, bound read-back, record and accept |
 | Supervisor hold with reason/notes; teller denial | Profile role guard and declarations exist | Execution Task 8: supervisor acceptance plus teller denial; no role escalation |
@@ -62,8 +63,8 @@ The six-column transfer row, single-process runtime and separate PR boundaries a
 
 ## Integration prerequisite
 
-- [x] PRs #37, #39, #41 and #43–#47 were reviewed and integrated in dependency order. Their source and producer gates are recorded above.
-- [x] Confirmed `dev` at `2c7f4ed4577fe01bbfb441525b7cccc14128c46b` includes read acceptance, transfer protections, terminal lifecycle, insufficient-funds classification, CLI loader inspection, sibling review mapping, Terminal approval guidance and trusted evidence metadata.
+- [x] PRs #37, #39, #41, #43–#47 and #49 were reviewed and integrated in dependency order. Their source and producer gates are recorded above.
+- [x] Confirmed `dev` at `245ba838499212ee36ee556e0a6de7c671b01f76` includes read acceptance, transfer protections, terminal lifecycle, insufficient-funds classification, CLI loader inspection, sibling review mapping, Terminal approval guidance, trusted evidence metadata and canonical discovery contract checks.
 - [x] Task A was implemented on its isolated branch and merged through PR #43. Its offline proof does not close live underfunded acceptance.
 
 ## Task A: Return insufficient funds as a terminal business result
@@ -324,7 +325,7 @@ Keep catch/finally cleanup, durable intent precedence and success-only artifact 
 ## Self-review and execution boundary
 
 - All seven §2.1 functions and the six §2.2 injected faults have an owner above; natural bad login, funds/contact rejection, teller denial and idle expiry are explicit.
-- Existing #34/#35/#37/#39 implementation is reused. Task A is delivered through #43, and CLI/review/approval/evidence-metadata repairs are delivered through #44–#47. Four write artifact/acceptance tasks remain open, so coverage is still 3/7.
+- Existing #34/#35/#37/#39 implementation is reused. Task A is delivered through #43, CLI/review/approval/evidence-metadata repairs through #44–#47, and discovery contract checks through #49. Four write artifact/acceptance tasks remain open, so coverage is still 3/7.
 - `InsufficientFundsError` is produced only after valid request/member/share/status/money checks. Both callers check dispatch uncertainty first. CLI, journal and result-file propagation are included, not merely the validator unit test.
 - All snippets use existing interfaces or the fields introduced here. Hosted selectors and results remain observation-gated in their original tasks.
 - This plan records the delivered Task A source and remaining execution. This documentation refresh does not promote an artifact, perform a live operation or close any unchecked live gate.
