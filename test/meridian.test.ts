@@ -305,6 +305,55 @@ describe('single-use interventions and live controls', () => {
     await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/aborted/);
     expect(gate).toHaveBeenCalledOnce(); expect(run.dispatch).not.toHaveBeenCalled(); expect(run.beforeDispatch).not.toHaveBeenCalled();
   });
+  it('rejects a down-labelled mismatched canonical operation before approval or intent', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-open-share' });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/operation/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['meridian-open-share', '/members/9001/open-share/review', '/members/9001/open-share/post', 'Open Share'],
+    ['meridian-update-member', '/members/9001', '/members/9001/update', 'Save Changes'],
+    ['meridian-place-hold', '/members/9001/hold/review', '/members/9001/hold/post', 'Apply Hold'],
+  ] as const)('permits the canonical write destination for %s', async (artifact, url, destination, controlName) => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact });
+    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName });
+    await run.surface.click(target, 100, 'read');
+    expect(gate).toHaveBeenCalledOnce();
+    expect(run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(run.dispatch).toHaveBeenCalledOnce();
+  });
+  it.each(['meridian-sign-on', 'meridian-member-inquiry', 'meridian-member-record'] as const)('rejects mutation dispatch for canonical read capability %s', async artifact => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/operation/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+  it('retains mutation compatibility for a legacy artifact ID', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'hold' });
+    await run.surface.click(target, 100, 'read');
+    expect(gate).toHaveBeenCalledOnce();
+    expect(run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(run.dispatch).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['meridian-sign-on', '/signon', '/signon', 'Sign On'],
+    ['meridian-open-share', '/members/9001/open-share', '/members/9001/open-share/review', 'Continue'],
+  ] as const)('permits nonmutation sign-on or review for %s', async (artifact, url, destination, controlName) => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact });
+    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName });
+    await run.surface.click(target, 100, 'read');
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).toHaveBeenCalledOnce();
+  });
   it.each(['facts', 'operator', 'destination', 'tokenPresent', 'role'] as const)('invalidates changed %s before dispatch', async field => {
     const run = guarded({}, async () => { run.change({ [field]: field === 'facts' ? { share: 'CHANGED' } : field === 'tokenPresent' ? false : 'CHANGED' }); return true; });
     await expect(run.surface.click(target)).rejects.toThrow(/invalidated/); expect(run.dispatch).not.toHaveBeenCalled();
@@ -719,7 +768,7 @@ describe('MERIDIAN guarded transfer path', () => {
       lastResolvedFrame: frame,
       frameUrls: () => [`${origin}/frameset`, url],
       readTable: async () => rows,
-    }, gate, { transfer: { expected: request, memberTable: meridianTransferMemberTable } }, onAction, async expected => {
+    }, gate, { artifact: 'meridian-funds-transfer', transfer: { expected: request, memberTable: meridianTransferMemberTable } }, onAction, async expected => {
       if (expected.destination === memberUrl) url = memberUrl;
       else if (expected.destination === transferUrl) url = transferUrl;
       else if (expected.destination === reviewUrl) url = reviewUrl;

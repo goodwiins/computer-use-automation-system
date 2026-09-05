@@ -1,6 +1,6 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile, type FrameContext, type LiveControl } from '../runtime/profile.js';
-import { assertTransferEligibility, assertTransferFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
+import { assertTransferEligibility, assertTransferFacts, meridianContracts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
 // Policy enforcement as a Surface decorator. Every actor — the LLM during
@@ -14,6 +14,12 @@ import type { Observation, ResolutionReport, Surface } from './types.js';
 const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
 const MEMBER_ROUTE = /^\/members\/(\d+)$/;
+const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
+  'meridian-funds-transfer': /^\/members\/\d+\/transfer\/post$/,
+  'meridian-open-share': /^\/members\/\d+\/open-share\/post$/,
+  'meridian-update-member': /^\/members\/\d+\/update$/,
+  'meridian-place-hold': /^\/members\/\d+\/hold\/post$/,
+};
 const REVIEW_FACTS = {
   member: 'review:Member:',
   sourceShare: 'review:From:',
@@ -133,6 +139,15 @@ export class GuardedSurface implements Surface {
 
   private transferRoute(url: string) {
     return TRANSFER_ROUTE.exec(this.path(url));
+  }
+
+  private assertCapabilityOperation(destination: string): void {
+    const artifact = this.runtime?.artifact;
+    if (!artifact || this.runtime?.profile.appId !== 'meridian' || !Object.hasOwn(meridianContracts, artifact)) return;
+    const allowed = MERIDIAN_MUTATION_ROUTES[artifact as keyof typeof meridianContracts];
+    if (allowed?.test(this.path(destination))) return;
+    if (artifact === 'meridian-funds-transfer') throw new Error('Funds-transfer run cannot dispatch another operation');
+    throw new Error('Canonical MERIDIAN capability cannot dispatch this operation');
   }
 
   private transferStage(url: string): { member: string; stage: TransferStage } | undefined {
@@ -388,12 +403,15 @@ export class GuardedSurface implements Surface {
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
         const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
+        if (rule?.mutation) {
+          this.assertCapabilityOperation(live.destination);
+          if (this.runtime.transfer && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
+        }
         if (transferPost) this.assertTransferReview(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
         if (recovery && (rule?.mutation || checkAction(this.policy, 'click', live.destination, this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
         if (rule?.mutation) {
-          if ((this.runtime.transfer || this.runtime.artifact === 'meridian-funds-transfer') && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
           if (this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: repeat dispatch refused');
           if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
           const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
