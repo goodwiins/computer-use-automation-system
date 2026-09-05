@@ -92,6 +92,8 @@ export interface Surface {
   fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport>;
   readText(target: TargetDescriptor, timeoutMs?: number): Promise<{ text: string; report: ResolutionReport }>;
+  /** Whether the resolved target itself is visibly rendered. */
+  isTargetVisible?(target: TargetDescriptor, timeoutMs?: number): Promise<boolean>;
   isTextVisible(text: string, frame?: string): Promise<boolean>;
 
   /** Build a robust TargetDescriptor from whatever hint found the element. */

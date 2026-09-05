@@ -1503,14 +1503,15 @@ describe('MERIDIAN guarded open-share path', () => {
 });
 
 it.each([
-  { checkpoint: 'visible', hidden: false },
-  { checkpoint: 'hidden', hidden: true },
-])('$checkpoint member checkpoint bounds the observed open-share maintenance path', async ({ hidden }) => {
+  { checkpoint: 'visible', hidden: false, visibleSubstring: false },
+  { checkpoint: 'hidden', hidden: true, visibleSubstring: false },
+  { checkpoint: 'hidden with visible substring decoy', hidden: true, visibleSubstring: true },
+])('$checkpoint member checkpoint bounds the observed open-share maintenance path', async ({ hidden, visibleSubstring }) => {
   let openVisits = 0;
   let memberVisits = 0;
   const app = express();
   const shares = '<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001</td><td>Regular Shares</td><td>$2.00</td><td>OPEN</td></tr></table>';
-  const member = `<table><tbody><tr><td${hidden ? ' style="display:none"' : ''}>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table><a href="/members/9001/open-share">Open New Share</a>`;
+  const member = `<table><tbody><tr><td${hidden ? ' style="display:none"' : ''}>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table>${visibleSubstring ? '<p>Previous Member No.: unavailable</p>' : ''}<a href="/members/9001/open-share">Open New Share</a>`;
   app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
   app.get('/members/9001', (_req, res) => { memberVisits++; res.send(member); });
   app.get('/members/9001/open-share', (_req, res) => {
@@ -1543,6 +1544,7 @@ it.each([
     if (hidden) {
       await expect(surface.recoverOperation('maintenance', 5000)).rejects.toThrow(/frame/i);
       expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001`);
+      if (visibleSubstring) expect(await surface.isTextVisible('Member No.:', surface.currentFrame()!.name)).toBe(true);
       expect(openVisits).toBe(1);
       expect(memberVisits).toBe(2);
       expect(gate).not.toHaveBeenCalled();

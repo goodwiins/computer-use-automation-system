@@ -908,12 +908,16 @@ export class GuardedSurface implements Surface {
     const resolvedDescription = this.inner.lastResolvedFrame?.();
     const read = await this.inner.readText(described, remaining());
     const resolvedRead = this.inner.lastResolvedFrame?.();
-    const visible = await this.inner.isTextVisible('Member No.:', memberFrame.name);
+    const visible = this.inner.isTargetVisible
+      ? await this.inner.isTargetVisible(described, remaining())
+      : false;
+    const resolvedVisibility = this.inner.lastResolvedFrame?.();
     const afterCheckpoint = this.currentOpenShareFrame();
     this.assertAutomation();
-    if (read.text.trim() !== 'Member No.:' || !visible || !resolvedDescription || !resolvedRead
+    if (read.text.trim() !== 'Member No.:' || !visible || !resolvedDescription || !resolvedRead || !resolvedVisibility
       || !this.sameFrameRevision(memberFrame, resolvedDescription)
       || !this.sameFrameRevision(memberFrame, resolvedRead)
+      || !this.sameFrameRevision(memberFrame, resolvedVisibility)
       || !this.sameFrameRevision(memberFrame, afterCheckpoint)) return this.openShareFrameFailed();
 
     await this.captureOpenShareState(memberUrl, remaining());
