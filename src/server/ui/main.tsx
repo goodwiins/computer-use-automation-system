@@ -11,8 +11,10 @@ function App() {
   const [status, setStatus] = useState('Connect with a caller or operator credential.');
   const [connecting, setConnecting] = useState(false);
   const loginAttempt = useRef(0);
+  const loginForm = useRef<HTMLFormElement>(null);
   const disconnect = useCallback(() => {
     loginAttempt.current++;
+    loginForm.current?.reset();
     setSession(undefined);
     setStatus('Disconnected. Authentication and chat cleared.');
     setConnecting(false);
@@ -51,7 +53,7 @@ function App() {
       </header>
       <main>
         <section aria-label="Session" className="session">
-          <form id="login" onSubmit={connect} autoComplete="off">
+          <form ref={loginForm} id="login" onSubmit={connect} autoComplete="off">
             <label htmlFor="credential">API credential</label>
             <div className="login-row">
               <input

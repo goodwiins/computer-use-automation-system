@@ -123,10 +123,10 @@ export function RunProvider({
   }, [refresh]);
   useEffect(() => {
     if (!error && !runs.some(pending) && !loading) return;
-    const timer = setTimeout(() => {
+    const timer = setInterval(() => {
       void refresh();
     }, 1500);
-    return () => clearTimeout(timer);
+    return () => clearInterval(timer);
   }, [runs, error, loading, refresh]);
   return (
     <Context.Provider value={{ session, runs, loading, error, request, refresh, watch }}>

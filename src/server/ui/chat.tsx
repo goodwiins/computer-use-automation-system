@@ -11,7 +11,7 @@ import {
   AuiIf,
 } from '@assistant-ui/react';
 import { AssistantChatTransport, useChatRuntime } from '@assistant-ui/ai-sdk';
-import { chatRequest } from './transport';
+import { ChatRequestError, chatRequest } from './transport';
 import { useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
 
@@ -76,9 +76,11 @@ export function Chat() {
   const runtime = useChatRuntime({
     transport,
     generateId: () => crypto.randomUUID(),
-    onError: () => {
+    onError: (error) => {
       setError(
-        'Response interrupted. A run may already have started. Refresh run history before making another request.',
+        error instanceof ChatRequestError
+          ? error.message
+          : 'Response interrupted. A run may already have started. Refresh run history before making another request.',
       );
       void refresh();
     },

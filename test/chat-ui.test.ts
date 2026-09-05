@@ -565,3 +565,119 @@ it('offline stopping the response preserves its accepted run and exposes no muta
     finishResponse();
   }
 }, 15000);
+it('bounds assistant text and serialized UTF-8 history without changing the latest operation or key', () => {
+  const message = (id: string, role: 'user' | 'assistant', text: string): UIMessage => ({
+    id,
+    role,
+    parts: [{ type: 'text', text }],
+  });
+  const current = message(
+    'stable-current',
+    'user',
+    'Transfer exactly 25.00 from A to B; memo "approved facts"',
+  );
+  const normalized = chatRequest(
+    [message('assistant-long', 'assistant', 'x'.repeat(4001)), current],
+    'thread',
+  );
+  expect(normalized.body.messages[0]?.parts[0]?.text).toHaveLength(4000);
+  expect(normalized.body.messages.at(-1)).toEqual(current);
+  for (const content of [
+    'x'.repeat(4000),
+    '界'.repeat(4000),
+    '\u0000'.repeat(4000),
+    '"\\\n'.repeat(1300),
+    '😀'.repeat(2000),
+  ]) {
+    const messages = [
+      ...Array.from({ length: 10 }, (_, index) =>
+        message(`old-${index}`, index % 2 ? 'assistant' : 'user', content),
+      ),
+      current,
+    ];
+    const request = chatRequest(messages, 'thread');
+    expect(new TextEncoder().encode(JSON.stringify(request.body)).byteLength).toBeLessThanOrEqual(32768);
+    expect(request.body.messages.length).toBeLessThan(messages.length);
+    expect(request.body.messages.at(-1)).toEqual(current);
+    expect(request.headers['Idempotency-Key']).toBe(current.id);
+    expect(chatRequest(messages, 'thread')).toEqual(request);
+  }
+  const exact = message('exact', 'user', '界'.repeat(4000));
+  expect(chatRequest([exact], 'thread').body.messages).toEqual([exact]);
+  expect(
+    chatRequest(
+      Array.from({ length: 30 }, (_, index) => message(`user-${index}`, 'user', 'facts')),
+      'thread',
+    ).body.messages,
+  ).toHaveLength(20);
+  for (const invalid of [
+    message('long', 'user', 'x'.repeat(4001)),
+    {
+      ...exact,
+      parts: [
+        { type: 'text' as const, text: 'a'.repeat(2000) },
+        { type: 'text' as const, text: 'b'.repeat(2000) },
+      ],
+    },
+    message('bad identity', 'user', 'facts'),
+  ]) {
+    expect(() => chatRequest([invalid], 'thread')).toThrow(/No request was sent/);
+  }
+});
+it('offline oversized current request reports a client error and sends no POST', async () => {
+  const { page, state, connect } = await fixture();
+  await connect();
+  await page.locator('#message').evaluate((element) => element.removeAttribute('maxlength'));
+  await page.locator('#message').fill('x'.repeat(4001));
+  expect((await page.locator('#message').inputValue()).length).toBe(4001);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'at most 4000 characters' }).waitFor();
+  expect(state.requests.filter((request) => request.path === '/api/chat')).toHaveLength(0);
+  expect(state.invocations.size).toBe(0);
+}, 15000);
+it('offline polling survives identical failures, recovers automatically and stops after unmount', async () => {
+  const { page, state, connect } = await fixture();
+  state.offline = true;
+  await connect();
+  await vi.waitFor(
+    () =>
+      expect(state.requests.filter((request) => request.path === '/runs').length).toBeGreaterThanOrEqual(3),
+    { timeout: 6000 },
+  );
+  state.offline = false;
+  state.runs.push({ ...initialRun(), state: 'success' });
+  await visible(page, '#runs', runId);
+  expect(await page.getByText('Disconnected from run updates.', { exact: false }).count()).toBe(0);
+  state.offline = true;
+  await page.locator('#refresh').click();
+  await visible(page, '#workspace', 'Disconnected from run updates');
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  const reads = state.requests.filter((request) => request.path === '/runs').length;
+  await page.waitForTimeout(1700);
+  expect(state.requests.filter((request) => request.path === '/runs')).toHaveLength(reads);
+}, 15000);
+it('offline disconnect, auth expiry and pagehide clear a newly typed credential draft', async () => {
+  const { page, state, connect } = await fixture();
+  await connect();
+  await page.locator('#credential').fill(operatorToken);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  expect(await page.locator('#credential').inputValue()).toBe('');
+  const attempts = state.requests.filter((request) => request.path === '/capabilities').length;
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  expect(state.requests.filter((request) => request.path === '/capabilities')).toHaveLength(attempts);
+  await connect();
+  await page.locator('#credential').fill(operatorToken);
+  await page.route('**/runs', (route) =>
+    route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"expired"}' }),
+  );
+  await page.locator('#refresh').click();
+  await page.locator('#workspace').waitFor({ state: 'detached' });
+  expect(await page.locator('#credential').inputValue()).toBe('');
+  await page.unroute('**/runs');
+  await connect();
+  await page.locator('#credential').fill(operatorToken);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+  await page.locator('#workspace').waitFor({ state: 'detached' });
+  expect(await page.locator('#credential').inputValue()).toBe('');
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+}, 15000);
