@@ -10,6 +10,7 @@ import type { Surface } from '../src/surface/types.js';
 import { Redactor } from '../src/safety/redact.js';
 
 const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
+const ORIGIN = 'https://web-sample.interface-hiring.com';
 const JOURNAL_KEY = 'hmac-test-key-with-at-least-32-characters';
 const PRIVATE_FAILURE = 'PRIVATE_UNREGISTERED';
 type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition';
@@ -587,6 +588,55 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
     }
     expect(existsSync(join(journalDir, 'server.lock'))).toBe(false);
     log.mockRestore(); error.mockRestore();
+  } finally {
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
+    for (const name of envKeys) {
+      const value = previousEnv.get(name);
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('supplies the runtime open-share completion validator to discovery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-open-share-'));
+  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
+  const previousExitCode = process.exitCode;
+  const validateCompletion = vi.fn(async () => {});
+  let supplied: unknown;
+  process.exitCode = undefined;
+  Object.assign(process.env, {
+    OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir, JOURNAL_HMAC_KEY: JOURNAL_KEY,
+    MERIDIAN_TELLER_OPERATOR: 'teller-test', MERIDIAN_TELLER_PASSWORD: 'offline-test-only', MERIDIAN_BRANCH: 'MAIN-001',
+  });
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => ({ openai: {}, model: 'fixture' }) }));
+  vi.doMock('../src/runtime/run.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js');
+    return { ...actual, createRuntime: (options: Parameters<typeof actual.createRuntime>[0]) => {
+      const redactor = new Redactor();
+      return {
+        surface: { mutationDispatched: false }, browser: { page: {} as never },
+        logger: new RunLogger(options.kind, redactor, options.evidenceDir, true, options.runId), session: {} as never,
+        redactor, promptRedactor: redactor, deadline: Date.now() + 600_000, validateCompletion, close: async () => {},
+      } as unknown as ReturnType<typeof actual.createRuntime>;
+    } };
+  });
+  vi.doMock('../src/agent/loop.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js');
+    return { ...actual, runDiscovery: async (_goal: string, _entry: string, _params: Record<string, string | number>, _origins: string[], deps: Parameters<typeof actual.runDiscovery>[4]) => {
+      supplied = deps.validateCompletion;
+      return { status: 'stopped' as const, trace: [], outputs: {}, finalUrl: `${ORIGIN}/members/9001`, stopReason: 'fixture' };
+    } };
+  });
+  try {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { runCli } = await import('../cli.js');
+    await runCli(['discover', '--name', 'meridian-open-share', '--goal', 'Open share', '--profile', 'meridian', '--entry', `${ORIGIN}/signon`, '--idempotency-key', 'cli-open-share', '--param', 'member=9001', '--param', 'shareType=S0001', '--param', 'deposit=5.00']);
+    expect(supplied).toBe(validateCompletion);
   } finally {
     vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
     for (const name of envKeys) {

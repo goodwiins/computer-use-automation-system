@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
-import { applyMeridianContract, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianTransferMemberTable } from '../src/runtime/contracts.js';
+import { applyMeridianContract, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianTransferMemberTable } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
@@ -39,16 +39,18 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); for (const dir of di
 const key = 'hmac-test-key-with-at-least-32-characters';
 const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
+const requestOpenShare = () => ({ member: '9001', shareType: 'S0001', deposit: '5.00' });
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
-const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
+const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false,
+  frame: { id: 'fixture-workarea', name: 'workarea', url: `${origin}/members/1/hold/review`, navigation: 1 } };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
-function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>) {
+function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>, policyOverride = policy) {
   let live = structuredClone(control);
   const dispatch = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
   const surface: Surface = { start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }), currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch, readText: async () => ({ text: 'ok', report: await dispatch() }), isTextVisible: async text => text === 'done', describeTarget: async t => t, screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect: async () => { await onInspect?.(); return structuredClone(live); }, dispatch: async expected => { await onDispatch?.(expected); return dispatch(); } }), ...overrides };
   const session = new ControlSession();
   const beforeDispatch = vi.fn();
-  return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
+  return { surface: new GuardedSurface(surface, policyOverride, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
 }
 
 function stepReportingArtifact() {
@@ -314,17 +316,36 @@ describe('single-use interventions and live controls', () => {
     expect(run.dispatch).not.toHaveBeenCalled();
   });
   it.each([
-    ['meridian-open-share', '/members/9001/open-share/review', '/members/9001/open-share/post', 'Open Share'],
     ['meridian-update-member', '/members/9001', '/members/9001/update', 'Save Changes'],
     ['meridian-place-hold', '/members/9001/hold/review', '/members/9001/hold/post', 'Apply Hold'],
   ] as const)('permits the canonical write destination for %s', async (artifact, url, destination, controlName) => {
     const gate = vi.fn(async () => true);
     const run = guarded({}, gate, { artifact });
-    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName });
+    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName,
+      frame: { ...control.frame!, url: `${origin}${url}` } });
     await run.surface.click(target, 100, 'read');
     expect(gate).toHaveBeenCalledOnce();
     expect(run.beforeDispatch).toHaveBeenCalledOnce();
     expect(run.dispatch).toHaveBeenCalledOnce();
+  });
+  it('rejects a strict hold mutation without source-frame origin evidence', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-place-hold' });
+    run.change({ frame: undefined });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/frame|origin/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
+    expect(run.surface.mutationDispatched).toBe(false);
+  });
+  it('fails closed when a canonical open-share post has no request binding', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-open-share' });
+    run.change({ url: `${origin}/members/9001/open-share/review`, destination: `${origin}/members/9001/open-share/post`, control: 'Open Share' });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/open-share/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
   });
   it.each(['meridian-sign-on', 'meridian-member-inquiry', 'meridian-member-record'] as const)('rejects mutation dispatch for canonical read capability %s', async artifact => {
     const gate = vi.fn(async () => true);
@@ -412,6 +433,24 @@ it('validates decimal money and output types without exposing server inputs', ()
   expect(validateParams(memberContract, { member: '100234' }).ok).toBe(true);
 });
 
+it('binds one newly observed open share to the exact request and output', () => {
+  const request = { member: '9001', shareType: 'S0001', deposit: '5.00' };
+  const observed = { ...request, shareId: '9001-S0001-NEW' };
+  expect(() => assertOpenShareResult(request, ['9001-S0001-OLD'], observed, { shareId: observed.shareId })).not.toThrow();
+  for (const actual of [
+    { ...observed, member: '9999' },
+    { ...observed, shareType: 'S0070' },
+    { ...observed, deposit: '5.01' },
+    { ...observed, shareId: '' },
+  ]) expect(() => assertOpenShareResult(request, ['9001-S0001-OLD'], actual, { shareId: observed.shareId })).toThrow();
+  expect(() => assertOpenShareResult(request, [observed.shareId], observed, { shareId: observed.shareId })).toThrow();
+  expect(() => assertOpenShareResult(request, ['OLD', 'OLD'], observed, { shareId: observed.shareId })).toThrow();
+  expect(() => assertOpenShareResult(request, ['OLD'], observed, {})).toThrow();
+  expect(() => assertOpenShareResult(request, ['OLD'], observed, { shareId: '' })).toThrow();
+  expect(() => assertOpenShareResult(request, ['OLD'], observed, { shareId: 'stale' })).toThrow();
+  expect(() => assertOpenShareFacts({ ...request, deposit: '0.00' }, request)).toThrow();
+});
+
 function memberRecordArtifact(outputs: Array<Record<string, unknown>>) {
   return CapabilityArtifact.parse({
     schemaVersion: 2,
@@ -489,6 +528,37 @@ function transferArtifact(outputs: Array<Record<string, unknown>> = transferOutp
   });
 }
 
+type ScalarWriteId = 'meridian-open-share' | 'meridian-update-member' | 'meridian-place-hold';
+const scalarWriteOutput = {
+  'meridian-open-share': 'shareId',
+  'meridian-update-member': 'saved',
+  'meridian-place-hold': 'heldShare',
+} as const;
+
+function scalarWriteArtifact(id: ScalarWriteId) {
+  const output = scalarWriteOutput[id];
+  return CapabilityArtifact.parse({
+    schemaVersion: 2, id, name: id, description: id, version: '1.0.0', status: 'draft',
+    app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
+    parameters: meridianContracts[id].parameters,
+    outputs: [{ name: output, type: 'string', description: 'Result' }],
+    steps: [
+      { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
+      { id: 'password', intent: 'password', action: 'fill', value: '{{password}}', risk: 'reversible_write' },
+      { id: 'branch', intent: 'branch', action: 'select', value: '{{branch}}', risk: 'reversible_write' },
+      ...meridianContracts[id].parameters.map(parameter => ({
+        id: `input-${parameter.name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`,
+        intent: parameter.description, action: 'fill' as const, value: `{{${parameter.name}}}`, risk: 'reversible_write' as const,
+      })),
+      { id: 'post', intent: 'post', action: 'click', target, risk: 'irreversible' },
+      { id: 'post-checkpoint', intent: 'verify', action: 'assert', assert: { kind: 'textVisible', text: 'Complete' }, risk: 'read' },
+      { id: 'result', intent: 'result', action: 'extract', target, extract: { output }, risk: 'read' },
+    ],
+    successCondition: { kind: 'textVisible', text: 'Complete' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+}
+
 describe('MERIDIAN output contracts', () => {
   const shares = { name: 'shares', type: 'table', description: 'Shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] };
 
@@ -547,6 +617,46 @@ describe('MERIDIAN output contracts', () => {
     });
     expect(() => applyMeridianContract(artifact)).not.toThrow();
   });
+
+  it.each(Object.keys(scalarWriteOutput) as ScalarWriteId[])('rejects table output/extraction shapes for %s', id => {
+    const artifact = scalarWriteArtifact(id);
+    artifact.outputs[0] = {
+      name: scalarWriteOutput[id], type: 'table', description: 'Malformed result',
+      columns: [{ name: 'value', selector: 'td', type: 'string' }],
+    };
+    artifact.steps.find(step => step.id === 'result')!.extract!.columns = [{ name: 'value', selector: 'td', type: 'string' }];
+    expect(() => applyMeridianContract(artifact)).toThrow(/scalar string output/i);
+  });
+
+  it('rejects mixed scalar/table metadata and duplicate extraction during promotion', () => {
+    const mixed = scalarWriteArtifact('meridian-open-share');
+    mixed.outputs[0]!.columns = [{ name: 'value', selector: 'td', type: 'string' }];
+    expect(() => promoteToApproved(JSON.stringify(mixed))).toThrow(/scalar string output/i);
+
+    const duplicate = scalarWriteArtifact('meridian-update-member');
+    duplicate.steps.push({ ...duplicate.steps.find(step => step.id === 'result')!, id: 'result-copy' });
+    expect(() => promoteToApproved(JSON.stringify(duplicate))).toThrow(/scalar string output/i);
+  });
+});
+
+it('rejects a malformed open-share table output in direct replay before browser start', async () => {
+  const artifact = scalarWriteArtifact('meridian-open-share');
+  artifact.status = 'approved';
+  artifact.outputs[0] = {
+    name: 'shareId', type: 'table', description: 'Malformed result',
+    columns: [{ name: 'shareId', selector: 'td', type: 'string' }],
+  };
+  artifact.steps.find(step => step.id === 'result')!.extract!.columns = [{ name: 'shareId', selector: 'td', type: 'string' }];
+  const run = guarded();
+  const start = vi.spyOn(run.surface, 'start');
+  const result = await runReplay(artifact, requestOpenShare(), {
+    surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy,
+    validateCompletion: vi.fn(),
+  });
+  expect(result).toMatchObject({ status: 'failure', failure: { stepId: '(pre-flight)', intent: 'validate scalar write outputs' } });
+  expect(start).not.toHaveBeenCalled();
+  expect(run.beforeDispatch).not.toHaveBeenCalled();
+  expect(run.dispatch).not.toHaveBeenCalled();
 });
 
 it('refuses an incomplete canonical transfer before allocating runtime evidence', () => {
@@ -558,6 +668,26 @@ it('refuses an incomplete canonical transfer before allocating runtime evidence'
   expect(readdirSync(evidenceDir)).toEqual([]);
 });
 
+it('refuses an incomplete canonical open share before allocating runtime evidence', () => {
+  const evidenceDir = temp();
+  expect(() => runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-open-share', version: '1.0.0', policy, profile,
+    params: { member: '9001', shareType: 'S0001' }, sensitive: [], gate: async () => false, evidenceDir,
+  })).toThrow(/complete request/i);
+  expect(readdirSync(evidenceDir)).toEqual([]);
+});
+
+it('creates the canonical open-share runtime with a completion boundary', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'replay', artifact: 'meridian-open-share', version: '1.0.0', policy, profile,
+    params: requestOpenShare(), sensitive: [], gate: async () => false, evidenceDir: temp(),
+    operator: { operator: 'teller-test', password: 'secret', branch: 'MAIN-001', role: 'TELLER' },
+    beforeDispatch: () => {},
+  });
+  expect(candidate.validateCompletion).toBeTypeOf('function');
+  await candidate.close();
+});
+
 it('allows a cu-nexus runtime whose capability ID matches the canonical transfer', async () => {
   const candidate = runtime.createRuntime({
     kind: 'discovery', artifact: 'meridian-funds-transfer', version: '1.0.0', policy,
@@ -565,6 +695,26 @@ it('allows a cu-nexus runtime whose capability ID matches the canonical transfer
   });
   expect(candidate.surface).toBeDefined();
   await candidate.close();
+});
+
+it('keeps generic discovery named meridian-open-share free of strict completion binding', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-open-share', version: '1.0.0', policy,
+    profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
+  });
+  expect(candidate.validateCompletion).toBeUndefined();
+  await candidate.close();
+
+  const calls = [{ name: 'done', args: { summary: 'generic complete' } }];
+  const stub = guarded();
+  const client = { chat: { completions: { create: async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  await expect(runDiscovery('generic', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger: new RunLogger('discovery', new Redactor(), temp()), openai: client,
+    model: 'fixture', maxSteps: 1, validateCompletion: candidate.validateCompletion,
+  })).resolves.toMatchObject({ status: 'success' });
 });
 
 describe('MERIDIAN funds-transfer semantic checks', () => {
@@ -963,7 +1113,288 @@ describe('MERIDIAN guarded transfer path', () => {
   });
 });
 
-it('stops discovery with unknown outcome when completion details fail after intent', async () => {
+describe('MERIDIAN guarded open-share path', () => {
+  const request = { member: '9001', shareType: 'S0001', deposit: '5.00' };
+  const hostedTypeLabels = {
+    S0001: 'Regular Shares', S0070: 'Share Draft (Checking)', MMKT: 'Money Market', CERT: 'Certificate',
+  } as const;
+  const priorRows = [
+    { shareId: '9001-S0001-OLD', type: 'Regular Shares', balance: '2.00', status: 'OPEN' },
+    { shareId: '9001-S0070-OLD', type: 'Share Draft (Checking)', balance: '8.00', status: 'OPEN' },
+  ];
+  const reviewFacts = (expected = request) => ({
+    member: expected.member, type: expected.shareType, deposit: expected.deposit,
+    'review:Member:': `${expected.member} - Fixture Member`,
+    'review:Share Type:': `${expected.shareType} - ${hostedTypeLabels[expected.shareType as keyof typeof hostedTypeLabels]}`,
+    'review:Initial Deposit:': `$${expected.deposit}`,
+  });
+  const facts = reviewFacts();
+
+  function harness(initialRows = priorRows, expected = request, allowedOrigins = [origin]) {
+    let rows = initialRows;
+    let completionRedirectOrigin: string | undefined;
+    const operationOrigin = allowedOrigins[1] ?? allowedOrigins[0]!;
+    let url = `${operationOrigin}/members`;
+    let navigation = 0;
+    let frameId = 'open-share-workarea';
+    const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
+    const gate = vi.fn(async () => true);
+    const resolveNavigation = (next: string) => completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next;
+    const start = vi.fn(async next => {
+      url = resolveNavigation(next);
+      navigation++;
+    });
+    const navigate = vi.fn(async next => {
+      url = resolveNavigation(next);
+      navigation++;
+    });
+    const run = guarded({
+      start,
+      currentUrl: () => url,
+      currentFrame: frame,
+      lastResolvedFrame: frame,
+      frameUrls: () => [`${operationOrigin}/frameset`, url],
+      navigate,
+      readTable: async () => rows,
+    }, gate, { artifact: 'meridian-open-share', openShare: { expected, memberTable: meridianTransferMemberTable } }, undefined,
+    async expected => { url = expected.destination; navigation++; }, undefined, Policy.parse({ ...policy, allowedOrigins }));
+    const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
+    const memberUrl = `${operationOrigin}/members/9001`;
+    const openUrl = `${memberUrl}/open-share`;
+    const reviewUrl = `${openUrl}/review`;
+    const postUrl = `${openUrl}/post`;
+    return {
+      run, gate, start, navigate, startUrl: `${operationOrigin}/members`, memberUrl, openUrl, reviewUrl, postUrl,
+      setRows(next: typeof priorRows) { rows = next; },
+      setFrame(id: string) { frameId = id; },
+      redirectCompletionTo(nextOrigin: string) { completionRedirectOrigin = nextOrigin; },
+      setLive,
+    };
+  }
+
+  async function reviewedOpenShare(expected = request, allowedOrigins = [origin]) {
+    const h = harness(priorRows, expected, allowedOrigins);
+    const expectedFacts = reviewFacts(expected);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts: expectedFacts });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts: expectedFacts });
+    h.run.dispatch.mockClear();
+    return h;
+  }
+
+  it.each([
+    ['native member', 'member', '9999'],
+    ['native type', 'type', 'S0070'],
+    ['native deposit', 'deposit', '5.01'],
+    ['visible member', 'review:Member:', '9999 - Fixture Member'],
+    ['visible type', 'review:Share Type:', 'S0070 - Share Draft (Checking)'],
+    ['visible type label for the requested code', 'review:Share Type:', 'S0001 - Certificate'],
+    ['visible deposit', 'review:Initial Deposit:', '$5.01'],
+  ] as const)('rejects changed %s before approval or mutation intent', async (_case, key, value) => {
+    const h = await reviewedOpenShare();
+    h.setLive({ facts: { ...facts, [key]: value } });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/open-share|review facts/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['start', 'navigate'] as const)('captures prior shares after direct %s at the requested member and completes the valid flow', async entry => {
+    const h = harness();
+    if (entry === 'start') await h.run.surface.start(h.memberUrl);
+    else {
+      await h.run.surface.start(h.startUrl);
+      await h.run.surface.navigate(h.memberUrl);
+    }
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it('refuses direct member navigation when the member or resolved origin is not the request', async () => {
+    const wrongMember = harness();
+    await wrongMember.run.surface.start(wrongMember.startUrl);
+    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/eligible/i);
+    expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongMember.run.surface.mutationDispatched).toBe(false);
+
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const wrongOrigin = harness(priorRows, request, [otherOrigin, origin]);
+    await wrongOrigin.run.surface.start(wrongOrigin.startUrl);
+    wrongOrigin.redirectCompletionTo(otherOrigin);
+    await expect(wrongOrigin.run.surface.navigate(wrongOrigin.memberUrl)).rejects.toThrow(/frame/i);
+    expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it.each([
+    ['another member', `${origin}/members/9999/open-share/review`, [origin], 'POST'],
+    ['another allowed origin', 'https://alternate-web-sample.interface-hiring.com/members/9001/open-share/review', ['https://alternate-web-sample.interface-hiring.com', origin], 'POST'],
+    ['another operation stage', `${origin}/members/9001/transfer/review`, [origin], 'POST'],
+    ['the expected review with the wrong method', `${origin}/members/9001/open-share/review`, [origin], 'GET'],
+  ] as const)('rejects an intermediate Continue to %s before approval, intent, or dispatch', async (_case, destination, allowedOrigins, method) => {
+    const h = harness(priorRows, request, [...allowedOrigins]);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({ url: h.openUrl, destination, method, control: 'Continue', submit: true, facts });
+
+    await expect(h.run.surface.click(target)).rejects.toThrow(/transition|origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rechecks the member frame and review facts after approval', async () => {
+    const h = await reviewedOpenShare();
+    h.gate.mockImplementationOnce(async () => {
+      h.setLive({ facts: { ...facts, deposit: '5.01' } });
+      return true;
+    });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/invalidated/i);
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a wrong member destination and a replaced review frame', async () => {
+    const wrongMember = await reviewedOpenShare();
+    wrongMember.setLive({ destination: `${origin}/members/9999/open-share/post` });
+    await expect(wrongMember.run.surface.click(target)).rejects.toThrow(/open-share/i);
+    expect(wrongMember.gate).not.toHaveBeenCalled();
+    const wrongFrame = await reviewedOpenShare();
+    wrongFrame.setFrame('replacement-frame');
+    await expect(wrongFrame.run.surface.click(target)).rejects.toThrow(/frame/i);
+    expect(wrongFrame.gate).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing native or visible review facts', async () => {
+    for (const key of ['deposit', 'review:Initial Deposit:']) {
+      const h = await reviewedOpenShare();
+      const missing = { ...facts } as Record<string, string>;
+      delete missing[key];
+      h.setLive({ facts: missing });
+      await expect(h.run.surface.click(target)).rejects.toThrow(/facts/i);
+      expect(h.gate).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(Object.entries(hostedTypeLabels))('maps hosted %s member-table labels before exact completion comparison', async (shareType, label) => {
+    const expected = { ...request, shareType };
+    const h = await reviewedOpenShare(expected);
+    await h.run.surface.click(target);
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).toHaveBeenCalledOnce();
+    h.setRows([...priorRows, { shareId: `9001-${shareType}-NEW`, type: label, balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: `9001-${shareType}-NEW` })).resolves.toBeUndefined();
+  });
+
+  it('reads open-share completion from the bound operation origin', async () => {
+    const boundOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [origin, boundOrigin]);
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+    expect(h.navigate).toHaveBeenCalledWith(h.memberUrl);
+    expect(h.navigate).not.toHaveBeenCalledWith(`${origin}/members/9001`);
+  });
+
+  it('requires OPEN only for the new share and preserves unrelated prior statuses', async () => {
+    const existing = [{ ...priorRows[0]!, status: 'HOLD' }, { ...priorRows[1]!, status: 'CLOSED' }];
+    const h = harness(existing);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setRows([...existing, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+  });
+
+  it('rejects a cross-origin native post before approval or mutation intent', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [otherOrigin, origin]);
+    h.setLive({ destination: `${otherOrigin}/members/9001/open-share/post` });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects a cross-origin transition after capturing member pre-state', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = harness(priorRows, request, [otherOrigin, origin]);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({
+      url: h.memberUrl, destination: `${otherOrigin}/members/9001/open-share`, method: 'GET',
+      control: 'Open New Share', submit: false, facts: {},
+    });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/frame|origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects completion redirected to another allowed origin with the same member path', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [otherOrigin, origin]);
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    h.redirectCompletionTo(otherOrigin);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).rejects.toThrow(/frame|origin/i);
+  });
+
+  it.each([
+    ['stale result', priorRows, '9001-S0001-OLD'],
+    ['wrong type', [...priorRows, { shareId: '9001-NEW', type: 'Share Draft (Checking)', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['wrong balance', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '6.00', status: 'OPEN' }], '9001-NEW'],
+    ['wrong status', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'HOLD' }], '9001-NEW'],
+    ['unrecognized type', [...priorRows, { shareId: '9001-NEW', type: 'Unknown Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['ambiguous additions', [...priorRows, { shareId: '9001-NEW-1', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW-2', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW-1'],
+    ['duplicate resulting ID', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+    ['concurrent prior-row removal', [priorRows[0]!, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
+  ] as const)('rejects %s during fresh completion verification', async (_case, rows, output) => {
+    const h = await reviewedOpenShare();
+    await h.run.surface.click(target);
+    h.setRows([...rows]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: output })).rejects.toThrow(/open-share/i);
+  });
+
+  it('rejects duplicate prior IDs before entering the open-share form', async () => {
+    const h = harness([priorRows[0]!, priorRows[0]!]);
+    await h.run.surface.start(`${origin}/members`);
+    h.setLive({ url: `${origin}/members`, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/missing or ambiguous/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+  });
+});
+
+it('awaits delayed discovery completion rejection and keeps the dispatched outcome unknown', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
   const calls = [
     { name: 'click', args: { nameAttr: 'submit', reason: 'post transfer', risk: 'irreversible' } },
@@ -982,7 +1413,7 @@ it('stops discovery with unknown outcome when completion details fail after inte
     openai: client,
     model: 'fixture',
     maxSteps: calls.length,
-    validateCompletion: outputs => assertTransferOutputs(request, outputs),
+    validateCompletion: async () => { await Promise.resolve(); throw new Error('stale member state'); },
   });
   expect(result.status).toBe('stopped');
   expect(result.stopReason).toBe('POST_OUTCOME_UNKNOWN');
@@ -1010,6 +1441,125 @@ it('runs discovery completion validation before emitting success', async () => {
   expect(validateCompletion).toHaveBeenCalledWith({});
   const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
   expect(events.some(event => event.event === 'discovery.finish' && event.status === 'success')).toBe(true);
+});
+
+it('records the receipt endpoint before completion read-back and replays the generated checkpoint', async () => {
+  const receiptUrl = `${origin}/members/9001/open-share/post`;
+  const memberUrl = `${origin}/members/9001`;
+  const params = requestOpenShare();
+  const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
+  const calls = [
+    { name: 'click', args: { nameAttr: 'submit', reason: 'open share', risk: 'irreversible' } },
+    { name: 'assert', args: { kind: 'textVisible', text: 'Share opened', reason: 'verify receipt' } },
+    { name: 'extract', args: { nameAttr: 'shareId', outputName: 'shareId', reason: 'read new share ID' } },
+    { name: 'done', args: { summary: 'complete' } },
+  ];
+  let discoveryUrl = `${origin}/signon`;
+  const discoverySurface: Surface = {
+    mutationDispatched: false,
+    start: async url => { discoveryUrl = url; },
+    observe: async () => ({ url: discoveryUrl, title: '', frames: [] }), currentUrl: () => discoveryUrl, frameUrls: () => [discoveryUrl],
+    navigate: async url => { discoveryUrl = url; },
+    click: vi.fn(async () => { discoverySurface.mutationDispatched = true; discoveryUrl = receiptUrl; return report; }),
+    fill: async () => report, select: async () => report,
+    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && discoveryUrl === receiptUrl,
+    describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
+  };
+  const create = vi.fn(async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const discoveryCompletion = vi.fn(async () => { await discoverySurface.navigate(memberUrl); });
+  const discovery = await runDiscovery('open share', `${origin}/signon`, params, [origin], {
+    surface: discoverySurface, logger: new RunLogger('discovery', new Redactor(), temp(), true),
+    openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+    model: 'fixture', maxSteps: 4, validateCompletion: discoveryCompletion,
+  });
+  expect(discovery).toMatchObject({ status: 'success', finalUrl: receiptUrl });
+  expect(discovery.trace.at(-1)?.urlAfter).toBe(receiptUrl);
+  expect(discovery.trace.some(step => step.action === 'navigate')).toBe(false);
+  expect(discoveryUrl).toBe(memberUrl);
+  expect(discoveryCompletion).toHaveBeenCalledOnce();
+
+  const artifact = recordArtifact({
+    name: 'meridian-open-share', description: 'Open share', goal: 'Open share', entryUrl: `${origin}/signon`,
+    params, sensitiveParams: ['member', 'deposit'], allowedOrigins: [origin], appId: 'meridian', appDetectors: [], model: 'fixture', discoveryRunId: 'fixture',
+  }, discovery);
+  artifact.status = 'approved';
+  expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: '/members/{{member}}/open-share/post$' });
+
+  let replayUrl = `${origin}/signon`;
+  const replaySurface: Surface = {
+    mutationDispatched: false,
+    start: async url => { replayUrl = url; },
+    observe: async () => ({ url: replayUrl, title: '', frames: [] }), currentUrl: () => replayUrl, frameUrls: () => [replayUrl],
+    navigate: async url => { replayUrl = url; },
+    click: vi.fn(async () => { replaySurface.mutationDispatched = true; replayUrl = receiptUrl; return report; }),
+    fill: async () => report, select: async () => report,
+    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && replayUrl === receiptUrl,
+    describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
+  };
+  const replayCompletion = vi.fn(async () => { await replaySurface.navigate(memberUrl); });
+  const replay = await runReplay(artifact, params, {
+    surface: replaySurface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: replayCompletion,
+  });
+  expect(replay).toMatchObject({ status: 'success', outputs: { shareId: '9001-S0001-NEW' } });
+  expect(replayCompletion).toHaveBeenCalledOnce();
+  expect(replaySurface.click).toHaveBeenCalledOnce();
+  expect(replayUrl).toBe(memberUrl);
+});
+
+it('keeps a wrong-status open-share completion unknown after one dispatch', async () => {
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 2,
+    id: 'meridian-open-share', name: 'meridian-open-share', description: 'Open share', version: '1.0.0', status: 'approved',
+    app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
+    parameters: meridianContracts['meridian-open-share'].parameters,
+    outputs: [{ name: 'shareId', type: 'string', description: 'New share ID', sensitive: true }],
+    steps: [
+      { id: 'post', intent: 'open share', action: 'click', target, risk: 'irreversible' },
+      { id: 'checkpoint', intent: 'verify result', action: 'assert', assert: { kind: 'textVisible', text: 'Share opened' }, risk: 'read' },
+      { id: 'share-id', intent: 'read new share ID', action: 'extract', target, extract: { output: 'shareId' }, risk: 'read' },
+    ],
+    successCondition: { kind: 'textVisible', text: 'Share opened' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+  const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
+  const surface: Surface = {
+    mutationDispatched: false,
+    start: async () => {}, observe: async () => ({ url: `${origin}/members/9001/open-share/post`, title: '', frames: [] }),
+    currentUrl: () => `${origin}/members/9001/open-share/post`, frameUrls: () => [`${origin}/members/9001/open-share/post`],
+    navigate: async () => {}, click: vi.fn(async () => { surface.mutationDispatched = true; return report; }),
+    fill: async () => report, select: async () => report, readText: async () => ({ text: '9001-S0001-NEW', report }),
+    isTextVisible: async text => text === 'Share opened', describeTarget: async descriptor => descriptor,
+    screenshot: async () => {}, close: async () => {},
+  };
+  const validateCompletion = vi.fn(async () => { await Promise.resolve(); throw new Error('Open-share resulting state is not OPEN'); });
+  const escalate = vi.fn(async () => 'retry' as const);
+  const result = await runReplay(artifact, requestOpenShare(), { surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion, escalate });
+  expect(result).toMatchObject({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
+  expect(validateCompletion).toHaveBeenCalledOnce();
+  expect(surface.click).toHaveBeenCalledOnce();
+  expect(escalate).not.toHaveBeenCalled();
+});
+
+it('fails canonical open-share replay preflight when completion validation is absent', async () => {
+  const artifact = CapabilityArtifact.parse({
+    schemaVersion: 2,
+    id: 'meridian-open-share', name: 'meridian-open-share', description: 'Open share', version: '1.0.0', status: 'approved',
+    app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
+    parameters: meridianContracts['meridian-open-share'].parameters,
+    outputs: [{ name: 'shareId', type: 'string', description: 'New share ID' }],
+    steps: [{ id: 'checkpoint', intent: 'fixture', action: 'assert', assert: { kind: 'urlMatches', pattern: '.*' }, risk: 'read' }],
+    successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+  const run = guarded();
+  const start = vi.spyOn(run.surface, 'start');
+  const result = await runReplay(artifact, requestOpenShare(), { surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy });
+  expect(result).toMatchObject({ status: 'failure', failure: { stepId: '(pre-flight)' } });
+  expect(start).not.toHaveBeenCalled();
+  expect(run.dispatch).not.toHaveBeenCalled();
 });
 
 it('terminates replay unknown after one post when the canonical transaction row is wrong', async () => {

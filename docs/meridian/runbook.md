@@ -49,7 +49,7 @@ export HOLD_NOTES='<selected hold notes>'
 
 Before transfer, run the accepted member-inquiry/member-record read path only when current-state refresh is operationally required. Resolve `MEMBER` to one exact result, open that exact member record, and verify `SOURCE_SHARE` and `DESTINATION_SHARE` belong to it, are distinct, eligible and currently funded. Enter **Funds Transfer from that member record**. The global transfer menu bypasses this prerequisite and the guard refuses it.
 
-Result extraction is still unresolved. The transaction result's physical row/header shape and confirmation relationship have not been observed well enough to promise a valid artifact. Do not guess selectors, promise a six-column row, or post solely to inspect the result. Stop before launch if a complete recording still cannot establish the declared outputs from observed HTML.
+Result extraction now has an implemented, fixture-proven grouped `tbody`/native-CSS path with improved structural evidence; use selectors observed in the new recording for that mapping. A six-column physical table is not required. Hosted receipt mapping and confirmation verification remain pending before claiming a valid artifact. Do not require an old screenshot, guess selectors or provenance, or post solely to inspect the result. Keep selected-operation handling and human posting approval separate, and stop before launch if a complete recording still cannot establish the declared outputs from observed HTML.
 
 Generate and privately save a distinct request identity before each new request. Keep the same value only for a transport retry of that exact invocation. Never generate a new key to retry an uncertain post.
 

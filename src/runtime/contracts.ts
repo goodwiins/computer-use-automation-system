@@ -6,6 +6,8 @@ export type TransferFacts = {
   amount: string; memo: string;
 };
 export type TransferShare = { share: string; status: string; balance: string };
+export type OpenShareFacts = { member: string; shareType: string; deposit: string };
+export type OpenShareResult = OpenShareFacts & { shareId: string };
 
 /** Observed in the approved member-record extraction; values are never interpolated into its selectors. */
 export const meridianTransferMemberTable: {
@@ -30,7 +32,14 @@ export function transferFactsFromParams(params: Record<string, string | number>)
   return Object.fromEntries(names.map(name => [name, params[name]!])) as TransferFacts;
 }
 
+export function openShareFactsFromParams(params: Record<string, string | number>): OpenShareFacts | undefined {
+  const names = ['member', 'shareType', 'deposit'] as const;
+  if (!names.every(name => typeof params[name] === 'string')) return undefined;
+  return Object.fromEntries(names.map(name => [name, params[name]!])) as OpenShareFacts;
+}
+
 const transferCheckFailed = (): never => { throw new Error('Transfer facts failed validation'); };
+const openShareCheckFailed = (): never => { throw new Error('Open-share facts failed validation'); };
 
 function positiveCents(value: string): number {
   try {
@@ -88,6 +97,21 @@ export function assertTransferOutputs(expected: TransferFacts, outputs: Record<s
   });
 }
 
+export function assertOpenShareFacts(expected: OpenShareFacts, actual: OpenShareFacts): void {
+  if (!expected.member || !expected.shareType || expected.member !== actual.member || expected.shareType !== actual.shareType) return openShareCheckFailed();
+  try {
+    const expectedDeposit = moneyCents(expected.deposit);
+    const actualDeposit = moneyCents(actual.deposit);
+    if (expectedDeposit <= 0 || actualDeposit <= 0 || expectedDeposit !== actualDeposit) return openShareCheckFailed();
+  } catch { return openShareCheckFailed(); }
+}
+
+export function assertOpenShareResult(expected: OpenShareFacts, priorShareIds: readonly string[], actual: OpenShareResult, outputs: Record<string, OutputValue>): void {
+  assertOpenShareFacts(expected, actual);
+  if (!actual.shareId.trim() || priorShareIds.some(id => !id.trim()) || new Set(priorShareIds).size !== priorShareIds.length || priorShareIds.includes(actual.shareId)) return openShareCheckFailed();
+  if (Object.keys(outputs).length !== 1 || typeof outputs.shareId !== 'string' || outputs.shareId !== actual.shareId) return openShareCheckFailed();
+}
+
 const TRANSFER_TRANSACTION_COLUMNS = [
   { name: 'member', type: 'string' },
   { name: 'sourceShare', type: 'string' },
@@ -111,6 +135,24 @@ function assertTransferOutputDeclaration(outputs: CapabilityArtifact['outputs'])
   }
   if (!transaction || transaction.type !== 'table' || transaction.sensitive !== true || (transaction.minRows !== undefined && transaction.minRows !== 1) || !hasCanonicalTransferColumns(transaction.columns)) {
     throw new Error('Transfer transaction output must declare one canonical sensitive row');
+  }
+}
+
+const MERIDIAN_SCALAR_WRITE_OUTPUTS = {
+  'meridian-open-share': 'shareId',
+  'meridian-update-member': 'saved',
+  'meridian-place-hold': 'heldShare',
+} as const;
+
+export function assertMeridianScalarWriteOutputs(artifact: CapabilityArtifact): void {
+  if (artifact.app.appId !== 'meridian' || !Object.hasOwn(MERIDIAN_SCALAR_WRITE_OUTPUTS, artifact.id)) return;
+  const expected = MERIDIAN_SCALAR_WRITE_OUTPUTS[artifact.id as keyof typeof MERIDIAN_SCALAR_WRITE_OUTPUTS];
+  const output = artifact.outputs[0];
+  const extracts = artifact.steps.filter(step => step.action === 'extract' && step.extract);
+  if (artifact.outputs.length !== 1 || !output || output.name !== expected || output.type !== 'string'
+    || output.columns !== undefined || output.minRows !== undefined || extracts.length !== 1
+    || extracts[0]!.extract!.output !== expected || extracts[0]!.extract!.columns !== undefined) {
+    throw new Error(`${artifact.id} must declare and extract exactly one scalar string output`);
   }
 }
 
@@ -164,6 +206,7 @@ export function applyMeridianContract(artifact: CapabilityArtifact): CapabilityA
   if (new Set(outputNames).size !== outputNames.length || outputNames.length !== contract.outputs.length || contract.outputs.some(name => !outputNames.includes(name))) {
     throw new Error(`Recording outputs must exactly match the ${artifact.id} contract`);
   }
+  assertMeridianScalarWriteOutputs(artifact);
   for (const name of contract.outputs) {
     if (!artifact.steps.some(s => s.action === 'extract' && s.extract?.output === name)) throw new Error(`Discovery must record output ${name}`);
   }

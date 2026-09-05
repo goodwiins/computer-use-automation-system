@@ -182,7 +182,7 @@ async function discover(argv: string[]) {
         escalate: headful
           ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
           : undefined,
-        validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : undefined,
+        validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : runtime.validateCompletion,
       });
 
       if (result.status === 'success') {
@@ -321,7 +321,8 @@ async function replay(argv: string[]) {
       console.log(`replay run ${runtime.logger.runId} → ${runtime.logger.dir}`);
       updateJournal(journal, record?.runId, 'running');
       const result = await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy,
-        escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene(req) : undefined });
+        escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene(req) : undefined,
+        validateCompletion: runtime.validateCompletion });
       const uncertain = dispatchIntent(journal, record?.runId, runtime.surface.mutationDispatched);
       const output = result.status === 'failure' && uncertain && result.failure.code !== 'POST_OUTCOME_UNKNOWN'
         ? { ...result, failure: { ...result.failure, code: 'POST_OUTCOME_UNKNOWN', observed: 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' } }

@@ -55,7 +55,7 @@ export interface DiscoveryDeps {
   sanitizeObservation?: (text: string) => string;
   escalate?: (req: InterventionRequest) => Promise<InterventionDecision>;
   detectors?: Detector[]; // strict profile conditions; omitted for generic discovery
-  validateCompletion?: (outputs: Record<string, OutputValue>) => void;
+  validateCompletion?: (outputs: Record<string, OutputValue>) => void | Promise<void>;
 }
 
 const MAX_SNAPSHOT_CHARS = 4000;
@@ -158,7 +158,9 @@ export async function runDiscovery(
           }
           case 'done': {
             if (repaired) return finish('escalated', 'Human repair requires a fresh complete recording');
-            return finish('success', undefined, String(args.summary ?? ''));
+            const finalUrl = surface.currentUrl();
+            await deps.validateCompletion?.(outputs);
+            return finish('success', undefined, String(args.summary ?? ''), finalUrl);
           }
           case 'escalate': {
             if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
@@ -348,7 +350,6 @@ export async function runDiscovery(
       stopReason = 'POST_OUTCOME_UNKNOWN';
       outcome = undefined;
     }
-    if (status === 'success') deps.validateCompletion?.(outputs);
     const result: DiscoveryResult = {
       status, trace, outputs, summary, finalUrl, stopReason, ...outcome,
     };
