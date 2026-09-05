@@ -164,13 +164,17 @@ describe('standalone approval CLI transport', () => {
     expect(existsSync(occupied)).toBe(true);
   });
 
-  it('bounds trickle clients by count and absolute lifetime', async () => {
+  it('bounds trickle and oversized clients by count and absolute lifetime', async () => {
     process.env.CU_APPROVAL_DIR = temp();
     const runId = randomUUID();
     const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
     const pending = approval.wait(request, action(runId));
     const server = await startApprovalServer(runId, approval);
-    const clients = Array.from({ length: 128 }, () => createConnection(server.endpoint));
+    const clients = Array.from({ length: 128 }, (_unused, index) => {
+      const socket = createConnection(server.endpoint);
+      if (index >= 64) socket.once('connect', () => socket.write(Buffer.alloc(8 * 1024 + 1, 120)));
+      return socket;
+    });
     const intervals = clients.map(socket => {
       socket.on('error', () => {});
       return setInterval(() => { if (!socket.destroyed) socket.write('{'); }, 250);

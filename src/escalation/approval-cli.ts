@@ -138,7 +138,6 @@ export async function startApprovalServer(runIdValue: string, approval: Approval
     let handled = false;
     const lifetime = setTimeout(() => socket.destroy(), SOCKET_TIMEOUT_MS);
     const send = (response: ApprovalResponse) => {
-      clearTimeout(lifetime);
       socket.setTimeout(0);
       sockets.set(socket, 'writing');
       socket.end(responseBody(response));
