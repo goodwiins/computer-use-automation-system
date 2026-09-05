@@ -382,45 +382,35 @@ export class BrowserSurface implements Surface {
     if (!originAllowed(this.opts.allowedOrigins ?? [], expected.href)) throw new Error('Read-only page origin is not allowed');
     const deadline = Date.now() + timeoutMs;
     const remaining = () => timeoutRemaining(deadline);
-    const page = await this.context.newPage();
+    let page: Page | undefined;
+    let routeInstalled = false;
     let violation: string | undefined;
     let navigation = 0;
     let navigationRequests = 0;
     let stableNavigation: number | undefined;
     let stableFrames: string | undefined;
+    const createdPages = new Set<Page>();
     const unexpectedPages = new Set<Page>();
     const fail = (message: string) => { violation ??= message; };
-    const closeUnexpectedPage = (opened: Page) => {
+    const markUnexpectedPage = (opened: Page) => {
       if (opened === page || opened === this.page) return;
       fail('Read-only page opened a popup');
       unexpectedPages.add(opened);
-      opened.close().catch(() => {});
     };
-    this.context.on('page', closeUnexpectedPage);
-    page.on('framenavigated', () => { navigation++; });
-    page.on('dialog', dialog => {
-      fail('Read-only page opened a dialog');
-      dialog.dismiss().catch(() => {});
-    });
-    page.on('popup', popup => {
-      fail('Read-only page opened a popup');
-      popup.close().catch(() => {});
-    });
-    page.on('download', download => {
-      fail('Read-only page started a download');
-      download.cancel().catch(() => {});
-    });
+    const trackCreatedPage = (opened: Page) => {
+      if (opened === this.page || opened.isClosed()) return;
+      createdPages.add(opened);
+      if (page && opened !== page) markUnexpectedPage(opened);
+    };
+    this.context.on('page', trackCreatedPage);
     const routeReadOnlyRequest = async (route: Route) => {
       const request = route.request();
       let requestPage: Page | undefined;
       try { requestPage = request.frame().page(); } catch { /* fail below */ }
       if (requestPage === this.page) return route.fallback();
-      if (requestPage !== page) {
-        fail('Read-only page opened a popup');
-        if (requestPage) {
-          unexpectedPages.add(requestPage);
-          requestPage.close().catch(() => {});
-        }
+      if (!page || requestPage !== page) {
+        if (requestPage) markUnexpectedPage(requestPage);
+        else fail('Read-only page opened a popup');
         return route.abort();
       }
       let requested: URL;
@@ -431,6 +421,10 @@ export class BrowserSurface implements Surface {
       }
       if (requested.origin !== expected.origin || !['GET', 'HEAD'].includes(request.method())) {
         fail('Read-only page attempted an out-of-bounds request');
+        return route.abort();
+      }
+      if (!request.isNavigationRequest() && this.opts.profile?.appId === 'meridian') {
+        fail('Read-only MERIDIAN page attempted a subresource request');
         return route.abort();
       }
       if (request.isNavigationRequest()) {
@@ -446,7 +440,7 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     };
-    const frameSignature = () => page.frames().map(frame => `${this.frameContext(frame).id}:${frame.url()}`).join('\n');
+    const frameSignature = () => page?.frames().map(frame => `${this.frameContext(frame).id}:${frame.url()}`).join('\n') ?? '';
     const assertStable = () => {
       if (violation) throw new Error(violation);
       if (stableNavigation !== undefined && (navigation !== stableNavigation || frameSignature() !== stableFrames)) {
@@ -456,6 +450,20 @@ export class BrowserSurface implements Surface {
     let pendingError: unknown;
     try {
       await this.context.route('**/*', routeReadOnlyRequest);
+      routeInstalled = true;
+      page = await this.context.newPage();
+      for (const opened of createdPages) if (opened !== page) markUnexpectedPage(opened);
+      if (violation) throw new Error(violation);
+      page.on('framenavigated', () => { navigation++; });
+      page.on('dialog', dialog => {
+        fail('Read-only page opened a dialog');
+        dialog.dismiss().catch(() => {});
+      });
+      page.on('popup', popup => markUnexpectedPage(popup));
+      page.on('download', download => {
+        fail('Read-only page started a download');
+        download.cancel().catch(() => {});
+      });
       if (this.opts.profile?.appId === 'meridian') {
         // MERIDIAN member facts are server-rendered. Disable page-authored JS
         // only in this auxiliary tab so dedicated workers and popup scripts
@@ -513,14 +521,16 @@ export class BrowserSurface implements Surface {
     } finally {
       try { assertStable(); } catch (error) { pendingError = error; }
       let closeFailed = false;
-      for (const opened of [...unexpectedPages, page]) {
+      const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...(page ? [page] : [])]);
+      pagesToClose.delete(this.page);
+      for (const opened of pagesToClose) {
         try { if (!opened.isClosed()) await opened.close(); }
         catch { closeFailed = true; }
         if (!opened.isClosed()) closeFailed = true;
       }
       if (!closeFailed) {
-        this.context.off('page', closeUnexpectedPage);
-        await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+        this.context.off('page', trackCreatedPage);
+        if (routeInstalled) await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
       }
       if (closeFailed) throw new Error('Read-only page cleanup failed');
       if (pendingError) throw pendingError;

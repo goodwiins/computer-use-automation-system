@@ -2672,8 +2672,8 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 }, 15000);
 
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
-  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false;
-  let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0;
+  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false; let subresourceFresh = false;
+  let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0; let wrongMemberGets = 0; let operationGets = 0;
   let releaseReviewWebSocket: (() => void) | undefined;
   const upgradeSockets = new Set<Duplex>();
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
@@ -2693,23 +2693,24 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
       return;
     }
     if (reloadFresh) return res.send(`<meta http-equiv="refresh" content="0.01;url=/members/9001">${identity}`);
-    if (websocketFresh) return res.send(`${member}<img src="/slow.png"><script>
+    if (websocketFresh) return setTimeout(() => res.send(`${member}<script>
       const wsUrl = location.origin.replace(/^http/, 'ws') + '/write-channel';
       const openSocket = Socket => { const socket = new Socket(wsUrl); socket.onopen = () => socket.send('unauthorized mutation'); };
       openSocket(WebSocket);
       const worker = new Worker(URL.createObjectURL(new Blob([\`const socket = new WebSocket('${'${wsUrl}'}'); socket.onopen = () => socket.send('worker mutation');\`], { type: 'text/javascript' })));
       const popup = window.open('about:blank'); if (popup) openSocket(popup.WebSocket);
-    </script>`);
+    </script>`), 100);
+    if (subresourceFresh) return res.send(`${member}<link rel="preload" as="image" href="/members/9999"><img src="/members/9001/transfer">`);
     if (redirectFresh) return res.redirect('/members/9999');
     return res.send(member);
   });
   app.get('/arm-review-websocket', (_req, res) => { releaseReviewWebSocket = () => res.send('armed'); });
-  app.get('/members/9999', (_req, res) => res.send(member));
+  app.get('/members/9999', (_req, res) => { wrongMemberGets++; res.send(member); });
   app.get('/members/8888', (_req, res) => { forbiddenMemberGets++; res.send(member); });
+  app.get('/members/9001/transfer', (_req, res) => { operationGets++; res.send('not an image'); });
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
   app.post('/members/9001/hold/review', (_req, res) => res.send(review));
   app.post('/members/9001/hold/post', (_req, res) => { posted++; res.send('held'); });
-  app.get('/slow.png', (_req, res) => setTimeout(() => res.type('png').send('not-an-image'), 100));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   server.on('upgrade', (request, socket) => {
     websocketUpgrades++;
@@ -2763,6 +2764,7 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/navigation|redirected/i);
     expect(browser.page.context().pages()).toHaveLength(1);
     redirectFresh = false;
+    wrongMemberGets = 0;
     reloadFresh = true;
     await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 500)).rejects.toThrow(/changed/i);
     expect(browser.page.context().pages()).toHaveLength(1);
@@ -2776,6 +2778,38 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(websocketMessages).toBe(0);
     expect(browser.page.context().pages()).toHaveLength(1);
     websocketFresh = false;
+
+    subresourceFresh = true;
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/subresource/i);
+    subresourceFresh = false;
+    expect(wrongMemberGets).toBe(0);
+    expect(operationGets).toBe(0);
+    expect(browser.page.context().pages()).toHaveLength(1);
+
+    const context = browser.page.context();
+    const originalUrl = browser.currentUrl();
+    const nativeNewPage = context.newPage.bind(context);
+    const pendingPopup = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      const auxiliary = nativeNewPage();
+      await browser.page.evaluate(() => { window.open('/members/9999'); });
+      return auxiliary;
+    });
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
+    } finally { pendingPopup.mockRestore(); }
+    expect(wrongMemberGets).toBe(0);
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+    expect(browser.currentUrl()).toBe(originalUrl);
+
+    const creationFailure = vi.spyOn(context, 'newPage').mockRejectedValueOnce(new Error('fixture auxiliary creation failure'));
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/creation failure/i);
+    } finally { creationFailure.mockRestore(); }
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).resolves.toMatchObject({
+      tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })]],
+    });
+    expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
+    expect(browser.currentUrl()).toBe(originalUrl);
 
     let auxiliary: Page | undefined;
     let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
