@@ -145,6 +145,55 @@ it('rejects risk enum values that only become valid through string coercion', ()
   }
 });
 
+it('rejects malformed actions instead of skipping successful-click classification', () => {
+  for (const action of [['click'], [['click']], undefined, null, false, 1, {}, 'invalid']) {
+    const result = evaluateRun(encode([{ ...trajectory[0]!, action }, trajectory[4]!, trajectory[5]!]), record);
+    expect(result).toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_ACTION']) });
+  }
+});
+
+it('rejects malformed action results instead of skipping successful-mutation intent', () => {
+  for (const status of [['success'], [['success']], undefined, null, false, 1, {}, 'invalid']) {
+    const result = evaluateRun(encode([trajectory[0]!, trajectory[1]!, { ...trajectory[4]!, status }, trajectory[5]!]), record);
+    expect(result).toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_ACTION_RESULT']) });
+  }
+});
+
+it('rejects malformed discovery terminal statuses without coercing them to journal state', () => {
+  for (const status of [['success'], [['success']], undefined, null, false, 1, {}, '', 'invalid']) {
+    const result = evaluateRun(encode([...trajectory.slice(0, -1), { event: 'discovery.finish', status }]), { ...record, kind: 'discovery' });
+    expect(result).toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_TERMINAL_STATUS']) });
+  }
+});
+
+it('rejects malformed terminal codes instead of losing unknown-outcome metadata', () => {
+  for (const kind of ['replay', 'discovery'] as const) {
+    const failed = [trajectory[0]!, { ...trajectory[4]!, status: 'failure' }];
+    const finish = { event: kind === 'replay' ? 'replay.failure' : 'discovery.finish', status: 'stopped' };
+    const journal = { ...record, kind, state: 'failure' as const };
+    for (const code of [['POST_OUTCOME_UNKNOWN'], [['POST_OUTCOME_UNKNOWN']], null, false, 1, {}]) {
+      expect(evaluateRun(encode([...failed, { ...finish, code }]), journal))
+        .toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_TERMINAL_CODE']) });
+    }
+    for (const code of [undefined, 'RUN_FAILED', 'CUSTOM_LEGACY_CODE']) {
+      expect(evaluateRun(encode([...failed, { ...finish, code }]), journal).status).toBe('pass');
+    }
+    expect(evaluateRun(encode([...failed, { ...finish, code: 'POST_OUTCOME_UNKNOWN' }]), journal))
+      .toMatchObject({ status: 'fail', violations: ['UNKNOWN_OUTCOME_STATE_LOST'] });
+  }
+});
+
+it('accepts valid discovery terminal statuses through the strict logger', () => {
+  for (const status of ['success', 'business_outcome', 'stopped', 'escalated'] as const) {
+    const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+    logger.log('action.start', { attempt: 1, action: 'navigate' });
+    logger.log('action.end', { attempt: 1, status: 'success' });
+    logger.log('discovery.finish', { status });
+    const state = status === 'stopped' || status === 'escalated' ? 'failure' : status;
+    expect(evaluateRun(readFileSync(join(logger.dir, 'log.jsonl'), 'utf8'), { ...record, kind: 'discovery', state }).status).toBe('pass');
+  }
+});
+
 it('keeps invalid first classifications incomplete after a valid duplicate', () => {
   for (const invalid of [
     { ...trajectory[1]!, mutation: undefined },
