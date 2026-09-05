@@ -33,6 +33,10 @@ Checked `origin/dev` at `217aadb434423f41e7fcddec71d0131f2ca2900e` (PR #56 merge
 
 Runtime checkpoint: 395 tests/17 files and typecheck passed; PR #56 merge workflow `33962737050`, producer `101297354120`, passed. UI source `c89f3d4` has separately reported local 418 tests/19 files and build/typechecks; it is unpublished and not part of this dev baseline. Neither test count proves a live write.
 
+## Execution status — September 5, 2026
+
+Receipt extraction and observation-bound work from PRs #59 and #60 are merged, and the open-share completion work from PR #61 is integrated. PR #62 for member update remains open. Reviewed source work for supervisor hold and maintenance recovery is complete offline and remains pending publication and genuine discovery/replay acceptance. The implemented work advances offline guard, completion, observation and recovery behavior; it does not establish 7/7 live capability coverage.
+
 | Capability | Existing implementation | Missing delivery |
 | --- | --- | --- |
 | Funds transfer | Eligibility, request/review matching, dispatch recheck and output comparators; historical successful discovery/draft | Observed usable result mapping, new complete candidate, promotion and approved replay |
@@ -77,7 +81,7 @@ Apply this checklist within each capability PR. Offline work may proceed while l
 - [ ] Add one passing control and the concrete negative cases in the task below to the existing tests; run the focused test red, implement the smallest shared fix, then run it green. Do not fabricate a red result for existing passing behavior.
 - [ ] Bind native form facts and visible approval facts to the selected request before showing approval. Reinspect after approval and immediately before dispatch. Reject wrong member/frame, changed facts, wrong operation destination, missing/changed token, invalid role and unarmed direct browser submission with zero mutation dispatches.
 - [ ] Run the same capability-specific completion comparison on actual extracted outputs and fresh observed state before discovery or replay reports success. Never construct an observed result by copying input parameters. A positive success label alone cannot pass.
-- [ ] For open-share/update/hold, reuse discovery's existing `validateCompletion` hook and replay's final-output validation location. If verified read-back needs asynchronous I/O, explicitly widen the callback to `void | Promise<void>`, await it in every success path, and add a delayed-rejection regression in both callers. Canonical write execution must fail closed if its required completion check is absent. Keep transfer's existing comparator active. Any new read support must use guarded, allowlisted read actions with evidence; no hidden target HTTP API.
+- [x] For open-share/update/hold, reuse discovery's existing `validateCompletion` hook and replay's final-output validation location. If verified read-back needs asynchronous I/O, explicitly widen the callback to `void | Promise<void>`, await it in every success path, and add a delayed-rejection regression in both callers. Canonical write execution must fail closed if its required completion check is absent. Keep transfer's existing comparator active. Any new read support must use guarded, allowlisted read actions with evidence; no hidden target HTTP API.
 - [ ] Before recording, review the exact candidate runtime diff and run the local gates below. Do not record against a known-broken comparator and try to repair provenance afterward.
 - [ ] Obtain the selected new operation's inputs. Save its request identity privately. Record through the real discovery path; the human approves current facts at the terminal/operator boundary. Direct browser final-submit clicks are not the supported approval path.
 - [ ] Require genuine post-action checkpoints and extraction in the recorded trace. Review schema, executable parameter/server bindings, provenance, irreversible classification, native control/token behavior and sensitive output metadata. Do not backfill steps into an old recording.
@@ -138,8 +142,8 @@ export function assertOpenShareResult(expected: OpenShareFacts, priorShareIds: r
 ```
 
 - [ ] Observe form/review and available result fields. Determine whether a separate confirmation exists and document present/absent with evidence. If present and required for binding, coordinate its observed output declaration/extract/comparator/catalog change in this PR; do not add it from assumption.
-- [ ] Capture the selected member's complete pre-operation share IDs, rejecting ambiguous/duplicate rows. Require exact member/type/deposit matches on native and visible review facts; compare deposit through `moneyCents` and require positivity.
-- [ ] Add a passing comparator control and a preexisting-ID rejection using synthetic values:
+- [x] Capture the selected member's complete pre-operation share IDs, rejecting ambiguous/duplicate rows. Require exact member/type/deposit matches on native and visible review facts; compare deposit through `moneyCents` and require positivity.
+- [x] Add a passing comparator control and a preexisting-ID rejection using synthetic values:
 
 ```ts
 const request = { member: '9001', shareType: 'S0001', deposit: '5.00' };
@@ -148,8 +152,8 @@ expect(() => assertOpenShareResult(request, ['9001-S0001-OLD'], observed, { shar
 expect(() => assertOpenShareResult(request, [observed.shareId], observed, { shareId: observed.shareId })).toThrow();
 ```
 
-- [ ] Reject wrong member/type/deposit, absent/empty/output-mismatched ID, preexisting ID, ambiguous new rows, and missing resulting-state facts. Run actual guard and discovery/replay regressions: changed review facts mean no approval/intent; stale post-result means no success and terminal unknown after one dispatch, without recovery.
-- [ ] Implement completion wiring before live recording. Require a fresh observation establishing the extracted ID is new for this exact member and matches the selected type/deposit. A deposit/balance relationship must be observed, not assumed; stop if the target does not expose enough information.
+- [x] Reject wrong member/type/deposit, absent/empty/output-mismatched ID, preexisting ID, ambiguous new rows, and missing resulting-state facts. Run actual guard and discovery/replay regressions: changed review facts mean no approval/intent; stale post-result means no success and terminal unknown after one dispatch, without recovery.
+- [x] Implement completion wiring before live recording. Require a fresh observation establishing the extracted ID is new for this exact member and matches the selected type/deposit. A deposit/balance relationship must be observed, not assumed; stop if the target does not expose enough information.
 - [ ] Ask the user to select a genuinely new opening operation, then follow the common acceptance procedure. Explicitly preserve the historical unknown opening. The separate replay requires a separately selected new opening; do not create another share merely to fill a checkbox.
 - [ ] Add `meridian-open-share` to the artifact test and run its focused case. Accepted discovery/replay plus all PR gates raise coverage to **5/7**.
 
@@ -164,9 +168,9 @@ export type MemberUpdateFacts = { member: string; email: string; phone: string; 
 export function assertMemberUpdateFacts(expected: MemberUpdateFacts, actual: MemberUpdateFacts): void;
 ```
 
-- [ ] Observe direct Save Changes form and the available fresh read-back path. There is no assumed target review page: build the existing operator approval facts from the actual filled form, including all three contact fields and the member.
-- [ ] Before approval and dispatch, compare every observed field and member exactly. Any target normalization must be observed and explicitly tested; do not loosen comparison through arbitrary trimming/coercion.
-- [ ] Add a passing exact comparison and field mutations:
+- [x] Observe direct Save Changes form and the available fresh read-back path. There is no assumed target review page: build the existing operator approval facts from the actual filled form, including all three contact fields and the member.
+- [x] Before approval and dispatch, compare every observed field and member exactly. Any target normalization must be observed and explicitly tested; do not loosen comparison through arbitrary trimming/coercion.
+- [x] Add a passing exact comparison and field mutations:
 
 ```ts
 const request = { member: '9001', email: 'demo@example.test', phone: '5550100', address: '1 Test Road' };
@@ -176,7 +180,7 @@ for (const field of ['member', 'email', 'phone', 'address'] as const) {
 }
 ```
 
-- [ ] Implement discovery/replay completion checks requiring a fresh read of the same member with all selected values. Keep `saved` extract-backed and consistent with its observed declaration; a generic message or truthy string cannot replace read-back. Test old/other-member values and completion-read failure after dispatch: unknown, no success/retry.
+- [x] Implement discovery/replay completion checks requiring a fresh read of the same member with all selected values. Keep `saved` extract-backed and consistent with its observed declaration; a generic message or truthy string cannot replace read-back. Test old/other-member values and completion-read failure after dispatch: unknown, no success/retry.
 - [ ] Obtain selected synthetic member/contact values. First run a separate abort case at the real approval boundary and prove zero Save POSTs; this is not approval for the successful run.
 - [ ] Record an approved update, review/promote, and replay a separately selected update through the API/operator workflow. Verify persistence independently for each, plus exact-key dedupe. Do not restore prior values without selecting and approving that separate operation.
 - [ ] Add `meridian-update-member` to the artifact test, run the focused case and all PR gates. Accepted discovery/replay raise coverage to **6/7**.
@@ -195,8 +199,8 @@ export function assertHoldResult(expected: HoldFacts, actual: HoldResult, output
 ```
 
 - [ ] Observe the current selected share, native/visible review, and fresh HOLD read path. Document whether a separate confirmation/reason relationship exists. Bind it when exposed through coordinated contract/extraction changes; do not invent a receipt.
-- [ ] Require supervisor context from the authenticated server operator, exact member/share/reason/notes, and current share eligibility. Bind the target share before approval and recheck after approval. Caller/chat may not supply or obtain supervisor credentials.
-- [ ] Add controls and negative cases:
+- [x] Require supervisor context from the authenticated server operator, exact member/share/reason/notes, and current share eligibility. Bind the target share before approval and recheck after approval. Caller/chat may not supply or obtain supervisor credentials.
+- [x] Add controls and negative cases:
 
 ```ts
 const request = { member: '9001', share: '9001-S0001-1', reason: 'FRAUD', notes: 'fixture' };
@@ -206,7 +210,7 @@ expect(() => assertHoldResult(request, { member: '9001', share: '9001-S0001-1', 
 expect(() => assertHoldResult(request, { member: '9001', share: '9001-S0001-2', status: 'HOLD' }, { heldShare: request.share })).toThrow();
 ```
 
-- [ ] Exercise wrong member/share/reason/notes, changed/expired role, unrelated operation destination and stale/other-share result in real guard and both completion paths. Pre-intent refusal dispatches zero times; post-intent result failure preserves unknown after one dispatch.
+- [x] Exercise wrong member/share/reason/notes, changed/expired role, unrelated operation destination and stale/other-share result in real guard and both completion paths. Pre-intent refusal dispatches zero times; post-intent result failure preserves unknown after one dispatch.
 - [ ] Demonstrate a natural teller denial through the supported guarded path. Record the actual refusal and zero mutation; a static warning is insufficient. Do not weaken the guard to force a server POST, switch that run to supervisor or replay its failed mutation.
 - [ ] Obtain separately chosen eligible shares/hold facts for supervisor discovery and replay. Complete each through its own approval and verify fresh HOLD state on its exact share. No arbitrary holds, automatic privilege upgrades or repeated hold on an already-held share for evidence.
 - [ ] Add `meridian-place-hold` to the artifact test and run its focused case and all PR gates. Accepted discovery/replay raise capability coverage to **7/7**; final adaptation delivery still requires the next section.
@@ -214,8 +218,8 @@ expect(() => assertHoldResult(request, { member: '9001', share: '9001-S0001-2', 
 ## Final integration after the four capability PRs
 
 - [ ] In the separate acceptance PR, reconcile every open requirement in the matrix. Complete missing discovery/replay exception cases using the existing fault mechanism and exact observed GET routes: validation, injected notfound/404, permission, timeout, maintenance and server. Native absent-member evidence closes only its native half, so EXC-03 remains open until injected discovery/replay is accepted.
-- [ ] Verify natural underfunding and invalid contacts with honest pre-/post-intent classification. Retain existing natural bad-login evidence and bounded idle observation; natural expiry was not observed. Do not invent expiry evidence or repeat unchanged waits. Record unresolved target limitations explicitly.
-- [ ] Maintenance requires trusted same-browser checkpoint recovery, not merely reaching a menu. Resolve the existing `RECOVERY_CHECKPOINT_REQUIRED` gap with an observed checkpoint and focused failure-path regression before claiming recovery complete.
+- [ ] Verify natural underfunding and invalid contacts with honest pre-/post-intent classification. Retain existing natural bad-login evidence and bounded idle observation; a later CUA timeout was observed on a read, but authenticated runner acceptance remains unverified. Do not invent expiry evidence or repeat unchanged waits. Record unresolved target limitations explicitly.
+- [x] Maintenance requires trusted same-browser checkpoint recovery, not merely reaching a menu. Resolve the existing `RECOVERY_CHECKPOINT_REQUIRED` gap with an observed checkpoint and focused failure-path regression before claiming recovery complete.
 - [ ] Run the integrated authenticated API/operator read-plus-transfer rehearsal and same-key dedupe. Reuse accepted operations/evidence where sufficient; do not create another post solely for a demo recording. Verify restart evidence retains terminal truth without action resumption.
 - [ ] Refresh `docs/meridian/{runbook,report,evaluation,implementation-progress,live-evidence}.md`, `README.md` and `docs/README.md` only as needed for accurate commands, accepted coverage and labeled recorded/offline fallback. Keep the report to the assignment's 1–2 page scope. Run final source, artifact, hosted head and merge gates.
 - [ ] Finally inspect the existing assistant-ui sibling changes against integrated `dev`. Ask for UI direction only where the user's intended layout/interaction scope is unresolved. Integrate in its own PR; preserve server-owned approval, caller isolation and unknown-state behavior, and verify browser/keyboard flow against accepted capabilities. Do not treat its old local 418-test result as proof for the new integrated SHA.
