@@ -2,7 +2,7 @@
 
 Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The read/dashboard acceptance baseline is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; its hosted CI passed. Offline fixtures, API routing and read rehearsals do not increase the capability count or establish a write.
 
-The integrated runtime baseline after PRs #39, #41 and #43 is `4f84b9fbcb9b5a1fc09cd05611277b3357561728`. It includes transfer guards, terminal-lifecycle repairs and the pre-intent `INSUFFICIENT_FUNDS` business outcome. These integrations do not promote the transfer draft or change any earlier producing source SHA.
+The integrated runtime baseline after PR #44 is `096855697bdd91fbe27dde7843cb3f01513522a6`. It includes transfer guards, terminal-lifecycle repairs, the pre-intent `INSUFFICIENT_FUNDS` business outcome and the CLI browser-inspection repair. PR #44's head `0001b3d542446ff0b8ffbd7a8fe207d74ba08a80` and merge have identical trees; head workflow `33944662021` / producer `101248476308` and merge workflow `33945029813` / producer `101249456017` passed. These integrations do not promote the transfer draft or change any earlier producing source SHA.
 
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
 
@@ -95,7 +95,7 @@ The remaining operation-specific unhappy paths include natural and injected busi
 
 ## Transfer runtime mapping checkpoint
 
-The Task 5a read-only map confirms the member shares table used for current eligibility: `body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)`, with `shareId`, `type`, `balance` and `status` columns and `tr:not(:first-child)` to exclude its observed legacy header row. Native transfer facts are `_token`, `from`, `to`, `amount` and `memo`. The recorded review labels and formats are `Member: <member> - <name>`, `From:/To: <share> ($<balance>)`, `Amount: $<amount>`, and `Memo: <memo>`; runtime requires those labels to be uniquely scoped to the transfer form table. The confirmation value has an observed static label/value relationship.
+The Task 5a read-only map confirms the member shares table used for current eligibility: `body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)`, with `shareId`, `type`, `balance` and `status` columns and `tr:not(:first-child)` to exclude its observed legacy header row. Native transfer facts are `_token`, `from`, `to`, `amount` and `memo`. The recorded review labels and formats are `Member: <member> - <name>`, `From:/To: <share> ($<balance>)`, `Amount: $<amount>`, and `Memo: <memo>`. Those labels must be uniquely associated with the posting form; the September 5 inspection below corrects the earlier assumption that its table contains them. The confirmation value has an observed static label/value relationship.
 
 The transaction result's label set, row order, header shape and confirmation/detail relationship remain unverified. Task 5b therefore requires a canonical transaction row (`member`, `sourceShare`, `destinationShare`, `amount`, `memo`, `confirmation`) in the next recording, compares it with the separate confirmation output, and fails closed on legacy or ambiguous shapes. The reviewed runtime does not promote the draft or prove replay success; a new complete recording must establish result selectors and explicit header handling before Task 5c.
 
@@ -103,4 +103,35 @@ The transaction result's label set, row order, header shape and confirmation/det
 
 The operator selected a new demo transfer with the unresolved result-extraction limitation understood. Genuine Luna discovery `a2941fc8-fd27-4470-bff2-d20b71058349` used runtime source `4f84b9fbcb9b5a1fc09cd05611277b3357561728` and a separately saved request key. It stopped at sign-on and was aborted without human repair. Its authenticated journal is terminal `failure`; the evaluator passed with task status `failure`, 6 attempts, zero mutation intents and no violations. No transfer review, posting approval, candidate artifact or replay resulted. The original successful discovery and draft remain unchanged.
 
-A separate read-only probe using the actual CLI loader (`node --import tsx`) reproduced `elementHandle.evaluate: ReferenceError: __name is not defined` in `inspectControl`. The hosted sign-on has a unique native submit input; the failure occurs when inspecting it, before dispatch. The runtime repair uses self-contained local helper methods and adds a regression under that loader for sign-on, complete transfer review and duplicate-label rejection. Restarting the recording requires the reviewed repair baseline. Passing the older Vitest fixtures alone did not establish this CLI path. Result layout and transfer acceptance remain unverified; coverage stays `3/7`.
+A separate read-only probe using the actual CLI loader (`node --import tsx`) reproduced `elementHandle.evaluate: ReferenceError: __name is not defined` in `inspectControl`. The hosted sign-on has a unique native submit input; the failure occurred when inspecting it, before dispatch. PR #44 repaired this boundary with self-contained local helper methods and a regression under that loader for sign-on, complete transfer review and duplicate-label rejection. The fresh checks and subsequent attempts below used that repair. Passing the older Vitest fixtures alone did not establish this CLI path. Result layout and transfer acceptance remain unverified; coverage stays `3/7`.
+
+## Tool verification after PR #44
+
+The following live checks used source `0001b3d542446ff0b8ffbd7a8fe207d74ba08a80`. Each journal is terminal `success`, with a passing evaluator and zero mutation intents. They refresh the three accepted reads without establishing another accepted capability.
+
+| Check | Run ID | Result |
+|---|---|---|
+| Sign-on | `bd266309-7815-4230-84aa-3fbcdb611159` | TELLER; 8 attempts |
+| Member inquiry | `a8a498d3-f29b-4082-92b0-29d5a54c8cb1` | 10 attempts |
+| Member record | `266b78c5-b507-461f-a2cf-f960fe61cde0` | 10 attempts; selected member/share association and decimal balances checked |
+| Real-model caller chat and `run_status` | `11f47224-72bd-4aa4-bf28-1b4ed4bdb65b` | HTTP `202` then success; 10 attempts; current member/share association and decimal balances checked |
+
+Authenticated catalog, history, status and evidence reads passed. Missing credentials returned `401`; a caller's approval request returned `403`. The caller chat run and a direct capability invocation with the same request key resolved to one run and one caller history entry. The owned service closed cleanly.
+
+All eight discovery tools (`navigate`, `fill`, `select`, `assert`, `click`, `extract`, `done`, `escalate`) passed an actual-`tsx` local Chromium smoke test, including explicit abort, with zero write requests. This used scripted model responses and a GET click. The full local gate passed 275 tests in 17 files, typecheck and artifact validation. These checks do not prove live posting, repair or replay acceptance.
+
+The two older CU-NEXUS artifacts were exercised against an owned local fixture with only an in-memory origin override. Balance lookup returned the expected value. Subaccount preview reached review, but its recorded whole-row extracts return label, tab and value; the bare-value assertion failed. Those outputs cannot be treated as a bare nickname or money value without an explicit contract/recording change. No artifact was rewritten.
+
+## Replacement transfer recording — review layout
+
+Three subsequent genuine Luna attempts used source `096855697bdd91fbe27dde7843cb3f01513522a6`, separate saved request identities and the selected demo operation. All were stopped without posting; authenticated journals are terminal `failure`, evaluators passed with task status `failure`, and each recorded zero mutation intents.
+
+| Run ID | Attempts | Observed stop |
+|---|---|---|
+| `a4a8b538-9133-45f0-a07a-3a24e263eb13` | 13 | The global transfer menu bypassed the member-record eligibility snapshot; the frame guard correctly rejected entry. |
+| `a6c3f359-1485-438b-a3eb-4a110d974463` | 15 | An unnecessary preliminary shares extraction failed money/header validation. |
+| `83a198eb-25e0-4fcb-ad12-03d480bfad73` | 17 | The posting-control inspection rejected review facts as missing or ambiguous before approval. |
+
+A separate manual unposted inspection found the review table in a sibling `div.box`, with the posting form directly beside it in the same content `td`. The form contains only hidden native fields and controls, and its nearest table is the outer page layout. The earlier inspector enumerated only tables inside the form and that nearest table, omitting the actual review facts. [The sanitized structural observation](evidence/transfer-review-shape.json) retains tags, labels and field names only. It is fixture input, not discovery or replay provenance. Supporting this layout requires a unique form/review association and the existing visible/native fact checks; ambiguous or unrelated tables must remain rejected.
+
+No new attempt reached posting approval, produced a candidate artifact or established completion/result selectors. The result-extraction and separately approved replay gates remain open. Live acceptance remains `3/7`.

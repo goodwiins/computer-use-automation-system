@@ -1,0 +1,74 @@
+{
+  "mode": "manual unposted review inspection; not discovery or replay provenance",
+  "observedAt": "2026-09-05T05:01:01.506551+00:00",
+  "runtimeSource": "096855697bdd91fbe27dde7843cb3f01513522a6",
+  "route": "/members/:member/transfer/review",
+  "heading": "CONFIRM FUNDS TRANSFER",
+  "contentOwner": "TD",
+  "directChildren": [
+    "H1",
+    "BR",
+    "DIV.box",
+    "BR",
+    "FONT.err",
+    "BR",
+    "BR",
+    "FORM"
+  ],
+  "reviewBox": {
+    "tag": "DIV",
+    "class": "box",
+    "childTags": [
+      "TABLE"
+    ],
+    "insideForm": false,
+    "labels": [
+      "Member:",
+      "From:",
+      "To:",
+      "Amount:",
+      "Memo:"
+    ],
+    "rowCellTags": [
+      [
+        "TD",
+        "TD"
+      ],
+      [
+        "TD",
+        "TD"
+      ],
+      [
+        "TD",
+        "TD"
+      ],
+      [
+        "TD",
+        "TD"
+      ],
+      [
+        "TD",
+        "TD"
+      ]
+    ]
+  },
+  "form": {
+    "action": "/members/:member/transfer/post",
+    "method": "POST",
+    "containedTables": 0,
+    "hiddenFieldNames": [
+      "_token",
+      "from",
+      "to",
+      "amount",
+      "memo"
+    ],
+    "submitControl": "Post Transfer",
+    "otherControl": "Cancel"
+  },
+  "limits": [
+    "No hidden field values, transaction values, credentials, token, SID or raw DOM retained.",
+    "Only Continue to review was submitted in the manual inspection; Post Transfer was not activated.",
+    "Completion/result structure remains unverified."
+  ]
+}
