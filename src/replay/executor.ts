@@ -122,7 +122,15 @@ export async function runReplay(
             // pass an explicit risk so they go through the policy gate like
             // any other state-touching click instead of riding a silent default.
             surface.setStep?.(stepId);
-            await surface.click(d.recovery.target, undefined, 'reversible_write');
+            if (artifact.app.appId === 'meridian') {
+              try {
+                if (!surface.recoverClick) throw new Error('Guarded recovery is unavailable');
+                await surface.recoverClick(d.recovery.target);
+              } catch (err) {
+                if (err instanceof RunAbortedError) return aborted(stepId);
+                return fail({ code: 'RECOVERY_FAILED', stepId, intent: 'recover from runtime condition', expected: 'an allowed nonmutation recovery', observed: 'Guarded recovery could not complete' });
+              }
+            } else await surface.click(d.recovery.target, undefined, 'reversible_write');
           }
           // Recovery is bounded to one attempt: re-check only THIS detector's
           // own match, not the whole list. Still present -> fatal, not a loop.
