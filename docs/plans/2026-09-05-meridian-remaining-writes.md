@@ -33,10 +33,6 @@ Checked `origin/dev` at `217aadb434423f41e7fcddec71d0131f2ca2900e` (PR #56 merge
 
 Runtime checkpoint: 395 tests/17 files and typecheck passed; PR #56 merge workflow `33962737050`, producer `101297354120`, passed. UI source `c89f3d4` has separately reported local 418 tests/19 files and build/typechecks; it is unpublished and not part of this dev baseline. Neither test count proves a live write.
 
-## Execution status — September 5, 2026
-
-Receipt extraction and observation-bound work from PRs #59 and #60 are merged, and the open-share completion work from PR #61 is integrated. PR #62 for member update remains open. Reviewed source work for supervisor hold and maintenance recovery is complete offline and remains pending publication and genuine discovery/replay acceptance. The implemented work advances offline guard, completion, observation and recovery behavior; it does not establish 7/7 live capability coverage.
-
 | Capability | Existing implementation | Missing delivery |
 | --- | --- | --- |
 | Funds transfer | Eligibility, request/review matching, dispatch recheck and output comparators; historical successful discovery/draft | Observed usable result mapping, new complete candidate, promotion and approved replay |
@@ -45,6 +41,10 @@ Receipt extraction and observation-bound work from PRs #59 and #60 are merged, a
 | Place hold | Canonical inputs/output name, supervisor form rule and approval/journal machinery | Exact share/reason/notes checks, natural teller denial, artifact and supervisor discovery/replay |
 
 Historical transfer draft and its run remain unchanged. Open-share run `222ebecd-ca02-4960-a875-c2f2f76e0927` remains frozen and unknown. Latest read-only transfer diagnosis found one selected share was no longer OPEN; the old pair cannot be assumed eligible.
+
+## Execution status — September 5, 2026
+
+Receipt extraction and observation-bound work from PRs #59 and #60 are merged, and the open-share completion work from PR #61 is integrated. PR #62 for member update remains open. Reviewed source work for supervisor hold and maintenance recovery is complete offline and remains pending publication and genuine discovery/replay acceptance. The implemented work advances offline guard, completion, observation and recovery behavior; it does not establish 7/7 live capability coverage.
 
 ## Delivery sequence and file ownership
 
@@ -153,7 +153,8 @@ expect(() => assertOpenShareResult(request, [observed.shareId], observed, { shar
 ```
 
 - [x] Reject wrong member/type/deposit, absent/empty/output-mismatched ID, preexisting ID, ambiguous new rows, and missing resulting-state facts. Run actual guard and discovery/replay regressions: changed review facts mean no approval/intent; stale post-result means no success and terminal unknown after one dispatch, without recovery.
-- [x] Implement completion wiring before live recording. Require a fresh observation establishing the extracted ID is new for this exact member and matches the selected type/deposit. A deposit/balance relationship must be observed, not assumed; stop if the target does not expose enough information.
+- [x] Implement completion wiring before live recording, including a fresh observation that the extracted ID is new for this exact member and matches the selected type/deposit.
+- [ ] Establish the observed deposit/balance relationship before live recording; do not treat the offline comparator as evidence that the target exposes the required relationship.
 - [ ] Ask the user to select a genuinely new opening operation, then follow the common acceptance procedure. Explicitly preserve the historical unknown opening. The separate replay requires a separately selected new opening; do not create another share merely to fill a checkbox.
 - [ ] Add `meridian-open-share` to the artifact test and run its focused case. Accepted discovery/replay plus all PR gates raise coverage to **5/7**.
 
@@ -219,7 +220,7 @@ expect(() => assertHoldResult(request, { member: '9001', share: '9001-S0001-2', 
 
 - [ ] In the separate acceptance PR, reconcile every open requirement in the matrix. Complete missing discovery/replay exception cases using the existing fault mechanism and exact observed GET routes: validation, injected notfound/404, permission, timeout, maintenance and server. Native absent-member evidence closes only its native half, so EXC-03 remains open until injected discovery/replay is accepted.
 - [ ] Verify natural underfunding and invalid contacts with honest pre-/post-intent classification. Retain existing natural bad-login evidence and bounded idle observation; a later CUA timeout was observed on a read, but authenticated runner acceptance remains unverified. Do not invent expiry evidence or repeat unchanged waits. Record unresolved target limitations explicitly.
-- [x] Maintenance requires trusted same-browser checkpoint recovery, not merely reaching a menu. Resolve the existing `RECOVERY_CHECKPOINT_REQUIRED` gap with an observed checkpoint and focused failure-path regression before claiming recovery complete.
+- [x] Resolve the offline `RECOVERY_CHECKPOINT_REQUIRED` source gap with trusted same-browser checkpoint recovery, an observed checkpoint and a focused failure-path regression; genuine discovery/replay recovery acceptance remains pending.
 - [ ] Run the integrated authenticated API/operator read-plus-transfer rehearsal and same-key dedupe. Reuse accepted operations/evidence where sufficient; do not create another post solely for a demo recording. Verify restart evidence retains terminal truth without action resumption.
 - [ ] Refresh `docs/meridian/{runbook,report,evaluation,implementation-progress,live-evidence}.md`, `README.md` and `docs/README.md` only as needed for accurate commands, accepted coverage and labeled recorded/offline fallback. Keep the report to the assignment's 1–2 page scope. Run final source, artifact, hosted head and merge gates.
 - [ ] Finally inspect the existing assistant-ui sibling changes against integrated `dev`. Ask for UI direction only where the user's intended layout/interaction scope is unresolved. Integrate in its own PR; preserve server-owned approval, caller isolation and unknown-state behavior, and verify browser/keyboard flow against accepted capabilities. Do not treat its old local 418-test result as proof for the new integrated SHA.
