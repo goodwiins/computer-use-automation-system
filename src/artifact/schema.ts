@@ -163,6 +163,7 @@ export const CapabilityArtifact = z.object({
   }),
 });
 export type CapabilityArtifact = z.infer<typeof CapabilityArtifact>;
+type ParameterContract = Pick<CapabilityArtifact, 'parameters' | 'paramDefaults'>;
 
 // ---------- Param templating ----------
 const TEMPLATE_RE = /\{\{(\w+)\}\}/g;
@@ -208,7 +209,7 @@ export function resolveTarget(
 
 /** Validate caller-supplied params against the artifact's declared contract. */
 export function validateParams(
-  artifact: CapabilityArtifact,
+  artifact: ParameterContract,
   params: Record<string, string | number>,
 ): { ok: true } | { ok: false; error: string } {
   for (const p of artifact.parameters) {
@@ -257,7 +258,7 @@ export function validOutput(output: Output, value: OutputValue | undefined): boo
       (column.type !== 'money' || /^-?(0|[1-9]\d*)\.\d{2}$/.test(row[column.name]!))));
 }
 
-export function normalizeParams(artifact: CapabilityArtifact, params: Record<string, string | number>) {
+export function normalizeParams(artifact: ParameterContract, params: Record<string, string | number>) {
   const normalized = { ...artifact.paramDefaults, ...params };
   const check = validateParams(artifact, normalized);
   if (!check.ok) throw new Error('Parameters do not match the capability contract');

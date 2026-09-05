@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { RunLogger } from '../src/evidence/logger.js';
 import { validateIdempotencyKey } from '../src/runtime/journal.js';
+import { meridianContracts } from '../src/runtime/contracts.js';
 import { Redactor } from '../src/safety/redact.js';
 
 const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
@@ -153,6 +154,98 @@ it('rejects invalid request keys before acquiring a journal', () => {
     expect(() => validateIdempotencyKey(key)).toThrow();
   }
   expect(() => validateIdempotencyKey('meridian-new-operation-1')).not.toThrow();
+});
+
+it('rejects invalid canonical discovery inputs before model, journal, runtime, or discovery work', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-preflight-'));
+  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
+  const previousExitCode = process.exitCode;
+  const model = vi.fn(() => ({ openai: {}, model: 'fixture' }));
+  const createRuntime = vi.fn();
+  const runDiscovery = vi.fn();
+  Object.assign(process.env, {
+    OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir, JOURNAL_HMAC_KEY: JOURNAL_KEY,
+    MERIDIAN_TELLER_OPERATOR: 'teller-test', MERIDIAN_TELLER_PASSWORD: 'offline-test-only', MERIDIAN_BRANCH: 'MAIN-001',
+  });
+  process.exitCode = undefined;
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: model }));
+  vi.doMock('../src/runtime/run.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js')),
+    createRuntime,
+  }));
+  vi.doMock('../src/agent/loop.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js')),
+    runDiscovery,
+  }));
+  const exit = vi.spyOn(process, 'exit').mockImplementation(code => { throw new Error(`exit ${code}`); });
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { runCli } = await import('../cli.js');
+    const complete = Object.fromEntries(Object.values(meridianContracts).flatMap(contract =>
+      contract.parameters.map(parameter => [parameter.name,
+        parameter.enum?.[0] ?? (parameter.format ? '1.00' : parameter.name.includes('Share') || parameter.name === 'share' ? '9001-A' : parameter.name === 'member' ? '9001' : 'fixture')]))) as Record<string, string>;
+    const omitted = Object.entries(meridianContracts).flatMap(([name, contract]) =>
+      contract.parameters.map(parameter => ({ name, params: contract.parameters.filter(p => p.name !== parameter.name).map(p => `--param=${p.name}=${complete[p.name]}`) })));
+    const cases = [
+      ...omitted,
+      { name: 'private-unknown-capability', params: [] },
+      { name: 'meridian-member-record', params: ['--param=member=bad-pattern'] },
+      { name: 'meridian-open-share', params: ['--param=member=9001', '--param=shareType=bad-enum', '--param=deposit=1.00'] },
+      { name: 'meridian-open-share', params: ['--param=member=9001', '--param=shareType=S0070', '--param=deposit=0'] },
+      { name: 'meridian-member-record', params: ['--param=member=9001', '--param=private-extra=value'] },
+      { name: 'meridian-member-record', params: ['--param=member=9001', '--param=password=private-secret'] },
+    ];
+    for (const [index, testCase] of cases.entries()) {
+      const args = testCase.params.flatMap(param => { const [, value] = param.split('--param='); return ['--param', value!]; });
+      process.exitCode = undefined;
+      await runCli(['discover', '--name', testCase.name, '--goal', 'Fixture', '--profile', 'meridian', '--idempotency-key', `preflight-${index}`, ...args]);
+      expect(process.exitCode, JSON.stringify(testCase)).toBe(1);
+    }
+    expect(model).not.toHaveBeenCalled();
+    expect(createRuntime).not.toHaveBeenCalled();
+    expect(runDiscovery).not.toHaveBeenCalled();
+    expect(readdirSync(dir)).toEqual([]);
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/private-(unknown|extra)|private-secret/);
+  } finally {
+    exit.mockRestore(); log.mockRestore(); error.mockRestore();
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.restoreAllMocks(); vi.resetModules();
+    for (const name of envKeys) {
+      const value = previousEnv.get(name);
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('keeps cu-nexus discovery generic when its capability ID matches a MERIDIAN contract', async () => {
+  const previousExitCode = process.exitCode;
+  const model = vi.fn(() => ({ openai: {}, model: 'fixture' }));
+  const createRuntime = vi.fn(() => { throw new Error('legacy runtime reached'); });
+  process.exitCode = undefined;
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: model }));
+  vi.doMock('../src/runtime/run.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js')),
+    createRuntime,
+  }));
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { runCli } = await import('../cli.js');
+    await runCli(['discover', '--profile', 'cu-nexus', '--name', 'meridian-funds-transfer', '--goal', 'Fixture']);
+    expect(model).toHaveBeenCalledOnce();
+    expect(createRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      artifact: 'meridian-funds-transfer', params: {}, profile: expect.objectContaining({ appId: 'cu-nexus' }),
+    }));
+  } finally {
+    log.mockRestore(); error.mockRestore();
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
+    process.exitCode = previousExitCode;
+  }
 });
 
 it('persists the fixed discovery cancellation code', async () => {

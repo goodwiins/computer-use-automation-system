@@ -60,8 +60,8 @@ function stepReportingArtifact() {
     description: 'Report the current member record step',
     version: '1.0.0',
     status: 'approved',
-    app: { appId: 'meridian', entryUrl: `${origin}/fixture`, allowedOrigins: [origin] },
-    parameters: [],
+    app: { appId: 'meridian', entryUrl: `${origin}/fixture?member={{member}}`, allowedOrigins: [origin] },
+    parameters: meridianContracts['meridian-member-record'].parameters,
     outputs: [{ name: 'shares', type: 'table', description: 'Shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] }],
     steps: [
       { id: 'operator', intent: 'operator', action: 'fill', target: input('operator'), value: '{{operator}}', risk: 'reversible_write' },
@@ -372,7 +372,7 @@ function memberRecordArtifact(outputs: Array<Record<string, unknown>>) {
     version: '1.0.0',
     status: 'draft',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
-    parameters: [],
+    parameters: meridianContracts['meridian-member-record'].parameters,
     outputs,
     steps: [
       { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
@@ -414,12 +414,20 @@ function transferArtifact(outputs: Array<Record<string, unknown>> = transferOutp
     version: '1.0.0',
     status: 'draft',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
-    parameters: [],
+    parameters: meridianContracts['meridian-funds-transfer'].parameters,
     outputs,
     steps: [
       { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
       { id: 'password', intent: 'password', action: 'fill', value: '{{password}}', risk: 'reversible_write' },
       { id: 'branch', intent: 'branch', action: 'select', value: '{{branch}}', risk: 'reversible_write' },
+      ...meridianContracts['meridian-funds-transfer'].parameters.map(parameter => ({
+        id: `input-${parameter.name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`,
+        intent: parameter.description,
+        action: 'fill' as const,
+        target: { description: parameter.description, strategies: [{ kind: 'nameAttr' as const, name: parameter.name }] },
+        value: `{{${parameter.name}}}`,
+        risk: 'reversible_write' as const,
+      })),
       { id: 'checkpoint', intent: 'checkpoint', action: 'assert', assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' },
       { id: 'post', intent: 'post transfer', action: 'click', target, risk: 'irreversible' },
       { id: 'post-checkpoint', intent: 'verify posted transfer', action: 'assert', assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' },
@@ -449,6 +457,65 @@ describe('MERIDIAN output contracts', () => {
     expect(approved.status).toBe('approved');
     expect(approved.outputs).toEqual([{ ...shares, minRows: 1 }]);
   });
+
+  it.each([
+    ['missing', []],
+    ['duplicate', [...meridianContracts['meridian-member-record'].parameters, meridianContracts['meridian-member-record'].parameters[0]!]],
+    ['extra', [...meridianContracts['meridian-member-record'].parameters, { name: 'extra', type: 'string' as const, description: 'Extra', required: true, sensitive: false }]],
+  ])('rejects %s public parameter declarations', (_kind, parameters) => {
+    const artifact = memberRecordArtifact([shares]);
+    artifact.parameters = parameters;
+    expect(() => applyMeridianContract(artifact)).toThrow(/parameter/i);
+  });
+
+  it('rejects promotion when metadata is the only reference to a required public parameter', () => {
+    const artifact = memberRecordArtifact([shares]);
+    artifact.description = 'Read member {{member}}';
+    artifact.successCondition = { kind: 'urlMatches', pattern: '/members/current$' };
+    expect(() => promoteToApproved(JSON.stringify(artifact))).toThrow(/executable.*member/i);
+  });
+
+  const literalMemberRecord = () => CapabilityArtifact.parse(JSON.parse(
+    readFileSync('artifacts/meridian-member-record.v1.0.0.json', 'utf8').replaceAll('{{member}}', '9001'),
+  ));
+
+  it('rejects an ignored table extraction pattern as the only public parameter reference', () => {
+    const artifact = literalMemberRecord();
+    const table = artifact.steps.find(step => step.action === 'extract' && step.extract?.columns);
+    if (!table?.extract) throw new Error('Expected the genuine member-record table extraction');
+    table.extract.pattern = '{{member}}';
+    expect(() => applyMeridianContract(artifact)).toThrow(/executable.*member/i);
+    expect(() => promoteToApproved(JSON.stringify(artifact))).toThrow(/executable.*member/i);
+  });
+
+  it('accepts a scalar extraction pattern as an executable public parameter reference', () => {
+    const artifact = literalMemberRecord();
+    const tableIndex = artifact.steps.findIndex(step => step.action === 'extract' && step.extract?.columns);
+    const target = artifact.steps[tableIndex]!.target!;
+    artifact.steps.splice(tableIndex, 0, {
+      id: 'member-pattern', intent: 'Match the requested member', action: 'extract', target,
+      extract: { output: 'shares', pattern: '^Member {{member}}$' }, risk: 'read', timeoutMs: 10_000,
+    });
+    expect(() => applyMeridianContract(artifact)).not.toThrow();
+  });
+});
+
+it('refuses an incomplete canonical transfer before allocating runtime evidence', () => {
+  const evidenceDir = temp();
+  expect(() => runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-funds-transfer', version: '1.0.0', policy, profile,
+    params: { member: '9001' }, sensitive: [], gate: async () => false, evidenceDir,
+  })).toThrow(/complete transfer request/i);
+  expect(readdirSync(evidenceDir)).toEqual([]);
+});
+
+it('allows a cu-nexus runtime whose capability ID matches the canonical transfer', async () => {
+  const candidate = runtime.createRuntime({
+    kind: 'discovery', artifact: 'meridian-funds-transfer', version: '1.0.0', policy,
+    profile: loadProfile('cu-nexus'), params: {}, sensitive: [], gate: async () => false,
+  });
+  expect(candidate.surface).toBeDefined();
+  await candidate.close();
 });
 
 describe('MERIDIAN funds-transfer semantic checks', () => {
