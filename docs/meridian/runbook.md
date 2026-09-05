@@ -124,7 +124,7 @@ Leave the recording/replay Terminal running. In a second Terminal, use the same 
 npx tsx cli.ts approval --run RUN_UUID
 ```
 
-Review the returned action facts, destination, expiry and approval ID. Copy exactly one of the printed commands, or replace both placeholders here with those current IDs:
+Review the returned action facts, destination, method, operator, branch, role, control, token-presence indicator, expiry and approval ID. Copy exactly one of the printed commands, or replace both placeholders here with those current IDs:
 
 ```sh
 npx tsx cli.ts approve --run RUN_UUID --approval APPROVAL_UUID
@@ -134,7 +134,7 @@ npx tsx cli.ts refuse --run RUN_UUID --approval APPROVAL_UUID
 
 `approve` requires an interactive Terminal; it does not accept piped input. `refuse` means abort, not retry or skip. Both commands require the explicit current approval ID. The first decision wins, including a decision entered at the original prompt. A wrong, duplicate, expired or unavailable approval fails without approving another action. The five-minute timeout and browser-close cancellation still apply; these commands cannot revive a stopped run or retry an unknown posting. Artifact promotion (`replay --approve`) remains a different operation and does not approve a transaction.
 
-The standalone runner exposes only a same-user local Unix socket under `~/.cu-approvals`. No TCP port or persisted decision is added. If `CU_APPROVAL_DIR` is configured, use the same value for the runner and command; the directory must be private, owned by the current user and not a symlink. An insecure directory or an existing endpoint is rejected rather than overwritten. Run the commands on the runner host (for example, in an interactive SSH Terminal for a remote runner). They do not open the journal, so the recording process keeps its existing journal lock.
+The standalone runner exposes only a same-user local Unix socket under `~/.cu-approvals`. No TCP port or persisted decision is added. If `CU_APPROVAL_DIR` is configured, use the same value for the runner and command; the directory must be private, owned by the current user and not a symlink. An insecure directory or an existing endpoint is rejected rather than overwritten. Run the commands on the runner host (for example, in an interactive SSH Terminal for a remote runner). They do not open the journal, so the recording process keeps its existing journal lock. Keep the socket directory and active endpoint unchanged while the runner is running: Node removes the bound socket path when its listener closes. If a crash leaves an endpoint behind, confirm that its runner has stopped before removing that exact stale socket; startup never replaces it automatically.
 
 These commands cover standalone CLI recordings and replays. API-started runs continue using the authenticated operator dashboard or existing decision endpoint. The commands add no live capability acceptance by themselves.
 
