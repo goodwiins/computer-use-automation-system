@@ -41,7 +41,8 @@ const profile = loadProfile('meridian');
 const origin = 'https://web-sample.interface-hiring.com';
 const requestOpenShare = () => ({ member: '9001', shareType: 'S0001', deposit: '5.00' });
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
-const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
+const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false,
+  frame: { id: 'fixture-workarea', name: 'workarea', url: `${origin}/members/1/hold/review`, navigation: 1 } };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
 function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>, policyOverride = policy) {
   let live = structuredClone(control);
@@ -320,11 +321,22 @@ describe('single-use interventions and live controls', () => {
   ] as const)('permits the canonical write destination for %s', async (artifact, url, destination, controlName) => {
     const gate = vi.fn(async () => true);
     const run = guarded({}, gate, { artifact });
-    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName });
+    run.change({ url: `${origin}${url}`, destination: `${origin}${destination}`, control: controlName,
+      frame: { ...control.frame!, url: `${origin}${url}` } });
     await run.surface.click(target, 100, 'read');
     expect(gate).toHaveBeenCalledOnce();
     expect(run.beforeDispatch).toHaveBeenCalledOnce();
     expect(run.dispatch).toHaveBeenCalledOnce();
+  });
+  it('rejects a strict hold mutation without source-frame origin evidence', async () => {
+    const gate = vi.fn(async () => true);
+    const run = guarded({}, gate, { artifact: 'meridian-place-hold' });
+    run.change({ frame: undefined });
+    await expect(run.surface.click(target, 100, 'read')).rejects.toThrow(/frame|origin/i);
+    expect(gate).not.toHaveBeenCalled();
+    expect(run.beforeDispatch).not.toHaveBeenCalled();
+    expect(run.dispatch).not.toHaveBeenCalled();
+    expect(run.surface.mutationDispatched).toBe(false);
   });
   it('fails closed when a canonical open-share post has no request binding', async () => {
     const gate = vi.fn(async () => true);

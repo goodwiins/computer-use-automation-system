@@ -208,9 +208,11 @@ export class GuardedSurface implements Surface {
 
   private assertMeridianMutationOrigin(live: LiveControl): void {
     if (this.runtime?.profile.appId !== 'meridian') return;
-    const frameUrl = live.frame?.url ?? live.url;
-    if (!this.origin(frameUrl) || this.origin(frameUrl) !== this.origin(live.url)
-      || this.origin(frameUrl) !== this.origin(live.destination)) {
+    const frameOrigin = live.frame ? this.origin(live.frame.url) : '';
+    const sourceOrigin = this.origin(live.url);
+    const destinationOrigin = this.origin(live.destination);
+    if (!frameOrigin || !sourceOrigin || !destinationOrigin
+      || frameOrigin !== sourceOrigin || frameOrigin !== destinationOrigin) {
       throw new Error('MERIDIAN mutation origin does not match its source frame');
     }
   }
