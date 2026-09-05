@@ -352,7 +352,14 @@ export class GuardedSurface implements Surface {
       throw new Error('Navigation route is not permitted');
     }
   }
-  async click(t: TargetDescriptor, timeoutMs?: number, risk: RiskClass = 'read'): Promise<ResolutionReport> {
+  click(t: TargetDescriptor, timeoutMs?: number, risk: RiskClass = 'read'): Promise<ResolutionReport> {
+    return this.clickAction(t, timeoutMs, risk);
+  }
+  recoverClick(t: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport> {
+    return this.clickAction(t, timeoutMs, 'reversible_write', true);
+  }
+  private async clickAction(t: TargetDescriptor, timeoutMs: number | undefined, risk: RiskClass, recovery = false): Promise<ResolutionReport> {
+    if (recovery && this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: recovery refused');
     return this.action('click', risk, async () => {
       this.assertAutomation();
       const budget = timeoutMs ?? DEFAULT_TIMEOUT;
@@ -384,6 +391,7 @@ export class GuardedSurface implements Surface {
         if (transferPost) this.assertTransferReview(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
+        if (recovery && (rule?.mutation || checkAction(this.policy, 'click', live.destination, this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
         if (rule?.mutation) {
           if ((this.runtime.transfer || this.runtime.artifact === 'meridian-funds-transfer') && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
           if (this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: repeat dispatch refused');
@@ -431,6 +439,7 @@ export class GuardedSurface implements Surface {
       const floor = riskFloorFor(live);
       this.effectiveRisk = floor && RISK_RANK[floor] > RISK_RANK[risk] ? floor : risk;
       this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk });
+      if (recovery && (this.effectiveRisk === 'irreversible' || checkAction(this.policy, 'click', this.inner.currentUrl(), this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
       await outsideBudget(() => this.gate('click', this.effectiveRisk));
       const report = await this.inner.click(t, remaining());
       this.assertStillInBounds('click');

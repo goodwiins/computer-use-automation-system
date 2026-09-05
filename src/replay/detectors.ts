@@ -16,7 +16,7 @@ export const BUILTIN_DETECTORS: Detector[] = [
 ];
 
 /** First matching detector (artifact-declared first, then built-ins), or null. */
-export async function checkDetectors(surface: Surface, artifact: CapabilityArtifact): Promise<Detector | null> {
+export async function checkDetectors(surface: Surface, artifact: Pick<CapabilityArtifact, 'detectors'>): Promise<Detector | null> {
   for (const detector of [...artifact.detectors, ...BUILTIN_DETECTORS]) {
     if (await matchDetector(surface, detector)) return detector;
   }

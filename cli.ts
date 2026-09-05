@@ -13,6 +13,7 @@ import { Journal, RequestError, validateIdempotencyKey, type JournalRecord } fro
 import { loadProfile, profilePolicy, FaultScenario } from './src/runtime/profile.js';
 import { applyMeridianContract, assertTransferOutputs, meridianContracts, transferFactsFromParams } from './src/runtime/contracts.js';
 import { serve } from './src/server/http.js';
+import { safeEvent } from './src/evidence/safe-event.js';
 import { runDiscovery } from './src/agent/loop.js';
 import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder.js';
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
@@ -163,6 +164,7 @@ async function discover(argv: string[]) {
         openai,
         model,
         maxSteps: policy.maxSteps,
+        detectors: meridian ? profile.detectors : undefined,
         timeoutMs: policy.maxDiscoveryMs,
         boundParams: operator ? { operator: operator.operator, password: operator.password, branch: operator.branch } : undefined,
         sanitizeObservation: text => runtime!.promptRedactor.redactString(text),
@@ -203,7 +205,7 @@ async function discover(argv: string[]) {
         logger.writeResult({ status: result.status, outcomeCode: result.outcomeCode, detail: result.detail });
         console.log(`\nDiscovery outcome: ${result.outcomeCode}`);
       } else {
-        const code = result.stopReason === 'RUN_ABORTED' || result.stopReason === 'POST_OUTCOME_UNKNOWN' ? result.stopReason : undefined;
+        const code = safeEvent('discovery.finish', { code: result.stopReason }).data.code;
         logger.writeResult(code ? { status: 'failure', failure: { code } } : { status: result.status });
         console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
         process.exitCode = 1;
