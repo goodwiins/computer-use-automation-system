@@ -19,12 +19,14 @@ import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
 import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
 import { CapabilityArtifact, Detector, normalizeParams, validateParams } from './src/artifact/schema.js';
+import { requestApproval, requireUuid } from './src/escalation/approval-cli.js';
 import { OperatorConsole } from './src/escalation/operator.js';
 import { originAllowed } from './src/safety/policy.js';
 import { runReplay } from './src/replay/executor.js';
 import type { ReplayResult } from './src/replay/outcomes.js';
 
 const ARTIFACT_DIR = 'artifacts';
+const terminalText = (value: string) => JSON.stringify(value).slice(1, -1);
 
 function parseArgs(argv: string[]) {
   const flags: Record<string, string | boolean> = {};
@@ -160,8 +162,8 @@ async function discover(argv: string[]) {
         gate: async (action, risk, reason, context) => {
           if (!headful) return false;
           const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene({
-            kind: 'risk_approval', capability: name, goal, reason: context ? JSON.stringify(context) : reason, url: runtime!.surface.currentUrl(),
-          });
+            kind: 'risk_approval', capability: name, goal, reason, url: runtime!.surface.currentUrl(),
+          }, context);
           return decision === 'retry';
         }, beforeDispatch: () => journal!.update(record!.runId, 'dispatching'),
       });
@@ -313,8 +315,8 @@ async function replay(argv: string[]) {
         gate: async (action, risk, reason, context) => {
           if (!attended) return false;
           const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene({
-            kind: 'risk_approval', capability: artifact.id, goal: artifact.description, reason: context ? JSON.stringify(context) : reason, url: runtime!.surface.currentUrl(),
-          });
+            kind: 'risk_approval', capability: artifact.id, goal: artifact.description, reason, url: runtime!.surface.currentUrl(),
+          }, context);
           return decision === 'retry';
         }, beforeDispatch: () => journal!.update(record!.runId, 'dispatching'),
       });
@@ -394,6 +396,44 @@ function validate() {
   if (drift) process.exit(1);
 }
 
+async function approvalCommand(command: 'approval' | 'approve' | 'refuse', argv: string[]): Promise<void> {
+  const { flags } = parseArgs(argv);
+  const expected = command === 'approval' ? ['run'] : ['approval', 'run'];
+  if (Object.keys(flags).some(flag => !expected.includes(flag))) fatal(`Unknown flag for ${command}`);
+  const runId = requireUuid(flags.run, '--run');
+  if (command === 'approval') {
+    const response = await requestApproval(runId, { action: 'status' });
+    if (!('pending' in response)) throw new RequestError(409, 'No pending risk approval');
+    const pending = response.pending;
+    console.log(`run        : ${runId}`);
+    console.log(`capability : ${terminalText(pending.capability)}`);
+    console.log(`goal       : ${terminalText(pending.goal)}`);
+    console.log(`reason     : ${terminalText(pending.reason)}`);
+    console.log(`artifact   : ${terminalText(pending.action ? `${pending.action.artifact}@${pending.action.version}` : '(unavailable)')}`);
+    console.log(`step       : ${terminalText(pending.action?.stepId ?? '(unavailable)')}`);
+    console.log(`destination: ${terminalText(pending.action?.destination ?? pending.url)}`);
+    console.log(`method     : ${terminalText(pending.action?.method ?? '(unavailable)')}`);
+    console.log(`operator   : ${terminalText(pending.action?.operator ?? '(unavailable)')}`);
+    console.log(`branch     : ${terminalText(pending.action?.branch ?? '(unavailable)')}`);
+    console.log(`role       : ${terminalText(pending.action?.role ?? '(unavailable)')}`);
+    console.log(`control    : ${terminalText(pending.action?.control ?? '(unavailable)')}`);
+    console.log(`token      : ${pending.action ? pending.action.tokenPresent ? 'present' : 'missing' : '(unavailable)'}`);
+    console.log(`facts      : ${JSON.stringify(pending.action?.facts ?? {})}`);
+    console.log(`expires    : ${new Date(pending.expiresAt).toISOString()}`);
+    console.log(`approval   : ${pending.approvalId}`);
+    console.log(`approve    : npx tsx cli.ts approve --run ${runId} --approval ${pending.approvalId}`);
+    console.log(`refuse     : npx tsx cli.ts refuse --run ${runId} --approval ${pending.approvalId}`);
+    return;
+  }
+
+  const approvalId = requireUuid(flags.approval, '--approval');
+  if (command === 'approve' && !process.stdin.isTTY) fatal('approve requires an interactive terminal (stdin is not a TTY)');
+  await requestApproval(runId, { action: 'decide', approvalId, decision: command === 'approve' ? 'approve' : 'abort' });
+  console.log(command === 'approve'
+    ? 'Approval decision recorded; the runner will recheck the action before any post.'
+    : 'Refusal recorded; the run will abort.');
+}
+
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const [cmd, ...rest] = argv;
   try {
@@ -402,8 +442,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     else if (cmd === 'replay') await replay(rest);
     else if (cmd === 'list') list();
     else if (cmd === 'validate') validate();
+    else if (cmd === 'approval' || cmd === 'approve' || cmd === 'refuse') await approvalCommand(cmd, rest);
     else {
-      console.log('usage: cli.ts <discover|replay|list|validate|serve> [flags]');
+      console.log('usage: cli.ts <discover|replay|approval|approve|refuse|list|validate|serve> [flags]');
       process.exit(1);
     }
   } catch (error) {
