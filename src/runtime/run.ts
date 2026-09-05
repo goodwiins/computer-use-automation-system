@@ -6,7 +6,7 @@ import type { Policy } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import { BrowserSurface } from '../surface/browser.js';
 import { GuardedSurface, type HumanGate } from '../surface/guarded.js';
-import { meridianTransferMemberTable, openShareFactsFromParams, transferFactsFromParams } from './contracts.js';
+import { memberUpdateFactsFromParams, meridianMemberContactTable, meridianTransferMemberTable, openShareFactsFromParams, transferFactsFromParams } from './contracts.js';
 import type { ActionContext } from './approval.js';
 import type { AppProfile, FaultScenario } from './profile.js';
 
@@ -30,8 +30,10 @@ export function createRuntime(options: {
   const strict = options.profile?.appId === 'meridian';
   const transfer = strict ? transferFactsFromParams(options.params) : undefined;
   const openShare = strict && options.artifact === 'meridian-open-share' ? openShareFactsFromParams(options.params) : undefined;
+  const memberUpdate = strict && options.artifact === 'meridian-update-member' ? memberUpdateFactsFromParams(options.params) : undefined;
   if (strict && options.artifact === 'meridian-funds-transfer' && !transfer) throw new Error('Canonical funds transfer requires a complete transfer request');
   if (strict && options.artifact === 'meridian-open-share' && !openShare) throw new Error('Canonical open share requires a complete request');
+  if (strict && options.artifact === 'meridian-update-member' && !memberUpdate) throw new Error('Canonical member update requires a complete request');
   const redactor = new Redactor();
   const promptRedactor = new Redactor();
   if (options.operator) promptRedactor.addSensitiveValues([options.operator.password]);
@@ -47,11 +49,13 @@ export function createRuntime(options: {
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
       transfer: transfer ? { expected: transfer, memberTable: meridianTransferMemberTable } : undefined,
       openShare: openShare ? { expected: openShare, memberTable: meridianTransferMemberTable } : undefined,
+      memberUpdate: memberUpdate ? { expected: memberUpdate, contactTable: meridianMemberContactTable } : undefined,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
     } : undefined, (event, data) => logger.log(event, data));
   let timer: ReturnType<typeof setTimeout>;
   const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
-    validateCompletion: openShare ? surface.validateOpenShareCompletion.bind(surface) : undefined,
+    validateCompletion: openShare ? surface.validateOpenShareCompletion.bind(surface)
+      : memberUpdate ? surface.validateMemberUpdateCompletion.bind(surface) : undefined,
     close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };
   timer = setTimeout(() => { void closeRuntime(runtime); }, 600_000);
   timer.unref();

@@ -8,6 +8,7 @@ export type TransferFacts = {
 export type TransferShare = { share: string; status: string; balance: string };
 export type OpenShareFacts = { member: string; shareType: string; deposit: string };
 export type OpenShareResult = OpenShareFacts & { shareId: string };
+export type MemberUpdateFacts = { member: string; email: string; phone: string; address: string };
 
 /** Observed in the approved member-record extraction; values are never interpolated into its selectors. */
 export const meridianTransferMemberTable: {
@@ -26,6 +27,29 @@ export const meridianTransferMemberTable: {
   rowSelector: 'tr:not(:first-child)',
 };
 
+/** Observed first leaf table on the approved member-record page. */
+export const meridianMemberContactTable: {
+  target: TargetDescriptor; columns: TableColumn[]; rowSelector: string;
+} = {
+  target: {
+    description: 'the observed member contact table',
+    strategies: [{ kind: 'css', selector: 'body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(1)' }],
+  },
+  columns: [
+    { name: 'memberLabel', selector: 'tr:nth-of-type(1) > td:nth-of-type(1)', type: 'string', sensitive: true },
+    { name: 'member', selector: 'tr:nth-of-type(1) > td:nth-of-type(2)', type: 'string', sensitive: true },
+    { name: 'nameLabel', selector: 'tr:nth-of-type(1) > td:nth-of-type(3)', type: 'string', sensitive: true },
+    { name: 'name', selector: 'tr:nth-of-type(1) > td:nth-of-type(4)', type: 'string', sensitive: true },
+    { name: 'emailLabel', selector: 'tr:nth-of-type(2) > td:nth-of-type(1)', type: 'string', sensitive: true },
+    { name: 'email', selector: 'tr:nth-of-type(2) > td:nth-of-type(2)', type: 'string', sensitive: true },
+    { name: 'phoneLabel', selector: 'tr:nth-of-type(2) > td:nth-of-type(3)', type: 'string', sensitive: true },
+    { name: 'phone', selector: 'tr:nth-of-type(2) > td:nth-of-type(4)', type: 'string', sensitive: true },
+    { name: 'addressLabel', selector: 'tr:nth-of-type(3) > td:nth-of-type(1)', type: 'string', sensitive: true },
+    { name: 'address', selector: 'tr:nth-of-type(3) > td:nth-of-type(2)', type: 'string', sensitive: true },
+  ],
+  rowSelector: 'tbody',
+};
+
 export function transferFactsFromParams(params: Record<string, string | number>): TransferFacts | undefined {
   const names = ['member', 'sourceShare', 'destinationShare', 'amount', 'memo'] as const;
   if (!names.every(name => typeof params[name] === 'string')) return undefined;
@@ -38,8 +62,15 @@ export function openShareFactsFromParams(params: Record<string, string | number>
   return Object.fromEntries(names.map(name => [name, params[name]!])) as OpenShareFacts;
 }
 
+export function memberUpdateFactsFromParams(params: Record<string, string | number>): MemberUpdateFacts | undefined {
+  const names = ['member', 'email', 'phone', 'address'] as const;
+  if (!names.every(name => typeof params[name] === 'string')) return undefined;
+  return Object.fromEntries(names.map(name => [name, params[name]!])) as MemberUpdateFacts;
+}
+
 const transferCheckFailed = (): never => { throw new Error('Transfer facts failed validation'); };
 const openShareCheckFailed = (): never => { throw new Error('Open-share facts failed validation'); };
+const memberUpdateCheckFailed = (): never => { throw new Error('Member-update facts failed validation'); };
 
 function positiveCents(value: string): number {
   try {
@@ -110,6 +141,10 @@ export function assertOpenShareResult(expected: OpenShareFacts, priorShareIds: r
   assertOpenShareFacts(expected, actual);
   if (!actual.shareId.trim() || priorShareIds.some(id => !id.trim()) || new Set(priorShareIds).size !== priorShareIds.length || priorShareIds.includes(actual.shareId)) return openShareCheckFailed();
   if (Object.keys(outputs).length !== 1 || typeof outputs.shareId !== 'string' || outputs.shareId !== actual.shareId) return openShareCheckFailed();
+}
+
+export function assertMemberUpdateFacts(expected: MemberUpdateFacts, actual: MemberUpdateFacts): void {
+  if (expected.member !== actual.member || expected.email !== actual.email || expected.phone !== actual.phone || expected.address !== actual.address) return memberUpdateCheckFailed();
 }
 
 const TRANSFER_TRANSACTION_COLUMNS = [

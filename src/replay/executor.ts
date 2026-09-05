@@ -53,6 +53,7 @@ export async function runReplay(
   // Per-tenant defaults (from an overlay) fill in under the caller's params.
   params = { ...artifact.paramDefaults, ...params };
   const transfer = artifact.app.appId === 'meridian' ? transferFactsFromParams(params) : undefined;
+  const requiresFreshCompletion = artifact.app.appId === 'meridian' && ['meridian-open-share', 'meridian-update-member'].includes(artifact.id);
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
@@ -79,8 +80,8 @@ export async function runReplay(
   if (artifact.status === 'draft' && deps.policy.requireApprovedForUnattended && !deps.escalate) {
     return fail({ stepId: '(pre-flight)', intent: 'authorize unattended replay', expected: 'artifact status "approved"', observed: 'status "draft" — run attended (--attended) or approve the artifact' });
   }
-  if (artifact.app.appId === 'meridian' && artifact.id === 'meridian-open-share' && !deps.validateCompletion) {
-    return fail({ stepId: '(pre-flight)', intent: 'bind open-share completion validation', expected: 'a fresh member-share read-back validator', observed: 'completion validator is unavailable' });
+  if (requiresFreshCompletion && !deps.validateCompletion) {
+    return fail({ stepId: '(pre-flight)', intent: 'bind completion validation', expected: 'a fresh member-record read-back validator', observed: 'completion validator is unavailable' });
   }
 
   logger.log('replay.start', { capability: artifact.id, version: artifact.version, params });
@@ -405,10 +406,10 @@ export async function runReplay(
     try { assertTransferOutputs(transfer, outputs); }
     catch { return fail({ stepId: '(outputs)', intent: 'verify transfer completion details', expected: 'current transfer details matching the request', observed: 'Output does not satisfy its declared contract' }); }
   }
-  if (artifact.app.appId === 'meridian' && artifact.id === 'meridian-open-share') {
-    if (!deps.validateCompletion) return fail({ stepId: '(outputs)', intent: 'verify open-share completion details', expected: 'a fresh member-share read-back validator', observed: 'completion validator became unavailable' });
+  if (requiresFreshCompletion) {
+    if (!deps.validateCompletion) return fail({ stepId: '(outputs)', intent: 'verify completion details', expected: 'a fresh member-record read-back validator', observed: 'completion validator became unavailable' });
     try { await deps.validateCompletion(outputs); }
-    catch { return fail({ stepId: '(outputs)', intent: 'verify open-share completion details', expected: 'one newly observed share matching the request', observed: 'Output does not match fresh member state' }); }
+    catch { return fail({ stepId: '(outputs)', intent: 'verify completion details', expected: 'fresh member state matching the request', observed: 'Output does not match fresh member state' }); }
   }
   const shot = await logger.screenshot(surface, 'success');
   logger.log('replay.success', { outputs, screenshot: shot });
