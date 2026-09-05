@@ -158,8 +158,9 @@ export async function runDiscovery(
           }
           case 'done': {
             if (repaired) return finish('escalated', 'Human repair requires a fresh complete recording');
+            const finalUrl = surface.currentUrl();
             await deps.validateCompletion?.(outputs);
-            return finish('success', undefined, String(args.summary ?? ''));
+            return finish('success', undefined, String(args.summary ?? ''), finalUrl);
           }
           case 'escalate': {
             if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');

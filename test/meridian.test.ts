@@ -1224,6 +1224,72 @@ it('runs discovery completion validation before emitting success', async () => {
   expect(events.some(event => event.event === 'discovery.finish' && event.status === 'success')).toBe(true);
 });
 
+it('records the receipt endpoint before completion read-back and replays the generated checkpoint', async () => {
+  const receiptUrl = `${origin}/members/9001/open-share/post`;
+  const memberUrl = `${origin}/members/9001`;
+  const params = requestOpenShare();
+  const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
+  const calls = [
+    { name: 'click', args: { nameAttr: 'submit', reason: 'open share', risk: 'irreversible' } },
+    { name: 'assert', args: { kind: 'textVisible', text: 'Share opened', reason: 'verify receipt' } },
+    { name: 'extract', args: { nameAttr: 'shareId', outputName: 'shareId', reason: 'read new share ID' } },
+    { name: 'done', args: { summary: 'complete' } },
+  ];
+  let discoveryUrl = `${origin}/signon`;
+  const discoverySurface: Surface = {
+    mutationDispatched: false,
+    start: async url => { discoveryUrl = url; },
+    observe: async () => ({ url: discoveryUrl, title: '', frames: [] }), currentUrl: () => discoveryUrl, frameUrls: () => [discoveryUrl],
+    navigate: async url => { discoveryUrl = url; },
+    click: vi.fn(async () => { discoverySurface.mutationDispatched = true; discoveryUrl = receiptUrl; return report; }),
+    fill: async () => report, select: async () => report,
+    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && discoveryUrl === receiptUrl,
+    describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
+  };
+  const create = vi.fn(async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const discoveryCompletion = vi.fn(async () => { await discoverySurface.navigate(memberUrl); });
+  const discovery = await runDiscovery('open share', `${origin}/signon`, params, [origin], {
+    surface: discoverySurface, logger: new RunLogger('discovery', new Redactor(), temp(), true),
+    openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+    model: 'fixture', maxSteps: 4, validateCompletion: discoveryCompletion,
+  });
+  expect(discovery).toMatchObject({ status: 'success', finalUrl: receiptUrl });
+  expect(discovery.trace.at(-1)?.urlAfter).toBe(receiptUrl);
+  expect(discovery.trace.some(step => step.action === 'navigate')).toBe(false);
+  expect(discoveryUrl).toBe(memberUrl);
+  expect(discoveryCompletion).toHaveBeenCalledOnce();
+
+  const artifact = recordArtifact({
+    name: 'meridian-open-share', description: 'Open share', goal: 'Open share', entryUrl: `${origin}/signon`,
+    params, sensitiveParams: ['member', 'deposit'], allowedOrigins: [origin], appId: 'meridian', appDetectors: [], model: 'fixture', discoveryRunId: 'fixture',
+  }, discovery);
+  artifact.status = 'approved';
+  expect(artifact.successCondition).toEqual({ kind: 'urlMatches', pattern: '/members/{{member}}/open-share/post$' });
+
+  let replayUrl = `${origin}/signon`;
+  const replaySurface: Surface = {
+    mutationDispatched: false,
+    start: async url => { replayUrl = url; },
+    observe: async () => ({ url: replayUrl, title: '', frames: [] }), currentUrl: () => replayUrl, frameUrls: () => [replayUrl],
+    navigate: async url => { replayUrl = url; },
+    click: vi.fn(async () => { replaySurface.mutationDispatched = true; replayUrl = receiptUrl; return report; }),
+    fill: async () => report, select: async () => report,
+    readText: async () => ({ text: '9001-S0001-NEW', report }), isTextVisible: async text => text === 'Share opened' && replayUrl === receiptUrl,
+    describeTarget: async descriptor => descriptor, screenshot: async () => {}, close: async () => {},
+  };
+  const replayCompletion = vi.fn(async () => { await replaySurface.navigate(memberUrl); });
+  const replay = await runReplay(artifact, params, {
+    surface: replaySurface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion: replayCompletion,
+  });
+  expect(replay).toMatchObject({ status: 'success', outputs: { shareId: '9001-S0001-NEW' } });
+  expect(replayCompletion).toHaveBeenCalledOnce();
+  expect(replaySurface.click).toHaveBeenCalledOnce();
+  expect(replayUrl).toBe(memberUrl);
+});
+
 it('awaits replay open-share completion and keeps delayed rejection unknown after one dispatch', async () => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
