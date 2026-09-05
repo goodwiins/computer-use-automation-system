@@ -43,13 +43,13 @@ const requestOpenShare = () => ({ member: '9001', shareType: 'S0001', deposit: '
 const policy = Policy.parse({ allowedOrigins: [origin], allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'allow' } });
 const control: LiveControl = { url: `${origin}/members/1/hold/review`, destination: `${origin}/members/1/hold/post`, method: 'POST', control: 'Apply Hold', submit: true, operator: 'SUPER1', branch: 'MAIN-001', role: 'SUPERVISOR', conditions: [], facts: { share: '1-A', reason: 'FRAUD' }, tokenPresent: true, error: false };
 const target = { description: 'submit', strategies: [{ kind: 'nameAttr' as const, name: 'submit' }] };
-function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>) {
+function guarded(overrides: Partial<Surface> = {}, gate = async () => true, context = {}, onAction?: (event: string, data: Record<string, unknown>) => void, onDispatch?: (expected: LiveControl) => void | Promise<void>, onInspect?: () => void | Promise<void>, policyOverride = policy) {
   let live = structuredClone(control);
   const dispatch = vi.fn(async () => ({ strategyUsed: 0, kind: 'nameAttr', matches: 1 }));
   const surface: Surface = { start: async () => {}, navigate: async () => {}, observe: async () => ({ url: control.url, title: '', frames: [] }), currentUrl: () => control.url, frameUrls: () => [control.url], click: dispatch, fill: dispatch, select: dispatch, readText: async () => ({ text: 'ok', report: await dispatch() }), isTextVisible: async text => text === 'done', describeTarget: async t => t, screenshot: async () => {}, close: async () => {}, prepareClick: async () => ({ inspect: async () => { await onInspect?.(); return structuredClone(live); }, dispatch: async expected => { await onDispatch?.(expected); return dispatch(); } }), ...overrides };
   const session = new ControlSession();
   const beforeDispatch = vi.fn();
-  return { surface: new GuardedSurface(surface, policy, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
+  return { surface: new GuardedSurface(surface, policyOverride, gate, undefined, { profile, session, deadline: Date.now() + 10000, runId: randomUUID(), artifact: 'hold', version: '1.0.0', operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch, ...context }, onAction), dispatch, session, beforeDispatch, change: (c: Partial<LiveControl>) => { live = { ...live, ...c }; } };
 }
 
 function stepReportingArtifact() {
@@ -1047,40 +1047,42 @@ describe('MERIDIAN guarded open-share path', () => {
   });
   const facts = reviewFacts();
 
-  function harness(initialRows = priorRows, expected = request) {
+  function harness(initialRows = priorRows, expected = request, allowedOrigins = [origin]) {
     let rows = initialRows;
-    let url = `${origin}/members`;
+    const operationOrigin = allowedOrigins[1] ?? allowedOrigins[0]!;
+    let url = `${operationOrigin}/members`;
     let navigation = 0;
     let frameId = 'open-share-workarea';
     const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
     const gate = vi.fn(async () => true);
+    const navigate = vi.fn(async next => { url = next; navigation++; });
     const run = guarded({
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
-      frameUrls: () => [`${origin}/frameset`, url],
-      navigate: async next => { url = next; navigation++; },
+      frameUrls: () => [`${operationOrigin}/frameset`, url],
+      navigate,
       readTable: async () => rows,
     }, gate, { artifact: 'meridian-open-share', openShare: { expected, memberTable: meridianTransferMemberTable } }, undefined,
-    async expected => { url = expected.destination; navigation++; });
+    async expected => { url = expected.destination; navigation++; }, undefined, Policy.parse({ ...policy, allowedOrigins }));
     const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
-    const memberUrl = `${origin}/members/9001`;
+    const memberUrl = `${operationOrigin}/members/9001`;
     const openUrl = `${memberUrl}/open-share`;
     const reviewUrl = `${openUrl}/review`;
     const postUrl = `${openUrl}/post`;
     return {
-      run, gate, memberUrl, openUrl, reviewUrl, postUrl,
+      run, gate, navigate, startUrl: `${operationOrigin}/members`, memberUrl, openUrl, reviewUrl, postUrl,
       setRows(next: typeof priorRows) { rows = next; },
       setFrame(id: string) { frameId = id; },
       setLive,
     };
   }
 
-  async function reviewedOpenShare(expected = request) {
-    const h = harness(priorRows, expected);
+  async function reviewedOpenShare(expected = request, allowedOrigins = [origin]) {
+    const h = harness(priorRows, expected, allowedOrigins);
     const expectedFacts = reviewFacts(expected);
-    await h.run.surface.start(`${origin}/members`);
-    h.setLive({ url: `${origin}/members`, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
     await h.run.surface.click(target);
     h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
     await h.run.surface.click(target);
@@ -1148,6 +1150,16 @@ describe('MERIDIAN guarded open-share path', () => {
     expect(h.run.dispatch).toHaveBeenCalledOnce();
     h.setRows([...priorRows, { shareId: `9001-${shareType}-NEW`, type: label, balance: '5.00', status: 'OPEN' }]);
     await expect(h.run.surface.validateOpenShareCompletion({ shareId: `9001-${shareType}-NEW` })).resolves.toBeUndefined();
+  });
+
+  it('reads open-share completion from the bound operation origin', async () => {
+    const boundOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [origin, boundOrigin]);
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+    expect(h.navigate).toHaveBeenCalledWith(h.memberUrl);
+    expect(h.navigate).not.toHaveBeenCalledWith(`${origin}/members/9001`);
   });
 
   it.each([

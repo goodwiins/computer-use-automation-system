@@ -655,7 +655,7 @@ export class GuardedSurface implements Surface {
     const binding = this.runtime?.openShare;
     const state = this.openShareState;
     if (!binding || !state || !this.mutationDispatched || state.member !== binding.expected.member) throw new Error('Open-share completion is not bound to a dispatched request');
-    const memberUrl = new URL(`/members/${binding.expected.member}`, this.policy.allowedOrigins[0]).toString();
+    const memberUrl = new URL(`/members/${binding.expected.member}`, state.frame.url).toString();
     await this.navigate(memberUrl);
     const before = this.currentOpenShareFrame();
     if (this.path(before.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
