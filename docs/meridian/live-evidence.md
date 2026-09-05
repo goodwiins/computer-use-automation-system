@@ -1,8 +1,8 @@
-# MERIDIAN live evidence — September 4, 2026
+# MERIDIAN live evidence — September 5, 2026
 
 Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The read/dashboard acceptance baseline is integrated into `dev` at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; its hosted CI passed. Offline fixtures, API routing and read rehearsals do not increase the capability count or establish a write.
 
-The current runtime baseline after PRs #39 and #41 is `aa90387244be07b9955b8b5b83eacf4b9f3058a1`. It retains the read baseline and adds reviewed transfer and terminal-lifecycle protections; it did not execute a new live run, promote the transfer draft, or change any producing source SHA below.
+The integrated runtime baseline after PRs #39, #41 and #43 is `4f84b9fbcb9b5a1fc09cd05611277b3357561728`. It includes transfer guards, terminal-lifecycle repairs and the pre-intent `INSUFFICIENT_FUNDS` business outcome. These integrations do not promote the transfer draft or change any earlier producing source SHA.
 
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
 
@@ -98,3 +98,9 @@ The remaining operation-specific unhappy paths include natural and injected busi
 The Task 5a read-only map confirms the member shares table used for current eligibility: `body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > table:nth-of-type(2)`, with `shareId`, `type`, `balance` and `status` columns and `tr:not(:first-child)` to exclude its observed legacy header row. Native transfer facts are `_token`, `from`, `to`, `amount` and `memo`. The recorded review labels and formats are `Member: <member> - <name>`, `From:/To: <share> ($<balance>)`, `Amount: $<amount>`, and `Memo: <memo>`; runtime requires those labels to be uniquely scoped to the transfer form table. The confirmation value has an observed static label/value relationship.
 
 The transaction result's label set, row order, header shape and confirmation/detail relationship remain unverified. Task 5b therefore requires a canonical transaction row (`member`, `sourceShare`, `destinationShare`, `amount`, `memo`, `confirmation`) in the next recording, compares it with the separate confirmation output, and fails closed on legacy or ambiguous shapes. The reviewed runtime does not promote the draft or prove replay success; a new complete recording must establish result selectors and explicit header handling before Task 5c.
+
+## Replacement transfer recording — sign-on failure
+
+The operator selected a new demo transfer with the unresolved result-extraction limitation understood. Genuine Luna discovery `a2941fc8-fd27-4470-bff2-d20b71058349` used runtime source `4f84b9fbcb9b5a1fc09cd05611277b3357561728` and a separately saved request key. It stopped at sign-on and was aborted without human repair. Its authenticated journal is terminal `failure`; the evaluator passed with task status `failure`, 6 attempts, zero mutation intents and no violations. No transfer review, posting approval, candidate artifact or replay resulted. The original successful discovery and draft remain unchanged.
+
+A separate read-only probe using the actual CLI loader (`node --import tsx`) reproduced `elementHandle.evaluate: ReferenceError: __name is not defined` in `inspectControl`. The hosted sign-on has a unique native submit input; the failure occurs when inspecting it, before dispatch. The runtime repair uses self-contained local helper methods and adds a regression under that loader for sign-on, complete transfer review and duplicate-label rejection. Restarting the recording requires the reviewed repair baseline. Passing the older Vitest fixtures alone did not establish this CLI path. Result layout and transfer acceptance remain unverified; coverage stays `3/7`.

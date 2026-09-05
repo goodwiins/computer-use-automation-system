@@ -572,16 +572,27 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
   const body = document.body.innerText;
   const facts: Record<string, string> = {};
-  const addFact = (name: string, value: string) => {
-    if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
-    facts[name] = value;
+  // Method shorthand keeps this serialized function independent of tsx's
+  // module-scoped __name helper for assigned function expressions.
+  const { addFact, isRendered, renderedText, ownLabels } = {
+    addFact(name: string, value: string) {
+      if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
+      facts[name] = value;
+    },
+    isRendered(node: Element | null): node is Element {
+      if (!node || node.getClientRects().length === 0) return false;
+      const style = getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    },
+    renderedText(node: Element | null) {
+      return node ? (node as HTMLElement).innerText.trim() : '';
+    },
+    ownLabels(table: HTMLTableElement) {
+      return Array.from(table.querySelectorAll('tr'))
+        .filter(row => row.closest('table') === table && isRendered(row))
+        .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl') && isRendered(cell) && isRendered(cell.nextElementSibling)));
+    },
   };
-  const isRendered = (node: Element | null): node is Element => {
-    if (!node || node.getClientRects().length === 0) return false;
-    const style = getComputedStyle(node);
-    return style.display !== 'none' && style.visibility !== 'hidden';
-  };
-  const renderedText = (node: Element | null) => node ? (node as HTMLElement).innerText.trim() : '';
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
@@ -589,9 +600,6 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
       }
     }
     const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
-    const ownLabels = (table: HTMLTableElement) => Array.from(table.querySelectorAll('tr'))
-      .filter(row => row.closest('table') === table && isRendered(row))
-      .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl') && isRendered(cell) && isRendered(cell.nextElementSibling)));
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
