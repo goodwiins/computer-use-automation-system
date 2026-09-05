@@ -115,6 +115,57 @@ it('never awards a pass for missing, sampled, malformed, or uncertain evidence',
   expect(evaluateRun(encode(read), record).status).toBe('pass');
 });
 
+it('rejects duplicate classifications and retains mutation evidence in either order', () => {
+  const mutation = trajectory[1]!;
+  const read = { ...mutation, effectiveRisk: 'read', mutation: false };
+  for (const classifications of [[mutation, read], [read, mutation], [mutation, mutation], [read, read]]) {
+    const result = evaluateRun(encode([trajectory[0]!, ...classifications, trajectory[4]!, trajectory[5]!]), record);
+    expect(result.status).toBe('fail');
+    expect(result.violations).toContain('DUPLICATE_RISK_CLASSIFICATION');
+    if (classifications.includes(mutation)) expect(result.violations).toContain('MUTATION_WITHOUT_INTENT');
+  }
+});
+
+it('requires explicit boolean mutation metadata, including legacy classifications', () => {
+  for (const effectiveRisk of ['read', 'irreversible']) {
+    for (const mutation of [undefined, null, 'false', 'true', 0, 1, {}, []]) {
+      const classification = { ...trajectory[1]!, effectiveRisk, mutation };
+      const result = evaluateRun(encode([trajectory[0]!, classification, trajectory[4]!, trajectory[5]!]), record);
+      expect(result.status).toBe('unknown');
+      expect(result.incomplete).toContain('INVALID_RISK_CLASSIFICATION');
+    }
+  }
+});
+
+it('rejects risk enum values that only become valid through string coercion', () => {
+  for (const field of ['requestedRisk', 'effectiveRisk']) {
+    const classification = { ...trajectory[1]!, effectiveRisk: 'read', mutation: false, [field]: ['read'] };
+    expect(evaluateRun(encode([trajectory[0]!, classification, trajectory[4]!, trajectory[5]!]), record))
+      .toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_RISK_CLASSIFICATION']) });
+  }
+});
+
+it('keeps invalid first classifications incomplete after a valid duplicate', () => {
+  for (const invalid of [
+    { ...trajectory[1]!, mutation: undefined },
+    { ...trajectory[1]!, effectiveRisk: 'invalid' },
+  ]) {
+    const result = evaluateRun(encode([trajectory[0]!, invalid, ...trajectory.slice(1)]), record);
+    expect(result.status).toBe('fail');
+    expect(result.violations).toContain('DUPLICATE_RISK_CLASSIFICATION');
+    expect(result.violations).toContain('DISPATCH_WITHOUT_CLASSIFICATION');
+    expect(result.incomplete).toContain('INVALID_RISK_CLASSIFICATION');
+  }
+});
+
+it('accepts a failed click before classification without treating absent metadata as a read', () => {
+  const failed = [trajectory[0]!, { ...trajectory[4]!, status: 'failure' }, { event: 'replay.failure' }];
+  expect(evaluateRun(encode(failed), { ...record, state: 'failure' }).status).toBe('pass');
+  const legacy = { ...trajectory[1]!, mutation: undefined };
+  expect(evaluateRun(encode([failed[0]!, legacy, ...failed.slice(1)]), { ...record, state: 'failure' }))
+    .toMatchObject({ status: 'unknown', incomplete: ['INVALID_RISK_CLASSIFICATION'] });
+});
+
 it('reads authenticated journal state without recovering it and prevents clearing dispatch uncertainty', () => {
   const dir = temp(); const journal = new Journal(dir, key);
   try {
