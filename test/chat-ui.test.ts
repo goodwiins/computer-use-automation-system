@@ -840,3 +840,17 @@ it('offline disconnect, auth expiry and pagehide clear a newly typed credential 
   expect(await page.locator('#credential').inputValue()).toBe('');
   expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
 }, 15000);
+
+it('disables credential entry and dispatch in a UI-only deployment', async () => {
+  const { page, url, state } = await fixture();
+  await page.route(url + '/', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('<html lang="en">', '<html lang="en" data-ui-preview="true">') });
+  });
+  await page.reload();
+  expect(await page.getByRole('note').textContent()).toContain('Backend not connected');
+  expect(await page.getByLabel('API credential').isDisabled()).toBe(true);
+  expect(await page.getByRole('button', { name: 'Connect', exact: true }).isDisabled()).toBe(true);
+  await page.locator('#login').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(state.requests.filter(request => request.path === '/capabilities' || request.method === 'POST')).toEqual([]);
+});

@@ -6,9 +6,11 @@ import { Chat } from './chat';
 import { CapabilityCatalog, RunHistory } from './dashboard';
 import './style.css';
 
+const preview = document.documentElement.dataset.uiPreview === 'true';
+
 function App() {
   const [session, setSession] = useState<Session>();
-  const [status, setStatus] = useState('Connect with a caller or operator credential.');
+  const [status, setStatus] = useState(preview ? 'UI-only preview. Live execution, chat, approvals, and evidence access are unavailable.' : 'Connect with a caller or operator credential.');
   const [connecting, setConnecting] = useState(false);
   const loginAttempt = useRef(0);
   const loginForm = useRef<HTMLFormElement>(null);
@@ -25,6 +27,7 @@ function App() {
   }, [disconnect]);
   async function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (preview) return;
     const form = event.currentTarget;
     const token = String(new FormData(form).get('credential') ?? '');
     form.reset();
@@ -49,6 +52,7 @@ function App() {
       <header>
         <p className="eyebrow">MERIDIAN / CAPABILITY CONSOLE</p>
         <h1>Run with a clear record.</h1>
+        {preview && <p role="note"><strong>UI-only preview · Backend not connected</strong></p>}
         <p>Request a capability, follow its progress, and review the evidence.</p>
       </header>
       <main>
@@ -60,11 +64,12 @@ function App() {
                 id="credential"
                 name="credential"
                 type="password"
+                disabled={preview}
                 required
                 autoComplete="off"
                 spellCheck={false}
               />
-              <button disabled={connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
+              <button disabled={preview || connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
               {session && (
                 <button type="button" onClick={disconnect}>
                   Disconnect

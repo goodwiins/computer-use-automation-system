@@ -417,3 +417,19 @@ The branch remains local and unpublished. Shared documentation is owned by
 “Review plan against file”; its pending final checkpoint was not silently
 integrated or represented as reviewed here. Setup and demo commands above remain
 the handoff instructions.
+
+## Authorized Vercel UI-only preview
+
+After the local handoff, the user explicitly authorized a UI-only deployment.
+URL: https://meridian-core-ui-preview.vercel.app
+Deployment: `dpl_5obfifowQNShkumpe6zbA9zDaFw3` in `goodwiins-projects`.
+Only the built HTML, CSS, JavaScript and static Vercel configuration were uploaded;
+no backend, credentials, artifacts, journals or evidence were included.
+The deployment HTML sets `data-ui-preview="true"`: credential entry and Connect
+are disabled, submission exits without dispatch, and the page clearly labels the
+backend as unavailable. Its CSP also sets `connect-src 'none'`.
+
+Both typechecks, the Vite build and the focused browser regression pass. The live
+alias returned HTTP 200, rendered the preview notice and disabled controls, and
+produced zero page errors and POST requests. Live capability acceptance remains
+3/7; this frontend publication does not advance backend or write acceptance.
