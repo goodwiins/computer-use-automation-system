@@ -619,7 +619,8 @@ export class GuardedSurface implements Surface {
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
         const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         const openSharePost = OPEN_SHARE_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
-        const memberUpdatePost = this.runtime.artifact === 'meridian-update-member' && UPDATE_ROUTE.test(this.path(live.destination));
+        const memberUpdatePost = this.runtime.artifact === 'meridian-update-member' && rule?.mutation === true
+          && UPDATE_ROUTE.test(this.path(live.destination));
         if (rule?.mutation) {
           this.assertMeridianMutationOrigin(live);
           this.assertCapabilityOperation(live.destination);

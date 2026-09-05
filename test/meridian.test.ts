@@ -1455,6 +1455,7 @@ describe('MERIDIAN guarded member-update path', () => {
     setLive();
     return {
       run, gate, setLive, currentUrl: () => url,
+      setUrl(next: string) { url = next; navigation++; },
       setRows(next: Array<Record<string, string>>) { rows = next; },
       replaceFrame() { frameId = 'replacement-workarea'; },
       replaceFrameDuringRead() { changeFrameDuringRead = true; },
@@ -1466,6 +1467,25 @@ describe('MERIDIAN guarded member-update path', () => {
     for (const [field, value] of [['member', '09001'], ['email', 'MEMBER@example.test'], ['phone', '(555) 000-1111'], ['address', '1 Main St.']] as const) {
       expect(() => assertMemberUpdateFacts(request, { ...request, [field]: value })).toThrow(/member-update/i);
     }
+  });
+
+  it('enters the update form through the normal member-record link before saving', async () => {
+    const h = harness();
+    const memberUrl = `${origin}/members/9001`;
+    const updateUrl = `${memberUrl}/update`;
+    h.setUrl(memberUrl);
+    h.setLive({ url: memberUrl, destination: updateUrl, method: 'GET', control: 'Update Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+    expect(h.currentUrl()).toBe(updateUrl);
+
+    h.setLive();
+    await h.run.surface.click(target);
+    expect(h.gate).toHaveBeenCalledOnce();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).toHaveBeenCalledTimes(2);
   });
 
   it.each([
