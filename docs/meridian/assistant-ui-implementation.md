@@ -147,13 +147,25 @@ Source `681ab82a25aa9238b4ac15a542dc92b55d53adb1` integrates reviewed
 Task 1 `5c5df38`, Task 2 `3c7528d`, Task 3 correction `fa934f4`, and reviewed
 discovery-contract source `e507e8af` through dev merge `245ba838`.
 
+Subsequent local integration `3cc0ee4827d798ad8dfe887dd231af20b5ab9090`
+includes independently reviewed discovery/recovery repair
+`90ce880701251631e317c99d1f53170301e98f3c` and shared documentation
+checkpoint `254ac519`. The combined branch passes `npm run ci`,
+`npm run validate`, `npm audit --audit-level=moderate`, and `git diff --check`:
+391 tests across 19 files, both typechecks, production build, artifact validation,
+and zero dependency vulnerabilities. Included recovery regressions cover both
+discovery and replay, refuse mutation/approval controls and post-intent recovery,
+and require guarded recovery support without invoking the model or escalation.
+These are offline safety checks; no additional hosted invocation was made.
+The three live phases below remain evidence for source `681ab82`.
+
 | Requirement | Verified result / remaining boundary |
 | --- | --- |
 | AI SDK caller chat and assistant-ui | Genuine configured Azure model invoked an approved read through the production bundle; authoritative card/dashboard result agreement verified |
 | Shared run state, evidence, approval controls, accessibility | Offline bundled browser checks pass; live reads prove history/reconnect and typed results; live mutation approval remains a separate gate |
 | Exceptional read | Separate direct inquiry observed `business_outcome / NO_SUCH_MEMBER`; evaluator passed |
 | Model-free replay | Fresh process without provider credentials/configuration invoked the approved read through the direct UI form; evaluator passed |
-| Integrated local gates | Both typechecks, build, 309 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
+| Integrated local gates | At `3cc0ee4`: both typechecks, build, 391 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
 | Seven discovery/artifact/replay pairs | Coordinating task owns the complete matrix; this UI verification does not add write acceptance or complete the four write gates |
 | Publication / hosted checks | This task made no push, PR, remote merge or deployment; branch-head hosted checks remain outside this local result |
 
@@ -309,7 +321,7 @@ contains target choices: `src/runtime/profile.ts` selects policy by app ID;
 `src/server/service.ts` applies contracts/operator context; `src/runtime/run.ts`
 wires transfer facts and the member table contract; `src/runtime/contracts.ts`
 contains observed target structure; `src/replay/executor.ts` validates transfer
-outputs. A second concrete target should drive any extraction. This work proves
+outputs and selects guarded detector recovery for MERIDIAN. A second concrete target should drive any extraction. This work proves
 no second-target portability.
 
 The production JS bundle is 723.38 kB minified / 212.42 kB gzip and retains Vite's
