@@ -30,3 +30,9 @@ Status: complete in the isolated worktree. Baseline was `5af34c1ff07f945ed006123
 - No full suite, pre-push, push, headful/CUA/live-target run or real approval was performed, as assigned. Parent owns full CI, independent review, the real tool-PTY top-level approve check and PR delivery.
 - The implementation does not add TCP, persistence, a daemon, remote/API CLI behavior, automatic pending-action selection or a dependency. API-managed approval remains unchanged.
 - Review reproduced a Node 22 platform limit: `net.Server.close()` automatically unlinks the filesystem path that the server originally bound, even if the directory owner manually replaced that path before close. Public Node 22 `net.ListenOptions` has no cleanup/unlink control. Private Node APIs, rename/restore races and leaked listeners were rejected as disproportionate. The honest boundary is exclusive same-user ownership of the private active endpoint directory/path: do not mutate it while the runner is active. Startup never overwrites an existing endpoint; a crash-stale path is removed manually only after confirming its runner stopped.
+
+## Hosted CI follow-up
+
+- PR #65 head `048e7b4` run `33991700966`, producer job `101374975966`, passed typecheck and 565 tests but failed `test/approval-cli.test.ts:124`: the winner acknowledgment had succeeded, while the remote idle client's `close` event had not yet been delivered when `idle.destroyed` was asserted.
+- Commit `f573bc66950b08ee5ba8a9ce333a2e4a2d76214f` registers the idle client's close promise before server cleanup, awaits the actual event under Vitest's timeout, then preserves the destruction and winner-acknowledgment assertions. No runtime source changed.
+- `npx vitest run test/approval-cli.test.ts -t 'uses the Approval state machine for first-decision-wins and drains the winner response during cleanup'` — passed, 1/1 selected. `git diff --check` — passed before commit.
