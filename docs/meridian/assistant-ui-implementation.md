@@ -147,13 +147,56 @@ runbook/write-up, and hosted checks where publication is authorized.
 | --- | --- | --- |
 | Seven genuine discovery/artifact/replay pairs | Coordinating task | 3/7 historically accepted; four write gates incomplete |
 | Runtime safety, idempotency, unknown outcome, evidence | Coordinating task + shared integration | Base includes PR46; additional evidence/CLI audit underway |
-| Vercel AI SDK typed caller chat | Task 1 | Pending |
+| Vercel AI SDK typed caller chat | Task 1 | Implemented at 5c5df38; independent review approved after two fixes. Real AI SDK protocol with offline model fixtures; live model gate pending |
 | assistant-ui runtime and component map | Task 2 | Pending |
 | Shared run state, approvals, evidence, accessibility | Task 2 | Pending |
 | Live model/read UI invocation and exceptional path | Task 3 | Pending |
-| Local CI/build/validate and diff checks | All | Baseline running |
+| Local CI/build/validate and diff checks | All | Task 1 at 7eeb447: 285 tests / 18 files, typecheck, artifact validation, and diff checks pass. New UI/build gates pending |
 | Review, setup, exact commands, write-up, handoff | Task 3 + coordinating task | Pending |
 
 No full-completion claim is made by this branch until all goal requirements have
 authoritative evidence. Offline fixtures and recorded evidence do not increase
 the live accepted capability count.
+
+## UI acceptance map
+
+| Flow | Observable result | Proof to retain |
+| --- | --- | --- |
+| Connect as caller/operator | Only authorized catalog/results; role follows server principal | Browser request + rendered role; no credentials in web storage or URL |
+| Ask for missing input | Plain clarification; no invocation | Model fixture + zero service invocation count |
+| Ask for balance | Tool card has real runId; pending becomes structured result | Actual AI SDK stream + same GET run in card/dashboard |
+| Pending transaction | Caller waits; operator sees exact current facts and expiry | Offline real Approval class plus decision endpoint/browser test |
+| Wrong/expired/duplicate decision | 403/409; no second decision/action | Existing core tests plus UI error/refresh check |
+| Unknown posting | Prominent investigation instruction; no retry/regenerate action | Unknown fixture and zero POST after reload/refresh |
+| Transport response lost | Same message key; no second invocation | Duplicate request integration check |
+| Chat response stopped | Explicit wording; run remains observable in history | Controlled stream cancellation and run polling check |
+| Server disconnected | Stale/unavailable state; no false terminal success | Browser network failure and recoverable read refresh |
+| Historical run | Missing sensitive values remain unavailable | Restart projection + ResultCard assertion |
+| Hostile text/evidence | Inert text; authorized image blob; no script/HTML execution | CSP, browser dialog/pageerror, storage and request checks |
+| Keyboard/responsive | All actions reachable; no overflow at required widths | 320, 768, 1024, 1440 screenshots/checks and keyboard actions |
+
+The SDK tool stream is a conversational record. The runtime journal is the
+execution record. Run IDs connect them; rendered SDK tool completion alone
+does not prove a browser run completed.
+
+Research references: [AI SDK adapter/version table](https://www.assistant-ui.com/docs/runtimes/ai-sdk/overview),
+[v7 transport](https://www.assistant-ui.com/docs/runtimes/ai-sdk/v7),
+[backend tool renderers](https://www.assistant-ui.com/docs/tools/tool-ui),
+[thread](https://www.assistant-ui.com/docs/api-reference/primitives/thread),
+[composer](https://www.assistant-ui.com/docs/api-reference/primitives/composer).
+
+## Audit observations
+
+- At `7eeb447`, `npm audit --omit=dev` reports three existing moderate advisories
+  through Express/body-parser/qs. No AI SDK advisory was reported. Task 2 will
+  assess a narrow compatible dependency repair and rerun the audit.
+- Chat transport retries use the existing durable invocation journal: same key
+  and same invocation identity returns the existing run; changed capability or
+  arguments returns 409. There is no persisted conversation or chat-response cache.
+- Coordinating task reports reviewed PR47 merged at `2c7f4ed`; integration into
+  this branch is next after Task 1 review approval.
+
+Task 1 review fixed SDK default logging of raw provider errors and legacy mixed
+tool responses hiding an accepted run ID. Scoped re-review approved `5c5df38`;
+128 combined chat/legacy tests and typecheck passed after the fixes. One minor
+regression-test assertion improvement is retained for the final audit.
