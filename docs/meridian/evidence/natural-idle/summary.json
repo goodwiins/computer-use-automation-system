@@ -1,0 +1,102 @@
+{
+  "source": "e507e8af81b6431a48229420f1f51e6061eac90c",
+  "runId": "fd01920a-dac4-4550-8f57-e04e5c6ad80c",
+  "phase": "replay",
+  "artifactSha256": "060932640527fb599be48e670eab801a06fd61d7555daabc3174877ce36182d9",
+  "trigger": "single 540000ms idle interval after authenticated menu before first member navigation; no target setting changes or injected response",
+  "idleStarted": 1788593292328,
+  "idleFinished": 1788593832336,
+  "idleElapsedMs": 540008,
+  "status": "success",
+  "journalState": "success",
+  "gateCalls": 0,
+  "mutationDispatched": false,
+  "observed": {
+    "sessionExpired": false,
+    "notSignedOn": false,
+    "observationAvailable": true
+  },
+  "network": [
+    {
+      "method": "POST",
+      "path": "/signon",
+      "event": "request",
+      "at": 1788593291999
+    },
+    {
+      "method": "POST",
+      "path": "/signon",
+      "event": "response",
+      "status": 302,
+      "at": 1788593292172
+    },
+    {
+      "method": "GET",
+      "path": "/menu",
+      "event": "request",
+      "at": 1788593292172
+    },
+    {
+      "method": "GET",
+      "path": "/menu",
+      "event": "response",
+      "status": 200,
+      "at": 1788593292276
+    },
+    {
+      "method": "GET",
+      "path": "/members",
+      "event": "request",
+      "at": 1788593832514
+    },
+    {
+      "method": "GET",
+      "path": "/members",
+      "event": "response",
+      "status": 200,
+      "at": 1788593832871
+    },
+    {
+      "method": "GET",
+      "path": "/members",
+      "event": "request",
+      "at": 1788593833030
+    },
+    {
+      "method": "GET",
+      "path": "/members",
+      "event": "response",
+      "status": 200,
+      "at": 1788593833141
+    },
+    {
+      "method": "GET",
+      "path": "/members/:member",
+      "event": "request",
+      "at": 1788593833223
+    },
+    {
+      "method": "GET",
+      "path": "/members/:member",
+      "event": "response",
+      "status": 200,
+      "at": 1788593833329
+    }
+  ],
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 10,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "scope": "approved unchanged artifact through shared runtime with an external idle pause; no API/discovery run; initial entry GET precedes listener; no mutation or relogin",
+  "acceptance": "Natural expiry NOT observed; this proves a successful read after the recorded idle duration, not session-expiry handling or a configured timeout threshold.",
+  "limitations": [
+    "No further longer idle run was attempted: the runtime retains its ten-minute absolute deadline.",
+    "No API/discovery run, target setting change, fault injection, mutation or relogin occurred.",
+    "No exact member, credentials, output values, query strings or raw observations are included."
+  ]
+}

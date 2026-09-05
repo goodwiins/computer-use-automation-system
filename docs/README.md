@@ -10,6 +10,8 @@
 
 - [MERIDIAN Superpowers execution plan](plans/2026-09-04-meridian-superpowers.md) — remaining work, current PR dependencies, executable steps, and acceptance checks
 
-- [MERIDIAN target-application implementation plan](plans/2026-09-04-meridian-target-application.md) — assignment §2 coverage, verified PR reuse, and the remaining insufficient-funds outcome fix
+- [MERIDIAN target-application implementation plan](plans/2026-09-04-meridian-target-application.md) — assignment §2 coverage, delivered insufficient-funds outcome, and remaining live acceptance
 
-- [MERIDIAN PR integration plan and execution ledger](superpowers/plans/2026-09-04-meridian-pr-integration.md) — reviewed heads, merge commits, producer checks, and the remaining PR #40 delivery gates
+- [MERIDIAN implementation progress matrix](meridian/implementation-progress.md) — current requirement-level status, evidence boundaries, blockers, and execution order
+
+- [MERIDIAN PR integration plan and execution ledger](superpowers/plans/2026-09-04-meridian-pr-integration.md) — historical reviewed heads, merge commits, and producer checks
