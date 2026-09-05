@@ -221,6 +221,9 @@ describe('standalone approval CLI transport', () => {
 
   it.each([
     ['https://example.test/#access_token=short-credential&account=123', '/#access_token=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2&account=123'],
+    ['https://example.test/#access_token=short-credential&return=/account?tab=info', '/#access_token=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2&return=%2Faccount%3Ftab%3Dinfo'],
+    ['https://example.test/delete/a%FFb?member=123#review', '/delete/a%FFb?member=123#review'],
+    ['https://example.test/delete/a%FFb/%73ensitive-value?member=123#review%FE', '/delete/a%FFb/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2?member=123#review%FE'],
     ['https://example.test/delete/a%2Fb%3Fc%23d/%73ensitive-value#ordinary%2Froute', '/delete/a%2Fb%3Fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#ordinary%2Froute'],
     ['https://example.test/delete/%61%2fb%3fc%23d/sensitive-value#route=sensitive-value', '/delete/%61%2fb%3fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#route=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2'],
   ])('masks fragment credentials without changing encoded route identity: %s', async (url, expected) => {

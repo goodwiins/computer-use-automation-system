@@ -55,8 +55,8 @@ export function publicIntervention(pending: PendingIntervention, secrets = new R
         [redactor.redactString(key), /token|password|secret|cookie|authorization/i.test(key) ? '•••redacted•••' : redactor.redactString(value)])).toString();
       if (url.search) url.search = safeQuery(url.search);
       const hashQuery = url.hash.indexOf('?');
-      const hash = hashQuery >= 0 ? `${safe(url.hash.slice(0, hashQuery))}?${safeQuery(url.hash.slice(hashQuery + 1))}`
-        : /^[^=&/?#]+=[\s\S]*$/.test(url.hash.slice(1)) ? `#${safeQuery(url.hash.slice(1))}` : safe(url.hash);
+      const hash = /^[^=&/?#]+=[\s\S]*$/.test(url.hash.slice(1)) ? `#${safeQuery(url.hash.slice(1))}`
+        : hashQuery >= 0 ? `${safe(url.hash.slice(0, hashQuery))}?${safeQuery(url.hash.slice(hashQuery + 1))}` : safe(url.hash);
       return `${redactor.redactString(url.origin)}${safe(url.pathname)}${url.search}${hash}`;
     } catch { return '(unavailable)'; }
   };

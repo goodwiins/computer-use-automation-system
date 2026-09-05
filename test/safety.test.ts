@@ -75,6 +75,13 @@ describe('Redactor', () => {
     const safe = redactor.redactUrlComponent('/%61%2fb/%c3%a9%f0%9f%98%80/%61bcdefgh');
     expect(safe).toBe('/%61%2fb/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2');
   });
+  it('preserves invalid UTF-8 and percent syntax beside valid encoded secrets', () => {
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(['é😀']);
+    const mask = encodeURIComponent('•••redacted•••');
+    expect(redactor.redactUrlComponent('/%FF/%C3/%E0%80%80/%zz/%/%c3%a9%f0%9f%98%80/%FE'))
+      .toBe(`/%FF/%C3/%E0%80%80/%zz/%/${mask}/%FE`);
+  });
   it('leaves ordinary values alone', () => {
     const r = new Redactor();
     expect(r.redact({ balance: '4,250.13' })).toEqual({ balance: '4,250.13' });

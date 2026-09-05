@@ -68,15 +68,23 @@ export class Redactor {
 
   /** Mask decoded secrets while retaining every original URL byte outside those spans. */
   redactUrlComponent(raw: string): string {
-    const decoded = decodeURIComponent(raw);
+    let decoded = '';
     const positions: Array<[number, number]> = [];
-    let offset = 0;
-    for (const chunk of raw.match(/(?:%[0-9a-f]{2})+|[^%]+/gi) ?? []) {
-      for (const character of decodeURIComponent(chunk)) {
-        const end = offset + (chunk.startsWith('%') ? Buffer.byteLength(character, 'utf8') * 3 : character.length);
-        for (let unit = 0; unit < character.length; unit++) positions.push([offset, end]);
-        offset = end;
+    for (let offset = 0; offset < raw.length;) {
+      let character = String.fromCodePoint(raw.codePointAt(offset)!);
+      let width = character.length;
+      if (/^%[0-9a-f]{2}$/i.test(raw.slice(offset, offset + 3))) {
+        const byte = Number.parseInt(raw.slice(offset + 1, offset + 3), 16);
+        const bytes = byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1;
+        width = bytes * 3;
+        try { character = decodeURIComponent(raw.slice(offset, offset + width)); }
+        catch { width = 3; character = raw.slice(offset, offset + width); }
       }
+      // An undecodable byte stays literal; valid UTF-8 nearby still participates in masking.
+      const end = offset + width;
+      for (let unit = 0; unit < character.length; unit++) positions.push([offset, end]);
+      decoded += character;
+      offset = end;
     }
     for (const [start, end] of this.ranges(decoded).reverse()) {
       raw = raw.slice(0, positions[start]![0]) + encodeURIComponent(MASK) + raw.slice(positions[end - 1]![1]);
