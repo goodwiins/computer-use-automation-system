@@ -70,7 +70,7 @@ function parseDisplayShare(value: string, expected: string): string {
 
 function parseDisplayType(value: string, expected: string): string {
   const match = /^([A-Za-z0-9]+) - (.+)$/.exec(value.trim());
-  if (!match || match[1] !== expected || !match[2]!.trim()) return transferReviewFailed();
+  if (!match || match[1] !== expected || OPEN_SHARE_TYPE_LABELS[match[2]!] !== expected) return transferReviewFailed();
   return match[1]!;
 }
 
@@ -682,12 +682,13 @@ export class GuardedSurface implements Surface {
     if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after)) return this.openShareFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.balance !== 'string' || !row.shareId.trim()) throw new Error('Open-share resulting state is incomplete');
-      return { shareId: row.shareId, type: row.type, deposit: row.balance };
+      return { shareId: row.shareId, type: row.type, deposit: row.balance, status: row.status };
     });
     if (new Set(shares.map(row => row.shareId)).size !== shares.length) throw new Error('Open-share resulting state is ambiguous');
     if (state.priorShareIds.some(id => !shares.some(row => row.shareId === id))) throw new Error('Open-share resulting state changed concurrently');
     const added = shares.filter(row => !state.priorShareIds.includes(row.shareId));
     if (added.length !== 1) throw new Error('Open-share resulting state is missing or ambiguous');
+    if (added[0]!.status !== 'OPEN') throw new Error('Open-share resulting state is not OPEN');
     assertOpenShareResult(binding.expected, state.priorShareIds, {
       member: state.member, shareId: added[0]!.shareId,
       shareType: parseMemberTableShareType(added[0]!.type), deposit: added[0]!.deposit,

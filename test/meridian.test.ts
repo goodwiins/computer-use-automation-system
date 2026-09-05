@@ -1116,6 +1116,7 @@ describe('MERIDIAN guarded open-share path', () => {
     ['native deposit', 'deposit', '5.01'],
     ['visible member', 'review:Member:', '9999 - Fixture Member'],
     ['visible type', 'review:Share Type:', 'S0070 - Share Draft (Checking)'],
+    ['visible type label for the requested code', 'review:Share Type:', 'S0001 - Certificate'],
     ['visible deposit', 'review:Initial Deposit:', '$5.01'],
   ] as const)('rejects changed %s before approval or mutation intent', async (_case, key, value) => {
     const h = await reviewedOpenShare();
@@ -1179,6 +1180,22 @@ describe('MERIDIAN guarded open-share path', () => {
     expect(h.navigate).not.toHaveBeenCalledWith(`${origin}/members/9001`);
   });
 
+  it('requires OPEN only for the new share and preserves unrelated prior statuses', async () => {
+    const existing = [{ ...priorRows[0]!, status: 'HOLD' }, { ...priorRows[1]!, status: 'CLOSED' }];
+    const h = harness(existing);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setRows([...existing, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+  });
+
   it('rejects a cross-origin native post before approval or mutation intent', async () => {
     const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
     const h = await reviewedOpenShare(request, [otherOrigin, origin]);
@@ -1221,6 +1238,7 @@ describe('MERIDIAN guarded open-share path', () => {
     ['stale result', priorRows, '9001-S0001-OLD'],
     ['wrong type', [...priorRows, { shareId: '9001-NEW', type: 'Share Draft (Checking)', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
     ['wrong balance', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '6.00', status: 'OPEN' }], '9001-NEW'],
+    ['wrong status', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'HOLD' }], '9001-NEW'],
     ['unrecognized type', [...priorRows, { shareId: '9001-NEW', type: 'Unknown Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
     ['ambiguous additions', [...priorRows, { shareId: '9001-NEW-1', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW-2', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW-1'],
     ['duplicate resulting ID', [...priorRows, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }, { shareId: '9001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }], '9001-NEW'],
@@ -1357,7 +1375,7 @@ it('records the receipt endpoint before completion read-back and replays the gen
   expect(replayUrl).toBe(memberUrl);
 });
 
-it('awaits replay open-share completion and keeps delayed rejection unknown after one dispatch', async () => {
+it('keeps a wrong-status open-share completion unknown after one dispatch', async () => {
   const artifact = CapabilityArtifact.parse({
     schemaVersion: 2,
     id: 'meridian-open-share', name: 'meridian-open-share', description: 'Open share', version: '1.0.0', status: 'approved',
@@ -1382,7 +1400,7 @@ it('awaits replay open-share completion and keeps delayed rejection unknown afte
     isTextVisible: async text => text === 'Share opened', describeTarget: async descriptor => descriptor,
     screenshot: async () => {}, close: async () => {},
   };
-  const validateCompletion = vi.fn(async () => { await Promise.resolve(); throw new Error('stale member state'); });
+  const validateCompletion = vi.fn(async () => { await Promise.resolve(); throw new Error('Open-share resulting state is not OPEN'); });
   const escalate = vi.fn(async () => 'retry' as const);
   const result = await runReplay(artifact, requestOpenShare(), { surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy, validateCompletion, escalate });
   expect(result).toMatchObject({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
