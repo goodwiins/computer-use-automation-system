@@ -233,6 +233,11 @@ export class GuardedSurface implements Surface {
     throw new Error('Open-share frame is no longer bound to this run');
   }
 
+  private openShareTransitionFailed(): never {
+    this.openShareState = undefined;
+    throw new Error('Open-share control transition is not bound to this run');
+  }
+
   private openShareStage(url: string): { member: string; stage: OpenShareStage } | undefined {
     const member = MEMBER_ROUTE.exec(this.path(url));
     if (member) return { member: member[1]!, stage: 'member' };
@@ -287,13 +292,13 @@ export class GuardedSurface implements Surface {
     state.stage = route.stage;
   }
 
-  private async captureOpenShareState(memberPath: string, timeoutMs: number): Promise<void> {
+  private async captureOpenShareState(memberUrl: string, timeoutMs: number): Promise<void> {
     const binding = this.runtime?.openShare;
-    const member = MEMBER_ROUTE.exec(this.path(memberPath));
+    const member = MEMBER_ROUTE.exec(this.path(memberUrl));
     if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Open-share member selection is not eligible');
     if (!this.inner.readTable) throw new Error('Member shares table is unavailable');
     const before = this.currentOpenShareFrame();
-    if (this.path(before.url) !== this.path(memberPath)) return this.openShareFrameFailed();
+    if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
     const target = { ...binding.memberTable.target, frame: before.name };
     await this.gate('extract', 'read');
     this.assertStillInBounds('extract');
@@ -301,7 +306,8 @@ export class GuardedSurface implements Surface {
     this.assertStillInBounds('extract');
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.currentOpenShareFrame();
-    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.openShareFrameFailed();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after)
+      || this.origin(resolved.url) !== this.origin(memberUrl) || this.path(resolved.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
     const priorShareIds = rows.map(row => typeof row.shareId === 'string' ? row.shareId : '');
     if (priorShareIds.some(id => !id.trim()) || new Set(priorShareIds).size !== priorShareIds.length) throw new Error('Member shares are missing or ambiguous');
     this.openShareState = { member: member[1]!, priorShareIds, frame: resolved, stage: 'member' };
@@ -314,12 +320,21 @@ export class GuardedSurface implements Surface {
     const current = this.currentOpenShareFrame();
     if (!this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url) || this.path(current.url) !== this.path(live.url)) return this.openShareFrameFailed();
     const state = this.openShareState;
-    if (!state) {
-      const destination = this.openShareStage(live.destination);
-      if (route.stage === 'member' && (!destination || destination.stage === 'member')) return;
-      return this.openShareFrameFailed();
-    }
+    if (!state) return this.openShareFrameFailed();
     if (state.stage !== route.stage || !this.sameFrameRevision(state.frame, live.frame)) return this.openShareFrameFailed();
+    const destination = this.openShareStage(live.destination);
+    const post = OPEN_SHARE_ROUTE.exec(this.path(live.destination));
+    const sameOrigin = this.origin(live.destination) === this.origin(live.url);
+    const validTransition = route.stage === 'member'
+      ? destination?.member === binding.expected.member && destination.stage === 'open-share' && live.method === 'GET' && !live.submit
+      : route.stage === 'open-share'
+        ? destination?.member === binding.expected.member && destination.stage === 'review' && live.method === 'POST' && live.submit
+        : post?.[1] === binding.expected.member && post[2] === 'post' && live.method === 'POST' && live.submit;
+    if (!sameOrigin) {
+      this.openShareState = undefined;
+      throw new Error('Open-share control origin is not bound to this run');
+    }
+    if (!validTransition) return this.openShareTransitionFailed();
   }
 
   private assertOpenShareReview(live: LiveControl): void {
@@ -342,7 +357,7 @@ export class GuardedSurface implements Surface {
 
   private requireTransferRoute(url: string): void {
     const route = this.transferStage(url);
-    if (!route || this.runtime?.profile.appId !== 'meridian') return;
+    if (!route || this.runtime?.profile.appId !== 'meridian' || this.runtime.artifact !== 'meridian-funds-transfer') return;
     const binding = this.runtime.transfer;
     if (!binding) throw new Error('Transfer parameters are not bound');
     if (route.member !== binding.expected.member) return this.transferFrameFailed();
@@ -477,7 +492,9 @@ export class GuardedSurface implements Surface {
       await this.gate('navigate', 'read', entryUrl);
       await this.inner.start(entryUrl);
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
-      this.preserveOperationState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
+        await this.captureOpenShareState(entryUrl, DEFAULT_TIMEOUT);
+      } else this.preserveOperationState(this.inner.currentUrl());
     });
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
@@ -519,7 +536,8 @@ export class GuardedSurface implements Surface {
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
       if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
-      if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(url))) await this.captureOpenShareState(url, DEFAULT_TIMEOUT);
+      else if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
       this.preserveOperationState(this.inner.currentUrl());
     });
   }

@@ -138,6 +138,24 @@ function assertTransferOutputDeclaration(outputs: CapabilityArtifact['outputs'])
   }
 }
 
+const MERIDIAN_SCALAR_WRITE_OUTPUTS = {
+  'meridian-open-share': 'shareId',
+  'meridian-update-member': 'saved',
+  'meridian-place-hold': 'heldShare',
+} as const;
+
+export function assertMeridianScalarWriteOutputs(artifact: CapabilityArtifact): void {
+  if (artifact.app.appId !== 'meridian' || !Object.hasOwn(MERIDIAN_SCALAR_WRITE_OUTPUTS, artifact.id)) return;
+  const expected = MERIDIAN_SCALAR_WRITE_OUTPUTS[artifact.id as keyof typeof MERIDIAN_SCALAR_WRITE_OUTPUTS];
+  const output = artifact.outputs[0];
+  const extracts = artifact.steps.filter(step => step.action === 'extract' && step.extract);
+  if (artifact.outputs.length !== 1 || !output || output.name !== expected || output.type !== 'string'
+    || output.columns !== undefined || output.minRows !== undefined || extracts.length !== 1
+    || extracts[0]!.extract!.output !== expected || extracts[0]!.extract!.columns !== undefined) {
+    throw new Error(`${artifact.id} must declare and extract exactly one scalar string output`);
+  }
+}
+
 const string = (name: string, description: string, extra = {}) => Parameter.parse({ name, type: 'string', description, sensitive: true, ...(name === 'member' ? { pattern: '^[0-9]{1,12}$' } : ['sourceShare', 'destinationShare', 'share'].includes(name) ? { pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' } : {}), ...extra });
 /** Contract names guide discovery; only recorded extracts may become outputs. */
 export const meridianContracts = {
@@ -188,6 +206,7 @@ export function applyMeridianContract(artifact: CapabilityArtifact): CapabilityA
   if (new Set(outputNames).size !== outputNames.length || outputNames.length !== contract.outputs.length || contract.outputs.some(name => !outputNames.includes(name))) {
     throw new Error(`Recording outputs must exactly match the ${artifact.id} contract`);
   }
+  assertMeridianScalarWriteOutputs(artifact);
   for (const name of contract.outputs) {
     if (!artifact.steps.some(s => s.action === 'extract' && s.extract?.output === name)) throw new Error(`Discovery must record output ${name}`);
   }

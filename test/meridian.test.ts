@@ -528,6 +528,37 @@ function transferArtifact(outputs: Array<Record<string, unknown>> = transferOutp
   });
 }
 
+type ScalarWriteId = 'meridian-open-share' | 'meridian-update-member' | 'meridian-place-hold';
+const scalarWriteOutput = {
+  'meridian-open-share': 'shareId',
+  'meridian-update-member': 'saved',
+  'meridian-place-hold': 'heldShare',
+} as const;
+
+function scalarWriteArtifact(id: ScalarWriteId) {
+  const output = scalarWriteOutput[id];
+  return CapabilityArtifact.parse({
+    schemaVersion: 2, id, name: id, description: id, version: '1.0.0', status: 'draft',
+    app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
+    parameters: meridianContracts[id].parameters,
+    outputs: [{ name: output, type: 'string', description: 'Result' }],
+    steps: [
+      { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
+      { id: 'password', intent: 'password', action: 'fill', value: '{{password}}', risk: 'reversible_write' },
+      { id: 'branch', intent: 'branch', action: 'select', value: '{{branch}}', risk: 'reversible_write' },
+      ...meridianContracts[id].parameters.map(parameter => ({
+        id: `input-${parameter.name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`,
+        intent: parameter.description, action: 'fill' as const, value: `{{${parameter.name}}}`, risk: 'reversible_write' as const,
+      })),
+      { id: 'post', intent: 'post', action: 'click', target, risk: 'irreversible' },
+      { id: 'post-checkpoint', intent: 'verify', action: 'assert', assert: { kind: 'textVisible', text: 'Complete' }, risk: 'read' },
+      { id: 'result', intent: 'result', action: 'extract', target, extract: { output }, risk: 'read' },
+    ],
+    successCondition: { kind: 'textVisible', text: 'Complete' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  });
+}
+
 describe('MERIDIAN output contracts', () => {
   const shares = { name: 'shares', type: 'table', description: 'Shares', columns: [{ name: 'share', selector: 'td', type: 'string' }] };
 
@@ -586,6 +617,46 @@ describe('MERIDIAN output contracts', () => {
     });
     expect(() => applyMeridianContract(artifact)).not.toThrow();
   });
+
+  it.each(Object.keys(scalarWriteOutput) as ScalarWriteId[])('rejects table output/extraction shapes for %s', id => {
+    const artifact = scalarWriteArtifact(id);
+    artifact.outputs[0] = {
+      name: scalarWriteOutput[id], type: 'table', description: 'Malformed result',
+      columns: [{ name: 'value', selector: 'td', type: 'string' }],
+    };
+    artifact.steps.find(step => step.id === 'result')!.extract!.columns = [{ name: 'value', selector: 'td', type: 'string' }];
+    expect(() => applyMeridianContract(artifact)).toThrow(/scalar string output/i);
+  });
+
+  it('rejects mixed scalar/table metadata and duplicate extraction during promotion', () => {
+    const mixed = scalarWriteArtifact('meridian-open-share');
+    mixed.outputs[0]!.columns = [{ name: 'value', selector: 'td', type: 'string' }];
+    expect(() => promoteToApproved(JSON.stringify(mixed))).toThrow(/scalar string output/i);
+
+    const duplicate = scalarWriteArtifact('meridian-update-member');
+    duplicate.steps.push({ ...duplicate.steps.find(step => step.id === 'result')!, id: 'result-copy' });
+    expect(() => promoteToApproved(JSON.stringify(duplicate))).toThrow(/scalar string output/i);
+  });
+});
+
+it('rejects a malformed open-share table output in direct replay before browser start', async () => {
+  const artifact = scalarWriteArtifact('meridian-open-share');
+  artifact.status = 'approved';
+  artifact.outputs[0] = {
+    name: 'shareId', type: 'table', description: 'Malformed result',
+    columns: [{ name: 'shareId', selector: 'td', type: 'string' }],
+  };
+  artifact.steps.find(step => step.id === 'result')!.extract!.columns = [{ name: 'shareId', selector: 'td', type: 'string' }];
+  const run = guarded();
+  const start = vi.spyOn(run.surface, 'start');
+  const result = await runReplay(artifact, requestOpenShare(), {
+    surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp(), true), policy,
+    validateCompletion: vi.fn(),
+  });
+  expect(result).toMatchObject({ status: 'failure', failure: { stepId: '(pre-flight)', intent: 'validate scalar write outputs' } });
+  expect(start).not.toHaveBeenCalled();
+  expect(run.beforeDispatch).not.toHaveBeenCalled();
+  expect(run.dispatch).not.toHaveBeenCalled();
 });
 
 it('refuses an incomplete canonical transfer before allocating runtime evidence', () => {
@@ -1068,11 +1139,17 @@ describe('MERIDIAN guarded open-share path', () => {
     let frameId = 'open-share-workarea';
     const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
     const gate = vi.fn(async () => true);
+    const resolveNavigation = (next: string) => completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next;
+    const start = vi.fn(async next => {
+      url = resolveNavigation(next);
+      navigation++;
+    });
     const navigate = vi.fn(async next => {
-      url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next;
+      url = resolveNavigation(next);
       navigation++;
     });
     const run = guarded({
+      start,
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
@@ -1087,7 +1164,7 @@ describe('MERIDIAN guarded open-share path', () => {
     const reviewUrl = `${openUrl}/review`;
     const postUrl = `${openUrl}/post`;
     return {
-      run, gate, navigate, startUrl: `${operationOrigin}/members`, memberUrl, openUrl, reviewUrl, postUrl,
+      run, gate, start, navigate, startUrl: `${operationOrigin}/members`, memberUrl, openUrl, reviewUrl, postUrl,
       setRows(next: typeof priorRows) { rows = next; },
       setFrame(id: string) { frameId = id; },
       redirectCompletionTo(nextOrigin: string) { completionRedirectOrigin = nextOrigin; },
@@ -1125,6 +1202,63 @@ describe('MERIDIAN guarded open-share path', () => {
     expect(h.gate).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
     expect(h.run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['start', 'navigate'] as const)('captures prior shares after direct %s at the requested member and completes the valid flow', async entry => {
+    const h = harness();
+    if (entry === 'start') await h.run.surface.start(h.memberUrl);
+    else {
+      await h.run.surface.start(h.startUrl);
+      await h.run.surface.navigate(h.memberUrl);
+    }
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.openUrl, destination: h.reviewUrl, method: 'POST', control: 'Continue', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.reviewUrl, destination: h.postUrl, method: 'POST', control: 'Open Share', submit: true, facts });
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
+    expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.run.surface.mutationDispatched).toBe(true);
+  });
+
+  it('refuses direct member navigation when the member or resolved origin is not the request', async () => {
+    const wrongMember = harness();
+    await wrongMember.run.surface.start(wrongMember.startUrl);
+    await expect(wrongMember.run.surface.navigate(`${origin}/members/9999`)).rejects.toThrow(/eligible/i);
+    expect(wrongMember.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongMember.run.surface.mutationDispatched).toBe(false);
+
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const wrongOrigin = harness(priorRows, request, [otherOrigin, origin]);
+    await wrongOrigin.run.surface.start(wrongOrigin.startUrl);
+    wrongOrigin.redirectCompletionTo(otherOrigin);
+    await expect(wrongOrigin.run.surface.navigate(wrongOrigin.memberUrl)).rejects.toThrow(/frame/i);
+    expect(wrongOrigin.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(wrongOrigin.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it.each([
+    ['another member', `${origin}/members/9999/open-share/review`, [origin], 'POST'],
+    ['another allowed origin', 'https://alternate-web-sample.interface-hiring.com/members/9001/open-share/review', ['https://alternate-web-sample.interface-hiring.com', origin], 'POST'],
+    ['another operation stage', `${origin}/members/9001/transfer/review`, [origin], 'POST'],
+    ['the expected review with the wrong method', `${origin}/members/9001/open-share/review`, [origin], 'GET'],
+  ] as const)('rejects an intermediate Continue to %s before approval, intent, or dispatch', async (_case, destination, allowedOrigins, method) => {
+    const h = harness(priorRows, request, [...allowedOrigins]);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.openUrl, method: 'GET', control: 'Open New Share', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({ url: h.openUrl, destination, method, control: 'Continue', submit: true, facts });
+
+    await expect(h.run.surface.click(target)).rejects.toThrow(/transition|origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
   });
 
   it('rechecks the member frame and review facts after approval', async () => {
@@ -1221,7 +1355,7 @@ describe('MERIDIAN guarded open-share path', () => {
     await expect(h.run.surface.click(target)).rejects.toThrow(/frame|origin/i);
     expect(h.gate).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
-    expect(h.run.dispatch).toHaveBeenCalledOnce();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
     expect(h.run.surface.mutationDispatched).toBe(false);
   });
 

@@ -29,7 +29,7 @@ import { PolicyViolationError, RunAbortedError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
 import { checkDetectors, matchDetector } from './detectors.js';
 import { InsufficientFundsError, type ReplayResult, type StepFailure } from './outcomes.js';
-import { assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
+import { assertMeridianScalarWriteOutputs, assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
 
 export interface ReplayDeps {
   surface: Surface; // must already be policy-guarded
@@ -56,6 +56,16 @@ export async function runReplay(
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
+  }
+  try {
+    assertMeridianScalarWriteOutputs(artifact);
+  } catch (err) {
+    return fail({
+      stepId: '(pre-flight)',
+      intent: 'validate scalar write outputs',
+      expected: 'one declared string output produced by one scalar extraction',
+      observed: err instanceof Error ? err.message : String(err),
+    });
   }
   const originsOk = artifact.app.allowedOrigins.every((o) => deps.policy.allowedOrigins.includes(o));
   if (!originsOk) {
