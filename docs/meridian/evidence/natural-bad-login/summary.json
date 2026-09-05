@@ -1,0 +1,65 @@
+{
+  "source": "2c7f4ed4577fe01bbfb441525b7cccc14128c46b",
+  "runId": "2fe15d0d-1b74-4905-8cc1-246ab207f439",
+  "phase": "replay",
+  "trigger": "one synthetic nonexistent operator and random password; no real-account failure attempt",
+  "artifactSha256": "1ecd48c272a38955146d6beb855492b29878d7382dbdd23af380bb6578065e15",
+  "status": "failure",
+  "journalState": "failure",
+  "failure": {
+    "stepId": "s6",
+    "code": "RUN_FAILED"
+  },
+  "gateCalls": 0,
+  "mutationDispatched": false,
+  "network": [
+    {
+      "method": "POST",
+      "path": "/signon",
+      "event": "request"
+    },
+    {
+      "method": "POST",
+      "path": "/signon",
+      "event": "response",
+      "status": 302
+    },
+    {
+      "method": "GET",
+      "path": "/signon",
+      "event": "request"
+    },
+    {
+      "method": "GET",
+      "path": "/signon",
+      "event": "response",
+      "status": 200
+    }
+  ],
+  "route": "https://web-sample.interface-hiring.com/signon",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 6,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "scope": "shared runtime and approved artifact; no HTTP API or discovery run; initial entry GET precedes network listener",
+  "observation": {
+    "rejection": "Invalid operator ID or password.",
+    "signedOn": false,
+    "stateText": "NOT SIGNED ON",
+    "memberRequests": 0,
+    "signOnPostRequests": 1,
+    "signOnPostResponses": 1,
+    "mutationPostRequests": 0
+  },
+  "limitations": [
+    "The initial entry GET preceded the request listener.",
+    "This is shared-runtime deterministic replay, not discovery or HTTP API acceptance.",
+    "Failure occurred at output extraction step s6. The preceding MAIN MENU text assertion also matches the unauthenticated footer shortcut; no final success was reported.",
+    "Private raw observation is omitted because the sign-on page advertises demo credential examples."
+  ]
+}
