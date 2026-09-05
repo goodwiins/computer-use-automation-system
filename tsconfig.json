@@ -10,5 +10,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src", "target-app", "cli.ts", "test", "scripts/evaluate-run.ts"]
+  "include": ["src", "target-app", "cli.ts", "test", "scripts/evaluate-run.ts", "scripts/benchmark-safe-event.ts"]
 }
