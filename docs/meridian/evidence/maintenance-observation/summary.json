@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "runId": "b7fefa1a-450d-4502-b827-747764cd8d0c",
+  "observedAt": "2026-09-05T16:36:13.275Z",
+  "scope": "Historical guarded headless UI observation of maintenance navigation; not model discovery or deterministic replay acceptance",
+  "sourceSha": null,
+  "sourceLimitation": "The observation did not capture an exact producing Git SHA; it does not verify the current recovery implementation.",
+  "originalReportSha256": "285d40257f01cbb107a07ecf0c95b8027d2f786aa01fcc3a0e2fa48b3ca08da8",
+  "maintenance": {
+    "faultRoute": "/members/<member>/open-share",
+    "injected": {
+      "url": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+      "frame": {
+        "id": "frame-1",
+        "name": "",
+        "url": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+        "navigation": 6
+      }
+    },
+    "recoveryControl": "Continue",
+    "afterContinue": {
+      "url": "https://web-sample.interface-hiring.com/members/<member>",
+      "frame": {
+        "id": "frame-1",
+        "name": "",
+        "url": "https://web-sample.interface-hiring.com/members/<member>",
+        "navigation": 7
+      },
+      "detectorCleared": true
+    },
+    "memberCheckpoint": {
+      "path": "https://web-sample.interface-hiring.com/members/<member>",
+      "candidates": [
+        {
+          "text": "Open New Share",
+          "matches": 1
+        },
+        {
+          "text": "Member No.:",
+          "matches": 1
+        }
+      ]
+    },
+    "resumeSteps": [
+      {
+        "control": "Open New Share",
+        "path": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+        "frame": {
+          "id": "frame-1",
+          "name": "",
+          "url": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+          "navigation": 8
+        }
+      }
+    ],
+    "resumedOperation": {
+      "url": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+      "frame": {
+        "id": "frame-1",
+        "name": "",
+        "url": "https://web-sample.interface-hiring.com/members/<member>/open-share",
+        "navigation": 8
+      },
+      "samePath": true,
+      "noInjectedQuery": true
+    }
+  },
+  "guard": {
+    "gateAlwaysFalse": true,
+    "beforeDispatchAlwaysThrows": true,
+    "gateCalls": 0,
+    "beforeDispatchCalls": 0,
+    "mutationDispatched": false
+  },
+  "limitations": [
+    "The script used the former guarded recoverClick path, not the newly implemented recoverOperation hook.",
+    "The observed frame URL was query-free; this does not establish compatibility with a visible trusted injection query.",
+    "Checkpoint candidate counts identify static structure; they do not prove the displayed member value was revalidated after Continue.",
+    "No final mutation, artifact promotion, accepted discovery/replay pair or new live capability is claimed."
+  ],
+  "sanitization": "Member values replaced with <member>; no contact values, credentials, session tokens, balances or screenshots included."
+}
