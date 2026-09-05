@@ -62,6 +62,8 @@ export class TargetResolutionError extends Error {
 }
 
 export interface Surface {
+  /** True when runtime conditions must use guarded operation recovery. */
+  readonly strictOperationRecovery?: boolean;
   prepareClick?(target: TargetDescriptor, timeoutMs?: number): Promise<{ inspect(timeoutMs?: number): Promise<LiveControl>; dispatch(expected: LiveControl, timeoutMs?: number): Promise<ResolutionReport> }>;
   mutationDispatched?: boolean;
   effectiveRisk?: RiskClass;
@@ -84,10 +86,14 @@ export interface Surface {
   // policy gate; unguarded implementations ignore it.
   /** Guarded recovery only: explicit reversible-write risk, no mutation or approval. */
   recoverClick?(target: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport>;
+  /** Guard-owned operation recovery; never represented as a recorded action. */
+  recoverOperation?(detectorId: string, timeoutMs?: number): Promise<void>;
   click(target: TargetDescriptor, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport>;
   readText(target: TargetDescriptor, timeoutMs?: number): Promise<{ text: string; report: ResolutionReport }>;
+  /** Whether the resolved target itself is visibly rendered. */
+  isTargetVisible?(target: TargetDescriptor, timeoutMs?: number): Promise<boolean>;
   isTextVisible(text: string, frame?: string): Promise<boolean>;
 
   /** Build a robust TargetDescriptor from whatever hint found the element. */

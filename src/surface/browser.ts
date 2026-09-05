@@ -263,6 +263,16 @@ export class BrowserSurface implements Surface {
     return { text, report };
   }
 
+  async isTargetVisible(target: TargetDescriptor, timeoutMs = DEFAULT_TIMEOUT): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    try {
+      const { locator } = await this.resolve(target, timeoutMs);
+      return locator.isVisible({ timeout: timeoutRemaining(deadline) });
+    } catch {
+      return false;
+    }
+  }
+
   async isTextVisible(text: string, frame?: string): Promise<boolean> {
     for (const f of this.framesToSearch(frame)) {
       try {
