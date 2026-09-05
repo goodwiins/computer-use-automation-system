@@ -42,6 +42,11 @@ export class Approval {
   }
 }
 
+function credentialKey(key: string): boolean {
+  const normalized = key.replace(/^review:/i, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return /token|password|secret|cookie|authorization|apikey|session|csrf|nonce|^sid$/.test(normalized);
+}
+
 /** A copy for human review; native facts remain private and unchanged for dispatch checks. */
 export function publicIntervention(pending: PendingIntervention, secrets = new Redactor()): PendingIntervention {
   const { visibleFacts, businessValues, ...action } = pending.action ?? {};
@@ -52,7 +57,7 @@ export function publicIntervention(pending: PendingIntervention, secrets = new R
       url.username = ''; url.password = '';
       const safe = (text: string) => redactor.redactUrlComponent(text);
       const safeQuery = (query: string) => new URLSearchParams(Array.from(new URLSearchParams(query), ([key, value]) =>
-        [redactor.redactString(key), /token|password|secret|cookie|authorization/i.test(key) ? '•••redacted•••' : redactor.redactString(value)])).toString();
+        [redactor.redactString(key), credentialKey(key) ? '•••redacted•••' : redactor.redactString(value)])).toString();
       if (url.search) url.search = safeQuery(url.search);
       const hashQuery = url.hash.indexOf('?');
       const hash = /^[^=&/?#]+=[\s\S]*$/.test(url.hash.slice(1)) ? `#${safeQuery(url.hash.slice(1))}`
@@ -66,7 +71,7 @@ export function publicIntervention(pending: PendingIntervention, secrets = new R
     ...(pending.action ? { action: { ...redactor.redact(action) as ActionContext,
       destination: safeUrl(pending.action.destination),
       facts: Object.fromEntries(Object.entries(visibleFacts ?? {})
-        .filter(([key]) => !/token|password|secret|cookie|authorization|body/i.test(key))
+        .filter(([key]) => !credentialKey(key) && !/body/i.test(key))
         .map(([key, value]) => [redactor.redactString(key), redactor.redactString(value)])),
     } } : {}),
   };

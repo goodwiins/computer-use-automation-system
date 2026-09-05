@@ -243,6 +243,35 @@ describe('standalone approval CLI transport', () => {
     } finally { approval.cancel(); await waiting; await server.close(); }
   });
 
+  it.each(['api_key', 'api-key', 'apiKey', 'API.KEY', 'session', 'Session-ID', 'session_id', 'sid', 'SID', 'csrf', 'CSRF', 'nonce', 'NONCE']
+    .flatMap(key => ['query', 'hash-route', 'fragment'].map(location => ({ key, location }))))
+  ('masks unregistered $key in $location and visible facts while retaining business identity', async ({ key, location }) => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const parameters = new URLSearchParams({ [key]: 'short-credential', member: '123', amount: '1.00' }).toString();
+    const url = `https://example.test/action${location === 'query' ? '?' : location === 'hash-route' ? '#/review?' : '#'}${parameters}`;
+    const context = { ...action(runId), destination: url,
+      facts: { member: '123', amount: '1.00', [key]: 'short-credential' },
+      visibleFacts: { member: '123', amount: '1.00', [key]: 'short-credential', [`review:${key}:`]: 'short-credential' },
+    };
+    const original = structuredClone(context);
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const waiting = approval.wait({ ...request, url }, context);
+    const server = await startApprovalServer(runId, approval);
+    try {
+      const prompt = describePendingApproval(approval.pending);
+      expect(await requestApproval(runId, { action: 'status' })).toEqual({ ok: true, pending: prompt });
+      const api = publicIntervention(approval.pending!);
+      expect(api.action).toEqual(prompt.action);
+      expect(api.request.url).toBe(prompt.url);
+      expect(prompt.action!.facts).toEqual({ member: '123', amount: '1.00' });
+      expect(prompt.url).toContain('member=123&amount=1.00');
+      expect(prompt.action!.destination).toBe(prompt.url);
+      expect(JSON.stringify([prompt, api])).not.toContain('short-credential');
+      expect(context).toEqual(original);
+    } finally { approval.cancel(); await waiting; await server.close(); }
+  });
+
   it.each(['occupied', 'insecure', 'early-close', 'recorder-close', 'cleanup'] as const)('pairs pending with one abort on %s', async scenario => {
     process.env.CU_APPROVAL_DIR = temp();
     const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
