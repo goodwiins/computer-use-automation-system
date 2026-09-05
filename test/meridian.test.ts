@@ -1502,12 +1502,15 @@ describe('MERIDIAN guarded open-share path', () => {
   });
 });
 
-it('recovers the observed open-share maintenance path through one fresh member checkpoint', async () => {
+it.each([
+  { checkpoint: 'visible', hidden: false },
+  { checkpoint: 'hidden', hidden: true },
+])('$checkpoint member checkpoint bounds the observed open-share maintenance path', async ({ hidden }) => {
   let openVisits = 0;
   let memberVisits = 0;
   const app = express();
   const shares = '<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001</td><td>Regular Shares</td><td>$2.00</td><td>OPEN</td></tr></table>';
-  const member = `<table><tbody><tr><td>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table><a href="/members/9001/open-share">Open New Share</a>`;
+  const member = `<table><tbody><tr><td${hidden ? ' style="display:none"' : ''}>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table><a href="/members/9001/open-share">Open New Share</a>`;
   app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
   app.get('/members/9001', (_req, res) => { memberVisits++; res.send(member); });
   app.get('/members/9001/open-share', (_req, res) => {
@@ -1537,6 +1540,16 @@ it('recovers the observed open-share maintenance path through one fresh member c
     await surface.click({ description: 'open', strategies: [{ kind: 'role', role: 'link', name: 'Open New Share' }] });
     const interrupted = surface.currentFrame()!;
     expect(await surface.isTextVisible('SCHEDULED MAINTENANCE IN PROGRESS')).toBe(true);
+    if (hidden) {
+      await expect(surface.recoverOperation('maintenance', 5000)).rejects.toThrow(/frame/i);
+      expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001`);
+      expect(openVisits).toBe(1);
+      expect(memberVisits).toBe(2);
+      expect(gate).not.toHaveBeenCalled();
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(events).not.toContain('mutation.intent');
+      return;
+    }
     await surface.recoverOperation('maintenance', 5000);
     const restored = surface.currentFrame()!;
     expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001/open-share`);
