@@ -2904,6 +2904,62 @@ it('scopes transfer review facts to its form table and rejects duplicate labels'
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
+it('requires one complete rendered hold or open-share review table before approval', async () => {
+  const app = express();
+  const identity = '<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p><p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
+  app.get('/menu', (_req, res) => res.send(identity));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+  const rows = (values: readonly string[], labels: readonly string[]) => `<table>${labels.map((label, index) => `<tr><td class="lbl">${label}</td><td>${values[index]}</td></tr>`).join('')}</table>`;
+  const fixtures = [
+    {
+      control: 'Apply Hold',
+      action: '/members/9001/hold/post',
+      fields: '<input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="share" value="9001-S0001-1"><input type="hidden" name="reason" value="FRAUD"><input type="hidden" name="notes" value="fixture">',
+      labels: ['Member:', 'Share:', 'Reason:', 'Notes:'],
+      active: ['9001 - Fixture Member', '9001-S0001-1 - Regular Shares', 'FRAUD', 'fixture'],
+      stale: ['9001 - Stale Member', '9001-S0070-1 - Share Draft (Checking)', 'LEGAL', 'stale'],
+      expected: { 'review:Member:': '9001 - Fixture Member', 'review:Share:': '9001-S0001-1 - Regular Shares', 'review:Reason:': 'FRAUD', 'review:Notes:': 'fixture' },
+    },
+    {
+      control: 'Open Share',
+      action: '/members/9001/open-share/post',
+      fields: '<input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="type" value="S0001"><input type="hidden" name="deposit" value="5.00">',
+      labels: ['Member:', 'Share Type:', 'Initial Deposit:'],
+      active: ['9001 - Fixture Member', 'S0001 - Regular Shares', '$5.00'],
+      stale: ['9001 - Stale Member', 'S0070 - Share Draft (Checking)', '$9.00'],
+      expected: { 'review:Member:': '9001 - Fixture Member', 'review:Share Type:': 'S0001 - Regular Shares', 'review:Initial Deposit:': '$5.00' },
+    },
+  ] as const;
+  try {
+    await browser.start(`${localOrigin}/menu`);
+    for (const fixture of fixtures) {
+      const form = (reviewTables: string) => `${identity}<form method="post" action="${fixture.action}">${fixture.fields}${reviewTables}<input type="submit" value="${fixture.control}"></form>`;
+      await browser.page.setContent(form(rows(fixture.active, fixture.labels)));
+      const target = { description: fixture.control, strategies: [{ kind: 'role' as const, role: 'button', name: fixture.control }] };
+      const prepared = await browser.prepareClick(target);
+      await expect(prepared.inspect()).resolves.toMatchObject({ facts: fixture.expected });
+
+      await browser.page.setContent(form(`${rows(fixture.stale, fixture.labels)}${rows(fixture.active, fixture.labels)}`));
+      const gate = vi.fn(async () => false);
+      const beforeDispatch = vi.fn();
+      const guardedSurface = new GuardedSurface(browser, Policy.parse({ ...policy, allowedOrigins: [localOrigin] }), gate, undefined, {
+        profile, session: new ControlSession(), deadline: Date.now() + 10_000,
+        runId: randomUUID(), artifact: 'hold', version: '1.0.0',
+        operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch,
+      });
+      await expect(guardedSurface.click(target)).rejects.toThrow(/ambiguous/i);
+      expect(gate).not.toHaveBeenCalled();
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(guardedSurface.mutationDispatched).toBe(false);
+    }
+  } finally {
+    await browser.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 15000);
+
 it('allows a native Continue form before the transfer review page', async () => {
   const app = express();
   app.get('/members/9001/transfer', (_req, res) => res.send('<form method="post" action="/members/9001/transfer/review"><input type="hidden" name="_token" value="TOKEN"><select name="from"><option value="9001-A" selected>9001-A</option></select><select name="to"><option value="9001-B" selected>9001-B</option></select><input name="amount" value="1.00"><textarea name="memo">fixture</textarea><input type="submit" value="Continue"></form>'));

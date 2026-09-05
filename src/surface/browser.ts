@@ -781,30 +781,34 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
         addFact(field.name, field.value);
       }
     }
-    const transferLabels = new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']);
-    const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
-      || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
+    const destinationPath = new URL(destination).pathname;
+    const canonicalReview = [
+      { name: 'Transfer', route: 'transfer', labels: new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']) },
+      { name: 'Open-share', route: 'open-share', labels: new Set(['Member:', 'Share Type:', 'Initial Deposit:']) },
+      { name: 'Hold', route: 'hold', labels: new Set(['Member:', 'Share:', 'Reason:', 'Notes:']) },
+    ].find(review => new RegExp(`^/members/\\d+/${review.route}/review$`).test(location.pathname)
+      || new RegExp(`^/members/\\d+/${review.route}/post$`).test(destinationPath));
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
-      ...(transferReview ? siblingReviewTables(form!) : []),
+      ...(canonicalReview ? siblingReviewTables(form!) : []),
     ])) as HTMLTableElement[];
     let reviewTable: HTMLTableElement | null;
     let reviewLabels: Element[];
-    if (transferReview) {
+    if (canonicalReview) {
       const candidates = tables.map(table => ({ table, labels: ownLabels(table) }))
         .filter(candidate => isRendered(candidate.table))
-        .filter(candidate => candidate.labels.some(label => transferLabels.has(renderedText(label))));
+        .filter(candidate => candidate.labels.some(label => canonicalReview.labels.has(renderedText(label))));
       const complete = candidates.filter(candidate => {
         const labels = candidate.labels.map(renderedText);
-        return transferLabels.size === new Set(labels.filter(label => transferLabels.has(label))).size
-          && transferLabels.size === labels.filter(label => transferLabels.has(label)).length;
+        return canonicalReview.labels.size === new Set(labels.filter(label => canonicalReview.labels.has(label))).size
+          && canonicalReview.labels.size === labels.filter(label => canonicalReview.labels.has(label)).length;
       });
       if (candidates.length === 1) {
-        const labels = candidates[0]!.labels.map(renderedText).filter(label => transferLabels.has(label));
+        const labels = candidates[0]!.labels.map(renderedText).filter(label => canonicalReview.labels.has(label));
         if (new Set(labels).size !== labels.length) throw new Error('Duplicate form fact');
       }
-      if (candidates.length !== 1 || complete.length !== 1) throw new Error('Transfer review facts are missing or ambiguous');
+      if (candidates.length !== 1 || complete.length !== 1) throw new Error(`${canonicalReview.name} review facts are missing or ambiguous`);
       reviewTable = complete[0]!.table;
       reviewLabels = complete[0]!.labels;
     } else {
