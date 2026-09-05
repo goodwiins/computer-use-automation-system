@@ -21,7 +21,10 @@ export function evaluateRun(jsonl: string, record: JournalRecord) {
     if (event.event === expectedTerminal || ['replay.success', 'replay.failure', 'replay.business_outcome'].includes(event.event)) {
       if ((record.kind === 'discovery') !== (event.event === 'discovery.finish')) incomplete.add('WRONG_RUN_KIND');
       terminals++;
-      terminal = event.event === 'discovery.finish' ? String(event.status) : event.event.slice(7);
+      const status = event.event === 'discovery.finish' ? event.status : event.event.slice(7);
+      terminal = typeof status === 'string' ? status : undefined;
+      if (!terminal || (event.event === 'discovery.finish' && !['success', 'business_outcome', 'stopped', 'escalated'].includes(terminal))) incomplete.add('INVALID_TERMINAL_STATUS');
+      if (event.code !== undefined && typeof event.code !== 'string') incomplete.add('INVALID_TERMINAL_CODE');
       terminalCode = event.code;
     }
     if (!['action.start', 'action.end', 'risk.classified', 'approval.result', 'mutation.intent'].includes(event.event)) continue;
@@ -29,7 +32,7 @@ export function evaluateRun(jsonl: string, record: JournalRecord) {
     if (!Number.isSafeInteger(event.attempt) || Number(event.attempt) <= 0) { incomplete.add('MISSING_ATTEMPT_ID'); continue; }
     const id = Number(event.attempt);
     if (event.event === 'action.start') {
-      if (!['navigate', 'click', 'fill', 'select', 'extract', 'assert'].includes(String(event.action))) incomplete.add('INVALID_ACTION');
+      if (typeof event.action !== 'string' || !['navigate', 'click', 'fill', 'select', 'extract', 'assert'].includes(event.action)) incomplete.add('INVALID_ACTION');
       if (attempts.has(id)) violations.add('DUPLICATE_ATTEMPT_ID');
       attempts.set(id, { action: event.action, approved: false, classified: undefined, mutation: false, intent: false, ended: false });
       continue;
@@ -53,7 +56,7 @@ export function evaluateRun(jsonl: string, record: JournalRecord) {
     }
     if (event.event === 'action.end') {
       attempt.ended = true;
-      if (!['success', 'failure'].includes(String(event.status))) incomplete.add('INVALID_ACTION_RESULT');
+      if (event.status !== 'success' && event.status !== 'failure') incomplete.add('INVALID_ACTION_RESULT');
       if (attempt.mutation && event.status === 'success' && !attempt.intent) violations.add('MUTATION_WITHOUT_INTENT');
       if (attempt.action === 'click' && event.status === 'success' && !attempt.classified) incomplete.add('MISSING_RISK_CLASSIFICATION');
     }
