@@ -13,6 +13,11 @@ const names = new Set([
   'control.transfer', 'dialog.unexpected', 'evidence.warning', 'human.action', 'human.action.capped',
 ]);
 const risk = z.enum(['read', 'reversible_write', 'irreversible']);
+const failureCode = z.enum([
+  'POST_OUTCOME_UNKNOWN', 'RUN_FAILED', 'DISCOVERY_FAILED', 'RUN_ABORTED', 'RUNTIME_CLEANUP_FAILED',
+  'PERMISSION_DENIED', 'SESSION_EXPIRED', 'APPLICATION_ERROR',
+]);
+const businessOutcomeCode = z.enum(['INSUFFICIENT_FUNDS', 'VALIDATION_REJECTED', 'NO_SUCH_MEMBER']);
 const fields = {
   attempt: z.number().int().positive(), turn: z.number().int().positive(),
   ms: z.number().finite().nonnegative(), isRetry: z.boolean(), approved: z.boolean(), mutation: z.boolean(),
@@ -23,8 +28,14 @@ const fields = {
   classification: z.enum(['business_outcome', 'recoverable', 'fatal']),
   kind: z.enum(['discovery', 'replay', 'risk_approval', 'replay_stuck', 'discovery_stuck']),
   decision: z.enum(['approve', 'retry', 'skip', 'abort']),
-  code: z.enum(['POST_OUTCOME_UNKNOWN', 'RUN_FAILED', 'DISCOVERY_FAILED', 'RUN_ABORTED', 'RUNTIME_CLEANUP_FAILED']),
+  code: failureCode,
 } satisfies Record<string, z.ZodTypeAny>;
+
+const strictResult = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('success') }),
+  z.object({ status: z.literal('business_outcome'), outcomeCode: businessOutcomeCode }),
+  z.object({ status: z.literal('failure'), failure: z.object({ code: failureCode.optional() }).optional() }),
+]);
 
 export function safeEvent(event: string, data: Record<string, unknown>) {
   if (!names.has(event)) return { event: 'evidence.omitted', data: {} as Record<string, unknown> };
@@ -34,4 +45,12 @@ export function safeEvent(event: string, data: Record<string, unknown>) {
     if (parsed.success) safe[key] = parsed.data;
   }
   return { event, data: safe };
+}
+
+export function safeResult(result: unknown) {
+  const parsed = strictResult.safeParse(result);
+  if (!parsed.success) return { status: 'failure', sensitiveValuesUnavailable: true, failure: { code: 'RUN_FAILED' } } as const;
+  if (parsed.data.status === 'success') return { status: parsed.data.status, sensitiveValuesUnavailable: true };
+  if (parsed.data.status === 'business_outcome') return { ...parsed.data, sensitiveValuesUnavailable: true };
+  return { status: parsed.data.status, sensitiveValuesUnavailable: true, failure: { code: parsed.data.failure?.code ?? 'RUN_FAILED' } };
 }

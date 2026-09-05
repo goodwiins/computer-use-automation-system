@@ -45,6 +45,51 @@ it('keeps sensitive data and arbitrary values out of observers, even in non-stri
   expect(safeEvent('PRIVATE-EVENT', { action: 'click' })).toEqual({ event: 'evidence.omitted', data: {} });
 });
 
+it('preserves strict protocol metadata when sensitive values collide with its enums', () => {
+  const redactor = new Redactor();
+  redactor.addSensitiveValues(['transfer', 'irreversible', 'click', 'success', 'PRIVATE-PAGE-VALUE']);
+  const observed: { event: string; data: Record<string, unknown> }[] = [];
+  const logger = new RunLogger('replay', redactor, temp(), true, undefined,
+    (event, data) => observed.push({ event, data }));
+  logger.log('control.transfer', { from: 'PRIVATE-PAGE-VALUE', to: 'PRIVATE-PAGE-VALUE' });
+  for (const { event, ...data } of trajectory) logger.log(event, { ...data, pageText: 'PRIVATE-PAGE-VALUE' });
+  logger.log('PRIVATE-PAGE-VALUE', { action: 'click' });
+
+  const entries = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(entries.map(({ ts: _ts, seq: _seq, event, ...data }) => ({ event, data }))).toEqual(observed);
+  expect(entries.map(entry => entry.event)).toEqual(['control.transfer', ...trajectory.map(entry => entry.event), 'evidence.omitted']);
+  expect(JSON.stringify(entries)).not.toContain('PRIVATE-PAGE-VALUE');
+  expect(evaluateRun(entries.map(entry => JSON.stringify(entry)).join('\n'), record).status).toBe('pass');
+
+  const legacyRedactor = new Redactor(); legacyRedactor.addSensitiveValues(['PRIVATE-PAGE-VALUE']);
+  const legacy = new RunLogger('replay', legacyRedactor, temp());
+  legacy.log('page.PRIVATE-PAGE-VALUE', { text: 'PRIVATE-PAGE-VALUE' });
+  expect(readFileSync(join(legacy.dir, 'log.jsonl'), 'utf8')).not.toContain('PRIVATE-PAGE-VALUE');
+});
+
+it('keeps only validated strict terminal metadata under sensitive-value collisions', () => {
+  const write = (result: unknown, sensitive: string[]) => {
+    const redactor = new Redactor(); redactor.addSensitiveValues(sensitive);
+    const logger = new RunLogger('replay', redactor, temp(), true);
+    logger.writeResult(result);
+    return JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'));
+  };
+  expect(write({ status: 'success', outputs: { private: 'PRIVATE' } }, ['success', 'PRIVATE']))
+    .toEqual({ status: 'success', sensitiveValuesUnavailable: true });
+  expect(write({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS', detail: 'PRIVATE' }, ['business_outcome', 'INSUFFICIENT_FUNDS', 'PRIVATE']))
+    .toEqual({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS', sensitiveValuesUnavailable: true });
+  expect(write({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN', detail: 'PRIVATE' } }, ['failure', 'POST_OUTCOME_UNKNOWN', 'PRIVATE']))
+    .toEqual({ status: 'failure', sensitiveValuesUnavailable: true, failure: { code: 'POST_OUTCOME_UNKNOWN' } });
+  for (const code of ['PERMISSION_DENIED', 'SESSION_EXPIRED', 'APPLICATION_ERROR']) {
+    expect(write({ status: 'failure', failure: { code, detail: 'PRIVATE' } }, [code, 'PRIVATE']))
+      .toEqual({ status: 'failure', sensitiveValuesUnavailable: true, failure: { code } });
+  }
+  const fallback = { status: 'failure', sensitiveValuesUnavailable: true, failure: { code: 'RUN_FAILED' } };
+  expect(write({ status: 'business_outcome', outcomeCode: 'PRIVATE-OUTCOME', detail: 'PRIVATE', ignored: 'PRIVATE' }, [])).toEqual(fallback);
+  expect(write({ status: 'failure', failure: { code: 'PRIVATE-FAILURE', detail: 'PRIVATE' }, ignored: 'PRIVATE' }, [])).toEqual(fallback);
+  expect(write({ status: 'PRIVATE-STATUS', outcomeCode: 'PRIVATE-OUTCOME', ignored: 'PRIVATE' }, [])).toEqual(fallback);
+});
+
 it('grades approvals and dispatch attempts from ordered runtime evidence', () => {
   expect(evaluateRun(encode(trajectory), record)).toMatchObject({ status: 'pass', mutationIntents: 1, riskDisagreements: 1 });
   expect(evaluateRun(encode(trajectory.filter(e => e.event !== 'approval.result')), record).violations).toContain('DISPATCH_WITHOUT_APPROVAL');
