@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
 import { applyMeridianContract, assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
 import { Approval } from '../src/runtime/approval.js';
@@ -32,6 +32,7 @@ import { InvocationService } from '../src/server/service.js';
 import express from 'express';
 import { chromium, type Page } from 'playwright';
 import { request as httpRequest, createServer } from 'node:http';
+import type { Duplex } from 'node:stream';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'meridian-')); dirs.push(dir); return dir; };
@@ -2556,7 +2557,9 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 }, 15000);
 
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
-  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false;
+  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false;
+  let websocketUpgrades = 0; let websocketMessages = 0;
+  const upgradeSockets = new Set<Duplex>();
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
   const contact = '<table><tbody><tr><td>Member No.:</td><td>9001</td><td>Name:</td><td>Fixture Member</td></tr><tr><td>E-mail:</td><td>member@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>';
   const shares = '<table><tbody><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001-1</td><td>Regular Shares</td><td>$8.00</td><td>OPEN</td></tr></tbody></table>';
@@ -2566,18 +2569,43 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
   app.use(express.urlencoded({ extended: false }));
   app.get('/menu', (_req, res) => res.send(`<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p>${identity}`));
   app.get('/members/9001', (_req, res) => reloadFresh
-    ? res.send(`${identity}<script>setTimeout(() => location.reload(), 10)</script>`)
+    ? res.send(`<meta http-equiv="refresh" content="0.01;url=/members/9001">${identity}`)
+    : websocketFresh ? res.send(`${member}<img src="/slow.png"><script>
+      const wsUrl = location.origin.replace(/^http/, 'ws') + '/write-channel';
+      const openSocket = Socket => { const socket = new Socket(wsUrl); socket.onopen = () => socket.send('unauthorized mutation'); };
+      openSocket(WebSocket);
+      const worker = new Worker(URL.createObjectURL(new Blob([\`const socket = new WebSocket('${'${wsUrl}'}'); socket.onopen = () => socket.send('worker mutation');\`], { type: 'text/javascript' })));
+      const popup = window.open('about:blank'); if (popup) openSocket(popup.WebSocket);
+    </script>`)
     : redirectFresh ? res.redirect('/members/9999') : res.send(member));
   app.get('/members/9999', (_req, res) => res.send(member));
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
   app.post('/members/9001/hold/review', (_req, res) => res.send(review));
   app.post('/members/9001/hold/post', (_req, res) => { posted++; res.send('held'); });
+  app.get('/slow.png', (_req, res) => setTimeout(() => res.type('png').send('not-an-image'), 100));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  server.on('upgrade', (request, socket) => {
+    websocketUpgrades++;
+    upgradeSockets.add(socket);
+    socket.once('close', () => upgradeSockets.delete(socket));
+    const key = request.headers['sec-websocket-key'];
+    if (typeof key !== 'string') return socket.destroy();
+    const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.on('data', () => { websocketMessages++; });
+  });
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
   const button = (name: string) => ({ description: name, strategies: [{ kind: 'role' as const, role: 'button', name }] });
   try {
     await browser.start(`${localOrigin}/menu`);
+    await browser.page.evaluate(url => {
+      const socket = new WebSocket(url);
+      socket.onopen = () => socket.send('main-page mutation');
+    }, localOrigin.replace(/^http/, 'ws') + '/write-channel');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(websocketUpgrades).toBe(0);
+    expect(websocketMessages).toBe(0);
     await browser.navigate(`${localOrigin}/members/9001`);
     const enter = await browser.prepareClick({ description: 'Place Hold', strategies: [{ kind: 'role', role: 'link', name: 'Place Hold' }] });
     await enter.dispatch(await enter.inspect());
@@ -2605,6 +2633,15 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(browser.page.context().pages()).toHaveLength(1);
     reloadFresh = false;
 
+    websocketFresh = true;
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).resolves.toMatchObject({
+      tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })]],
+    });
+    expect(websocketUpgrades).toBe(0);
+    expect(websocketMessages).toBe(0);
+    expect(browser.page.context().pages()).toHaveLength(1);
+    websocketFresh = false;
+
     let auxiliary: Page | undefined;
     let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
     const sabotageClose = (opened: Page) => {
@@ -2621,7 +2658,12 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(posted).toBe(1);
     await browser.page.context().unroute('**/*');
     await auxiliary?.close();
-  } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  } finally {
+    for (const socket of upgradeSockets) socket.destroy();
+    await browser.close();
+    server.close();
+    server.closeAllConnections();
+  }
 }, 30000);
 
 it('extracts one canonical transfer row from a vertical receipt and persists only its table structure', async () => {
