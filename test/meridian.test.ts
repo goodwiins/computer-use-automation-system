@@ -1281,11 +1281,12 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
   ].map(([label, value]) => `<tr><td>${label}</td><td>${value}</td></tr>`).join('');
   const app = express();
   app.get('/receipt', (_req, res) => res.send(`<table id="transaction" data-token="PRIVATE TABLE TOKEN"><thead><tr><th colspan="2">PRIVATE RECEIPT HEADER</th></tr></thead><tbody>${fields}</tbody></table>`));
+  app.get('/custom-receipt', (_req, res) => res.send(`<token-private-9001><table><tbody>${fields}</tbody></table></token-private-9001>`));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({
     allowedOrigins: [localOrigin],
-    profile: { ...profile, entryUrl: `${localOrigin}/receipt`, routes: ['^/receipt$'], maskSelectors: ['body'] },
+    profile: { ...profile, entryUrl: `${localOrigin}/receipt`, routes: ['^/(custom-)?receipt$'], maskSelectors: ['body'] },
   });
   try {
     await browser.start(`${localOrigin}/receipt`);
@@ -1317,14 +1318,12 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
       rowCells: [['th'], ...Array.from({ length: 6 }, () => ['td', 'td'])],
     }]);
 
-    const observe = browser.observe.bind(browser);
-    browser.observe = async () => {
-      const observation = await observe();
-      observation.frames[0]!.tables![0]!.selector = '#PRIVATE-SELECTOR';
-      return observation;
-    };
-    const rejected = await logger.screenshot(browser, 'invalid-structure');
-    expect(JSON.parse(readFileSync(rejected.replace(/\.png$/, '.json'), 'utf8')).frames[0].tables).toEqual([]);
+    await browser.navigate(`${localOrigin}/custom-receipt`);
+    expect((await browser.observe()).frames[0]!.tables![0]!.selector).toContain('token-private-9001');
+    const rejected = await logger.screenshot(browser, 'custom-ancestor');
+    const rejectedMetadata = readFileSync(rejected.replace(/\.png$/, '.json'), 'utf8');
+    expect(rejectedMetadata).not.toContain('token-private-9001');
+    expect(JSON.parse(rejectedMetadata).frames[0].tables).toEqual([]);
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 

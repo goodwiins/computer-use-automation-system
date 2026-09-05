@@ -10,11 +10,13 @@ import type { Surface } from '../surface/types.js';
 import { safeEvent, safeResult } from './safe-event.js';
 
 const STRUCTURAL_SELECTOR = /^body > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\)(?: > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\))*$/;
+const STRUCTURAL_TAGS = new Set(['article', 'center', 'div', 'form', 'main', 'section', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr']);
 
 function strictTableStructure(table: unknown): { selector: string; rows: number; rowCells: Array<Array<'td' | 'th'>> } | undefined {
   if (!table || typeof table !== 'object') return undefined;
   const candidate = table as Record<string, unknown>;
   if (typeof candidate.selector !== 'string' || !STRUCTURAL_SELECTOR.test(candidate.selector)
+    || !candidate.selector.match(/[a-z][a-z0-9-]*(?=:nth-of-type\()/g)?.every(tag => STRUCTURAL_TAGS.has(tag))
     || !Number.isSafeInteger(candidate.rows) || (candidate.rows as number) < 0
     || !Array.isArray(candidate.rowCells) || candidate.rowCells.length !== candidate.rows
     || !candidate.rowCells.every(row => Array.isArray(row) && row.every(cell => cell === 'td' || cell === 'th'))) return undefined;
