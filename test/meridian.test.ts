@@ -1753,6 +1753,30 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.surface.mutationDispatched).toBe(true);
   });
 
+  it('rejects a cross-operation Continue before approval, intent, or dispatch', async () => {
+    const h = harness();
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: 'Select', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.setLive({ url: h.memberUrl, destination: h.holdUrl, method: 'GET', control: 'Place Hold', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({
+      url: h.holdUrl,
+      destination: `${origin}/members/9001/transfer/review`,
+      method: 'POST',
+      control: 'Continue',
+      submit: true,
+      facts: { member: '9001', from: '9001-A', to: '9001-B', amount: '1.00', memo: 'unrelated' },
+    });
+
+    await expect(h.run.surface.click(target)).rejects.toThrow(/transition/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
   it.each([
     ['native member', 'member', '9999'],
     ['native share', 'share', '9001-S0070-1'],
@@ -1798,7 +1822,7 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
 
     const unrelated = await reviewedHold();
     unrelated.setLive({ destination: `${origin}/members/9001/update`, control: 'Save Changes' });
-    await expect(unrelated.run.surface.click(target)).rejects.toThrow(/operation/i);
+    await expect(unrelated.run.surface.click(target)).rejects.toThrow(/transition/i);
     expect(unrelated.gate).not.toHaveBeenCalled();
     expect(unrelated.run.beforeDispatch).not.toHaveBeenCalled();
 

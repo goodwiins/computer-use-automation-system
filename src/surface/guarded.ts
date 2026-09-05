@@ -416,6 +416,11 @@ export class GuardedSurface implements Surface {
     throw new Error('Hold frame is no longer bound to this run');
   }
 
+  private holdTransitionFailed(): never {
+    this.holdState = undefined;
+    throw new Error('Hold control transition is not bound to this run');
+  }
+
   private currentHoldFrame(): FrameContext {
     const frame = this.inner.currentFrame?.();
     if (!frame) throw new Error('Hold frame identity is unavailable');
@@ -504,6 +509,13 @@ export class GuardedSurface implements Surface {
     const state = this.holdState;
     if (!state || state.stage !== source.stage || !this.sameFrameRevision(state.frame, live.frame)
       || !this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url)) return this.holdFrameFailed();
+    const post = HOLD_ROUTE.exec(this.path(live.destination));
+    const validTransition = source.stage === 'member'
+      ? destination?.stage === 'hold' && live.method === 'GET' && !live.submit
+      : source.stage === 'hold'
+        ? destination?.stage === 'review' && live.method === 'POST' && live.submit
+        : post?.[1] === binding.expected.member && post[2] === 'post' && live.method === 'POST' && live.submit;
+    if (!validTransition) return this.holdTransitionFailed();
   }
 
   private assertHoldNativeFacts(live: LiveControl): void {
