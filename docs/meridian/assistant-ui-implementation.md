@@ -141,136 +141,178 @@ acceptance also requires the other task's seven live artifact/replay pairs,
 exceptional states, genuine operator approvals, comparator/provenance checks,
 runbook/write-up, and hosted checks where publication is authorized.
 
-## Requirement status
+## Verified integration status
 
-| Requirement | Owner | Evidence/status |
-| --- | --- | --- |
-| Seven genuine discovery/artifact/replay pairs | Coordinating task | 3/7 historically accepted; four write gates incomplete |
-| Runtime safety, idempotency, unknown outcome, evidence | Coordinating task + shared integration | Base includes PR46; additional evidence/CLI audit underway |
-| Vercel AI SDK typed caller chat | Task 1 | Implemented at 5c5df38; independent review approved after two fixes. Real AI SDK protocol with offline model fixtures; live model gate pending |
-| assistant-ui runtime and component map | Task 2 | Implemented at 3c7528d; independent review approved after three fixes |
-| Shared run state, approvals, evidence, accessibility | Task 2 | Eleven final offline focused checks pass; independent review approved; live gates pending |
-| Live model/read UI invocation and exceptional path | Task 3 | Pending |
-| Local CI/build/validate and diff checks | All | Task 1 at 7eeb447: 285 tests / 18 files, typecheck, artifact validation, and diff checks pass. New UI/build gates pending |
-| Review, setup, exact commands, write-up, handoff | Task 3 + coordinating task | Pending |
+Source `681ab82a25aa9238b4ac15a542dc92b55d53adb1` integrates reviewed
+Task 1 `5c5df38`, Task 2 `3c7528d`, Task 3 correction `fa934f4`, and reviewed
+discovery-contract source `e507e8af` through dev merge `245ba838`.
 
-No full-completion claim is made by this branch until all goal requirements have
-authoritative evidence. Offline fixtures and recorded evidence do not increase
-the live accepted capability count.
+| Requirement | Verified result / remaining boundary |
+| --- | --- |
+| AI SDK caller chat and assistant-ui | Genuine configured Azure model invoked an approved read through the production bundle; authoritative card/dashboard result agreement verified |
+| Shared run state, evidence, approval controls, accessibility | Offline bundled browser checks pass; live reads prove history/reconnect and typed results; live mutation approval remains a separate gate |
+| Exceptional read | Separate direct inquiry observed `business_outcome / NO_SUCH_MEMBER`; evaluator passed |
+| Model-free replay | Fresh process without provider credentials/configuration invoked the approved read through the direct UI form; evaluator passed |
+| Integrated local gates | Both typechecks, build, 309 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
+| Seven discovery/artifact/replay pairs | Coordinating task owns the complete matrix; this UI verification does not add write acceptance or complete the four write gates |
+| Publication / hosted checks | This task made no push, PR, remote merge or deployment; branch-head hosted checks remain outside this local result |
 
-## UI acceptance map
+No whole-project completion is claimed. Genuine operator approvals, all seven
+capability pairs, remaining exceptional states, mutation comparator/provenance
+checks, and the shared runbook/write-up remain the coordinating task's gates.
 
-| Flow | Observable result | Proof to retain |
-| --- | --- | --- |
-| Connect as caller/operator | Only authorized catalog/results; role follows server principal | Browser request + rendered role; no credentials in web storage or URL |
-| Ask for missing input | Plain clarification; no invocation | Model fixture + zero service invocation count |
-| Ask for balance | Tool card has real runId; pending becomes structured result | Actual AI SDK stream + same GET run in card/dashboard |
-| Pending transaction | Caller waits; operator sees exact current facts and expiry | Offline real Approval class plus decision endpoint/browser test |
-| Wrong/expired/duplicate decision | 403/409; no second decision/action | Existing core tests plus UI error/refresh check |
-| Unknown posting | Prominent investigation instruction; no retry/regenerate action | Unknown fixture and zero POST after reload/refresh |
-| Transport response lost | Same message key; no second invocation | Duplicate request integration check |
-| Chat response stopped | Explicit wording; run remains observable in history | Controlled stream cancellation and run polling check |
-| Server disconnected | Stale/unavailable state; no false terminal success | Browser network failure and recoverable read refresh |
-| Historical run | Missing sensitive values remain unavailable | Restart projection + ResultCard assertion |
-| Hostile text/evidence | Inert text; authorized image blob; no script/HTML execution | CSP, browser dialog/pageerror, storage and request checks |
-| Keyboard/responsive | All actions reachable; no overflow at required widths | 320, 768, 1024, 1440 screenshots/checks and keyboard actions |
+## Final audit corrections
 
-The SDK tool stream is a conversational record. The runtime journal is the
-execution record. Run IDs connect them; rendered SDK tool completion alone
-does not prove a browser run completed.
+`fa934f4` clears a prior local draft-validation alert in the existing transport
+preparation callback after the next request validates. The ineffective Composer
+`onSubmit` handler was removed. The bundled browser regression first failed
+because the old alert remained, then passed with zero POSTs for the rejected
+4001-character draft, exactly one POST for the next valid draft, and no stale
+alert. Normalization and request-key behavior are unchanged.
 
-Research references: [AI SDK adapter/version table](https://www.assistant-ui.com/docs/runtimes/ai-sdk/overview),
-[v7 transport](https://www.assistant-ui.com/docs/runtimes/ai-sdk/v7),
-[backend tool renderers](https://www.assistant-ui.com/docs/tools/tool-ui),
-[thread](https://www.assistant-ui.com/docs/api-reference/primitives/thread),
-[composer](https://www.assistant-ui.com/docs/api-reference/primitives/composer).
+The provider-error regression now asserts that `console.error` was never called.
+Serializing an Error produced `{}` and could conceal the original SDK default
+logger defect. Reviewed production logger handling remains unchanged.
 
-## Audit observations
+## Source-specific live evidence
 
-- At `7eeb447`, `npm audit --omit=dev` reports three existing moderate advisories
-  through Express/body-parser/qs. No AI SDK advisory was reported. Task 2 will
-  assess a narrow compatible dependency repair and rerun the audit.
-- Chat transport retries use the existing durable invocation journal: same key
-  and same invocation identity returns the existing run; changed capability or
-  arguments returns 409. There is no persisted conversation or chat-response cache.
-- Coordinating task reports reviewed PR47 merged at `2c7f4ed`; integrated locally into
-  this branch at `6353741` before Task 2 started.
+All three phases ran sequentially on source `681ab82` using approved v1.0.0
+artifacts, port 4197, separate fresh private journals and request identities,
+and the caller allowlist restricted to sign-on, member inquiry and member record.
+The existing synthetic member was read only from the authorized private input;
+its old failed-transfer request identity was not reused. Provider credentials
+were loaded privately from the existing configuration. No raw transcript,
+member/share/contact/balance values or operation keys are committed here.
 
-Task 1 review fixed SDK default logging of raw provider errors and legacy mixed
-tool responses hiding an accepted run ID. Scoped re-review approved `5c5df38`;
-128 combined chat/legacy tests and typecheck passed after the fixes. One minor
-regression-test assertion improvement is retained for the final audit.
+| Phase | Run ID | Observed authoritative result | Evaluator |
+| --- | --- | --- | --- |
+| Genuine model chat → member record | `bc63c854-0781-4f24-bcb7-c0d57ade1d65` | success; typed table valid; 30 rows; chat card and dashboard share run/state and all returned values | pass; 10 attempts; 0 mutation intents; 0 violations/incomplete |
+| Fresh provider-disabled server → direct member record | `18427423-fe11-4ee7-ae46-398bd6f1eb84` | success; typed table valid; 30 rows; dashboard values agree | pass; 10 attempts; 0 mutation intents; 0 violations/incomplete |
+| Separate direct inquiry with synthetic negative candidate | `0e013cb4-9f31-496a-8a54-8e278d801e9d` | business_outcome / NO_SUCH_MEMBER, observed live | pass; 9 attempts; 0 mutation intents; 0 violations/incomplete |
 
-## Adaptation boundary and remaining coupling
+Each phase sent exactly one application POST and zero decision POSTs. The chat
+request key equaled its user message ID. Refresh, reload with manual credential
+entry, and disconnect/reconnect restored the same single run without another
+POST or invocation. Reload cleared authentication and chat; browser storage was
+empty and browser page errors were zero. Every server exited 0 through graceful
+shutdown, all owned UI browsers closed, and port 4197 was confirmed closed before
+the coordinated live window was released.
 
-The chat change reuses the existing Express routes, catalog conversion,
-`InvocationService`, deterministic executor, approvals, journal, and evidence
-access. Vercel AI SDK handles one bounded interpretation/tool-selection step;
-the new UI consumes run IDs and existing authenticated read/decision endpoints.
-It introduces no model into replay or operator authorization. The React build
-and backend tool renderers are Task 2 work until verified below.
+A separate local-only restart then reopened the first completed journal using
+its unchanged HMAC and no provider credentials. The original run returned in
+history with **Historical sensitive values are unavailable**. Authenticated
+result and safe-event evidence rendered (67 events, two evidence GETs), with
+zero POSTs, empty chat/storage, and an unchanged SHA-256 of the completed journal
+record before/after startup and shutdown. A private Node child-process spawn
+counter observed zero server subprocess launches. That server exited 0 and its
+UI browser closed. This durable server-restart check is distinct from browser
+reload and from the fresh model-disabled replay above.
 
-The broader core is not yet demonstrably portable by configuration alone.
-`config/app-profiles/meridian.json` supplies routes, form rules, detectors, and
-mask selectors, but target-specific choices still live in shared TypeScript:
-`src/runtime/profile.ts` selects policy by app ID; `src/server/service.ts` applies
-MERIDIAN contracts and operator context; `src/runtime/run.ts` wires transfer
-facts and a hardcoded observed member-table selector from
-`src/runtime/contracts.ts`; `src/replay/executor.ts` validates MERIDIAN transfer
-outputs. These are concrete coupling points for a future target adapter.
+The model-disabled phase used a new server process with provider configuration
+and credentials omitted from its environment. `createRuntime`/`executeReplay`
+have no model dependency. This proves provider-independent replay with the
+configured direct path; network-level model egress blocking was not enforced
+or measured. The two successful reads were separate observations of current
+state, not a transaction before/after comparator.
 
-This branch preserves those reviewed behaviors. Moving them into a generic
-plugin framework would add scope without proving another target; a second
-concrete target should drive that extraction. No second-target portability
-proof or completed full-surface adaptation is claimed here.
+Authenticated local journal records plus complete safe JSONL logs were passed
+to `evaluateRun`; an SDK tool completion alone was never counted as completion.
+Private phase summaries retain source SHA, run IDs, artifact versions and
+counts/booleans, alongside masked screenshots. Request identities and HMACs
+remain in separate private configuration files with mode 0600. They live under ignored
+`evidence/meridian/assistant-ui-task3-private/`; inputs, journal HMACs and server
+configuration stay private. The full command/output report is
+`.superpowers/sdd/assistant-ui-implementation/task-3-report.md`.
 
-## Live UI acceptance procedure (pending execution)
+## Component connections verified
 
-1. Coordinate exclusive hosted-target use, then launch this exact reviewed
-   branch with existing local credentials and a new private evidence/journal
-   directory. Keep the journal HMAC stable and retain its request identities.
-2. Connect as caller through the bundled UI. Ask the real configured model for
-   one explicit approved read capability; record its request identity and run ID
-   privately. A `202`/tool output proves acceptance only.
-3. Wait for the authoritative run to finish, compare the structured result in
-   the chat card and dashboard, and run the evidence evaluator against that run.
-   Save sanitized booleans/counts plus source SHA and artifact version.
-4. Refresh/reconnect through authenticated reads; verify history keeps the same
-   run ID and no new invocation occurs. Reload must clear credentials and chat.
-5. Exercise an authorized exceptional read path if supported. Keep offline
-   approval/unknown fixtures distinct from live operator decisions. Do not
-   perform a write or approve one merely to complete the UI check.
+| Component / source | Authority and observed behavior |
+| --- | --- |
+| `chat.tsx`: AssistantRuntimeProvider, Thread, Message, Composer | `useChatRuntime` + AssistantChatTransport → `/api/chat`; server defines tools; stop affects the response, not the transaction |
+| `session.tsx`: RunProvider | One authenticated cache over `/runs` and `/runs/:id` shared by chat/dashboard; polling, failure recovery, manual refresh and session cleanup |
+| `dashboard.tsx`: CapabilityRunCard / ResultCard | Tool supplies run ID; server supplies current state/version and typed table/decimal values; live agreement verified |
+| CapabilityCatalog / invocation form | Authorized descriptors populate inputs; all seven coverage labels are visible, three available here, remaining four unavailable; direct replay uses its own request key |
+| RunHistory / RunDetail / StepTimeline | Discovery/replay identity and safe recorded evidence; absent raw step identifiers are explained rather than fabricated |
+| `evidence.tsx`: EvidenceViewer | Authenticated validated paths; inert JSON/JSONL and masked image blobs; offline tests verify auth, hostile content and URL cleanup |
+| ApprovalPanel / EscalationCard | Existing operator intervention/expiry authority; offline tests cover disabled expired/duplicate decisions and unknown no-retry; no live operator decision was made here |
+| `main.tsx`: session controls | Server principal, memory-only credentials, clearing on disconnect/expiry/pagehide/reload; live manual reconnect verified |
 
-The final report must replace these pending steps with actual evidence or exact
-blockers. Prior September 4 dashboard evidence is historical and does not test
-this AI SDK/assistant-ui implementation.
+Offline bundled tests also cover 320/768/1024/1440 layouts, keyboard controls,
+CSP, inert hostile content, transport bounds, uncertain-response request-key
+preservation, stopping the stream, polling recovery, and historical sensitive
+values being unavailable. These are offline fixtures, not live mutations.
 
-## Required component connections
+## Build, serve and demo
 
-| UI component | Existing authority / data source | Acceptance boundary |
-| --- | --- | --- |
-| AssistantRuntimeProvider, Thread, Message, Composer | useChatRuntime + AssistantChatTransport → `/api/chat` | Server owns tools; stopping text is not cancelling a transaction |
-| CapabilityRunCard | Backend tool output runId → shared authenticated `/runs/:id` cache | Accepted/started remains distinct from completed |
-| ResultCard | Typed authoritative run result | Decimal values remain strings; historical unavailable data is explicit |
-| CapabilityCatalog and invocation form | Authorized `/capabilities` descriptors and pinned versions | Missing/not-authorized functions remain visible only as non-actionable coverage labels |
-| RunHistory, RunDetail, recorded event timeline | `/runs`, `/runs/:id`, safe authorized event evidence | Discovery versus replay is explicit; missing raw step IDs are not fabricated |
-| EvidenceViewer | Authenticated evidence route | Inert text/JSON and masked image blobs; no credential-bearing URLs |
-| ApprovalPanel, EscalationCard | Live intervention context and decision endpoint | Operator-only exact decision/expiry; no retry of an unknown posting |
-| Operator session controls | Server principal and allowed role on direct invocation | Credentials stay in memory; chat remains caller-bound |
+From this checkout, using Node 22 and installed project dependencies:
 
-Implementation paths and final check evidence are recorded after Task 2 review.
+```sh
+npm ci
+npx playwright install chromium
+npm run ci
+npm run validate
+npm audit --audit-level=moderate
+git diff --check
+```
 
-Task 2 implemented at `c25214d`. Final focused browser/transport/legacy-dashboard
-selection: 7 passed, with backend/UI typecheck, production build, artifact
-validation, audit (0 vulnerabilities), and diff checks passing. Earlier full
-suite passed 293 tests; a later controlled-stop fixture timed out after 294
-passes, was corrected, and passed the final focused run. The final integrated
-whole-suite result remains a Task 3 gate.
+For an already configured private `.env`, explicitly load the file. Configure
+the API credentials, stable journal HMAC and MERIDIAN operator settings in that
+file; keep it private. Choose a fresh evidence directory for a new acceptance
+series and retain its HMAC and identities if restarting that series.
 
-Independent Task 2 review found over-limit transcripts, polling that stops after
-repeated identical failures, and a credential draft retained on disconnect.
-All three fixes passed scoped re-review at `3c7528d`. A stale local validation
-alert after a later successful send is retained for the Task 3 audit correction. The production bundle is approximately
-722 kB minified / 212 kB gzip and emits Vite's size warning; no policy was loosened
-or arbitrary warning threshold raised. Browser CSP checks pass after disabling
-Zod's optional JIT probe through its published configuration.
+```sh
+npm run build
+PORT=4197 EVIDENCE_DIR=evidence/meridian/private-ui-demo \
+CALLER_CAPABILITIES=meridian-sign-on,meridian-member-inquiry,meridian-member-record \
+node --env-file=.env --import tsx cli.ts serve --profile meridian
+```
+
+Open `http://127.0.0.1:4197`, connect with the caller token and request an explicit
+read using known inputs. For direct replay, open **Invoke an approved capability
+directly**, select the read and supply its exact parameters. Approval remains
+operator-owned; do not use a mutation as a UI demonstration. Stop the server
+with Ctrl-C when finished.
+
+`npm run serve` builds then invokes `tsx cli.ts serve`; it does **not** load a
+file-based `.env` by itself. Direct CLI serving also requires the built assets.
+
+The reproducible offline browser demo/check is:
+
+```sh
+npm run build
+npx vitest run test/chat-ui.test.ts
+```
+
+The private acceptance harness used these exact commands after coordinating
+exclusive hosted-target access; its inputs/configuration are intentionally not
+published with the repository:
+
+```sh
+node --import tsx evidence/meridian/assistant-ui-task3-private/acceptance.ts chat
+node --import tsx evidence/meridian/assistant-ui-task3-private/acceptance.ts replay
+node --import tsx evidence/meridian/assistant-ui-task3-private/acceptance.ts missing
+# Local-only history/evidence read; no hosted-target invocation:
+node --import tsx evidence/meridian/assistant-ui-task3-private/restart.ts
+```
+
+## Remaining coupling and limitations
+
+The integration reuses Express, catalog conversion, InvocationService,
+deterministic execution, approvals, journal and evidence. AI SDK performs one
+bounded interpretation/tool-selection step. It adds no model to replay or
+authorization and no second capability execution path.
+
+The core is not yet demonstrably portable by configuration alone. The MERIDIAN
+profile supplies routes/form rules/detectors/masks, while shared TypeScript still
+contains target choices: `src/runtime/profile.ts` selects policy by app ID;
+`src/server/service.ts` applies contracts/operator context; `src/runtime/run.ts`
+wires transfer facts and the member table contract; `src/runtime/contracts.ts`
+contains observed target structure; `src/replay/executor.ts` validates transfer
+outputs. A second concrete target should drive any extraction. This work proves
+no second-target portability.
+
+The production JS bundle is 723.38 kB minified / 212.42 kB gzip and retains Vite's
+standard >500 kB warning. No speculative splitting or relaxed warning threshold
+was added. Browser checks cover native keyboard semantics and layout, not a
+separate screen-reader or axe session. Offline approval/unknown fixtures do not
+prove a hosted write or genuine human decision.
