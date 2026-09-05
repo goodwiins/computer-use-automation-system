@@ -574,7 +574,7 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   const facts: Record<string, string> = {};
   // Method shorthand keeps this serialized function independent of tsx's
   // module-scoped __name helper for assigned function expressions.
-  const { addFact, isRendered, renderedText, ownLabels } = {
+  const { addFact, isRendered, renderedText, ownLabels, siblingReviewTables } = {
     addFact(name: string, value: string) {
       if (Object.hasOwn(facts, name)) throw new Error('Duplicate form fact');
       facts[name] = value;
@@ -592,6 +592,17 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
         .filter(row => row.closest('table') === table && isRendered(row))
         .flatMap(row => Array.from(row.children).filter(cell => cell.matches('td.lbl') && isRendered(cell) && isRendered(cell.nextElementSibling)));
     },
+    siblingReviewTables(reviewForm: HTMLFormElement) {
+      const cell = reviewForm.parentElement;
+      if (!cell?.matches('td')) return [];
+      const postingForms = Array.from(cell.children).filter(child => child instanceof HTMLFormElement
+        && child.method.toUpperCase() === 'POST'
+        && /^\/members\/\d+\/transfer\/post$/.test(new URL(child.action).pathname));
+      if (postingForms.length !== 1 || postingForms[0] !== reviewForm) return [];
+      return Array.from(cell.children)
+        .filter(child => child.matches('div.box'))
+        .flatMap(box => Array.from(box.children).filter(child => child instanceof HTMLTableElement));
+    },
   };
   if (submit && new URL(destination).pathname !== '/signon') {
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
@@ -603,6 +614,7 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
+      ...siblingReviewTables(form!),
     ])) as HTMLTableElement[];
     const transferReview = /^\/members\/\d+\/transfer\/review$/.test(location.pathname)
       || /^\/members\/\d+\/transfer\/post$/.test(new URL(destination).pathname);
