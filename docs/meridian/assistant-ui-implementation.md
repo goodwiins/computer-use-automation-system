@@ -157,9 +157,10 @@ discovery-contract source `e507e8af` through dev merge `245ba838`.
 | Seven discovery/artifact/replay pairs | Coordinating task owns the complete matrix; this UI verification does not add write acceptance or complete the four write gates |
 | Publication / hosted checks | This task made no push, PR, remote merge or deployment; branch-head hosted checks remain outside this local result |
 
-No whole-project completion is claimed. Genuine operator approvals, all seven
-capability pairs, remaining exceptional states, mutation comparator/provenance
-checks, and the shared runbook/write-up remain the coordinating task's gates.
+No whole-project completion is claimed: 3/7 capability pairs are accepted. The
+four write artifact/replay pairs and genuine operator approvals remain
+incomplete. Remaining exceptional states, mutation comparator/provenance checks,
+and the shared runbook/write-up remain the coordinating task's gates.
 
 ## Final audit corrections
 
