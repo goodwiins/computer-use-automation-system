@@ -2566,6 +2566,7 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
   const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false; let websocketFresh = false;
   let websocketUpgrades = 0; let websocketMessages = 0; let forbiddenMemberGets = 0;
+  let releaseReviewWebSocket: (() => void) | undefined;
   const upgradeSockets = new Set<Duplex>();
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
   const contact = '<table><tbody><tr><td>Member No.:</td><td>9001</td><td>Name:</td><td>Fixture Member</td></tr><tr><td>E-mail:</td><td>member@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>';
@@ -2575,16 +2576,26 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
   const review = `${identity}<form method="post" action="/members/9001/hold/post"><input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="share" value="9001-S0001-1"><input type="hidden" name="reason" value="FRAUD"><input type="hidden" name="notes" value="fixture"><table><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">Share:</td><td>9001-S0001-1 - Regular Shares</td></tr><tr><td class="lbl">Reason:</td><td>FRAUD</td></tr><tr><td class="lbl">Notes:</td><td>fixture</td></tr></table><input type="submit" value="Apply Hold"></form>`;
   app.use(express.urlencoded({ extended: false }));
   app.get('/menu', (_req, res) => res.send(`<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p>${identity}`));
-  app.get('/members/9001', (_req, res) => reloadFresh
-    ? res.send(`<meta http-equiv="refresh" content="0.01;url=/members/9001">${identity}`)
-    : websocketFresh ? res.send(`${member}<img src="/slow.png"><script>
+  app.get('/members/9001', (_req, res) => {
+    if (releaseReviewWebSocket) {
+      const release = releaseReviewWebSocket;
+      releaseReviewWebSocket = undefined;
+      release();
+      setTimeout(() => res.send(member), 250);
+      return;
+    }
+    if (reloadFresh) return res.send(`<meta http-equiv="refresh" content="0.01;url=/members/9001">${identity}`);
+    if (websocketFresh) return res.send(`${member}<img src="/slow.png"><script>
       const wsUrl = location.origin.replace(/^http/, 'ws') + '/write-channel';
       const openSocket = Socket => { const socket = new Socket(wsUrl); socket.onopen = () => socket.send('unauthorized mutation'); };
       openSocket(WebSocket);
       const worker = new Worker(URL.createObjectURL(new Blob([\`const socket = new WebSocket('${'${wsUrl}'}'); socket.onopen = () => socket.send('worker mutation');\`], { type: 'text/javascript' })));
       const popup = window.open('about:blank'); if (popup) openSocket(popup.WebSocket);
-    </script>`)
-    : redirectFresh ? res.redirect('/members/9999') : res.send(member));
+    </script>`);
+    if (redirectFresh) return res.redirect('/members/9999');
+    return res.send(member);
+  });
+  app.get('/arm-review-websocket', (_req, res) => { releaseReviewWebSocket = () => res.send('armed'); });
   app.get('/members/9999', (_req, res) => res.send(member));
   app.get('/members/8888', (_req, res) => { forbiddenMemberGets++; res.send(member); });
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
@@ -2621,6 +2632,14 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     await proceed.dispatch(await proceed.inspect());
     const prepared = await browser.prepareClick(button('Apply Hold'));
     const before = await prepared.inspect();
+    await browser.page.evaluate(url => {
+      void fetch('/arm-review-websocket').then(() => setTimeout(() => {
+        const socket = new WebSocket(url);
+        socket.onopen = () => socket.send('original review mutation');
+      }, 0));
+    }, localOrigin.replace(/^http/, 'ws') + '/write-channel');
+    for (let attempt = 0; attempt < 50 && !releaseReviewWebSocket; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(releaseReviewWebSocket).toBeTypeOf('function');
     const snapshot = await browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable, meridianTransferMemberTable], 3000);
     expect(snapshot).toMatchObject({
       url: `${localOrigin}/members/9001`,
