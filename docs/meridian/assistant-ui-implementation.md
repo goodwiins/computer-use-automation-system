@@ -336,3 +336,52 @@ standard >500 kB warning. No speculative splitting or relaxed warning threshold
 was added. Browser checks cover native keyboard semantics and layout, not a
 separate screen-reader or axe session. Offline approval/unknown fixtures do not
 prove a hosted write or genuine human decision.
+
+## Task 4: Render the recorded step timeline
+
+The overnight goal explicitly requires a step timeline. The current StepTimeline
+only shows the current step and a notice pointing to log.jsonl; this is an
+incomplete requirement despite the earlier UI review. Replace that placeholder
+with a usable timeline of actual sanitized step/action/discovery events.
+
+Worktree: /Users/goodwiinz/.codex/worktrees/interface-ai-assistant-ui.
+Own only src/server/ui/dashboard.tsx, src/server/ui/evidence.tsx, an optional
+small src/server/ui/timeline.tsx if keeping parsing/rendering focused helps,
+src/server/ui/style.css if necessary, test/chat-ui.test.ts, and this document.
+No server/runtime/logger/schema changes, dependencies, or hosted-target runs.
+
+Reuse the authenticated evidence GET and existing run/session context. Display
+recorded timestamps/order, step starts/completions, action kind and attempt,
+discovery turn, and observed safety/terminal events where available. Raw step
+identifiers, page strings, tool arguments, and raw errors must not be rendered
+as timeline labels. Parse only recognized typed metadata; render all text
+inertly. Do not infer success, skipped steps, retries, posting delivery, or
+missing state transitions from incomplete logs. Existing log.jsonl is the
+source; a notice alone or a raw JSON dump does not satisfy the requirement.
+
+Load only when the user opens run details/timeline, refresh while that view
+is open for an active run using bounded non-overlapping polling, and provide
+a native manual refresh for completed/history runs. Stop polling and ignore
+late completions on close, run change, or session disconnect. Preserve stale
+data with an explicit fetch-error indication; no invocation/decision POST.
+Handle absent evidence, malformed/partial JSONL, duplicate or invalid metadata,
+and legacy logs truthfully. Large logs may paginate with explicit counts and
+a way to see older entries; never silently claim a truncated list is complete.
+Reuse the existing authenticated request cancellation and segment validation.
+
+Use minimal native markup with an accessible named ordered list, readable
+mobile wrapping, and keyboard controls. Preserve current run cache, approval,
+idempotency, inert evidence, credential clearing, and unknown-posting behavior.
+
+Add meaningful bundled browser coverage in the existing test file: a replay
+step/action sequence and discovery turns render as human-readable timeline
+entries from authenticated GETs; active updates appear without any POST;
+closing/disconnecting prevents stale response or continued polling; malformed
+and hostile entries remain inert/explicitly incomplete; historical/missing
+logs and refresh errors are honest. Reuse fixtures and avoid redundant suites.
+Run focused checks while iterating, then npm run ci once, npm run validate,
+and git diff --check before committing. Update this document to replace the
+placeholder limitation with delivered behavior and retain exact historical
+live-evidence boundaries and 3/7 acceptance. Write the report to
+.superpowers/sdd/assistant-ui-implementation/task-4-report.md, including exact
+commands/results, source SHA, and remaining limitations.
