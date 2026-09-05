@@ -1,14 +1,13 @@
 // Structured evidence for every run: a JSONL log (what happened and why),
-// per-step screenshots, and a final result.json. Everything written here
-// passes through the Redactor first — evidence must be debuggable without
-// leaking regulated data.
+// per-step screenshots, and a final result.json. Strict evidence uses fixed
+// allowlists; legacy evidence passes through the Redactor.
 
 import { appendFileSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Redactor } from '../safety/redact.js';
 import type { Surface } from '../surface/types.js';
-import { safeEvent } from './safe-event.js';
+import { safeEvent, safeResult } from './safe-event.js';
 
 export class RunLogger {
   readonly runId: string;
@@ -30,7 +29,9 @@ export class RunLogger {
 
   log(event: string, data: Record<string, unknown> = {}): void {
     const safe = safeEvent(event, data);
-    const entry = this.redactor.redact({ ...(this.strict ? safe.data : data), ts: new Date().toISOString(), seq: this.seq++, event: this.strict ? safe.event : event });
+    const entry = this.strict
+      ? { ...safe.data, ts: new Date().toISOString(), seq: this.seq++, event: safe.event }
+      : this.redactor.redact({ ...data, ts: new Date().toISOString(), seq: this.seq++, event });
     appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 });
     // Observers receive only typed metadata, after persistence. Their failures
     // cannot turn a completed browser action into a retryable execution error.
@@ -58,10 +59,7 @@ export class RunLogger {
   }
 
   writeResult(result: unknown): void {
-    if (this.strict) {
-      const r = result as Record<string, unknown>;
-      result = { status: r.status, outcomeCode: r.outcomeCode, sensitiveValuesUnavailable: true, failure: r.status === 'failure' ? { code: (r.failure as Record<string, unknown>)?.code ?? 'RUN_FAILED' } : undefined };
-    }
-    writeFileSync(join(this.dir, 'result.json'), JSON.stringify(this.redactor.redact(result), null, 2), { mode: 0o600 });
+    const persisted = this.strict ? safeResult(result) : this.redactor.redact(result);
+    writeFileSync(join(this.dir, 'result.json'), JSON.stringify(persisted, null, 2), { mode: 0o600 });
   }
 }
