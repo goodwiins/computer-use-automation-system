@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CapabilityArtifact,
   Detector,
@@ -551,6 +551,39 @@ describe('Sep-02 audit LOW findings', () => {
     for (let i = 0; i < 250; i++) report(null, { type: 'click' }); // hostile page floods the binding
     expect(events.filter((e) => e === 'human.action')).toHaveLength(200);
     expect(events.filter((e) => e === 'human.action.capped')).toHaveLength(1);
+  });
+
+  it('keeps terminal-only risk approval out of the browser and refuses non-TTY input', async () => {
+    const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const bringToFront = vi.fn(async () => {});
+    const page = {
+      isClosed: () => false,
+      bringToFront,
+      exposeBinding: async () => {},
+      frames: () => [],
+      on: (event: string, callback: () => void) => { if (event === 'close') queueMicrotask(callback); },
+      off: () => {},
+    };
+    const events: Array<{ event: string; data: unknown }> = [];
+    const session = new ControlSession();
+    const op = new OperatorConsole(page as never, { log: (event: string, data: unknown) => events.push({ event, data }) } as never, session);
+
+    try {
+      await expect(op.intervene({ kind: 'risk_approval', capability: 'hold', goal: 'apply hold', reason: 'posting requires approval', url: 'https://example.test/review' })).resolves.toBe('abort');
+
+      expect(bringToFront).not.toHaveBeenCalled();
+      expect(session.currentOwner).toBe('automation');
+      expect(events.at(-1)).toEqual({ event: 'handoff.to_automation', data: { decision: 'abort', reason: 'stdin_not_tty' } });
+
+      await expect(op.intervene({ kind: 'replay_stuck', capability: 'hold', goal: 'apply hold', reason: 'repair required', url: 'https://example.test/review' })).resolves.toBe('abort');
+      expect(bringToFront).toHaveBeenCalledOnce();
+    } finally {
+      consoleLog.mockRestore();
+      if (stdinIsTTY) Object.defineProperty(process.stdin, 'isTTY', stdinIsTTY);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
   });
 
   it('S-L2: a short sensitive value is masked as a whole token, not as a substring', () => {

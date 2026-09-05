@@ -198,4 +198,6 @@ docs/             use cases, architecture diagram, demo runbook, audits, plans
 
 The shared runtime, asynchronous API, local operator dashboard and thin chat entry point are described in [the MERIDIAN runbook](docs/meridian/runbook.md). See [the implementation report](docs/meridian/report.md) for verified behavior and the remaining live acceptance gates. Configure `.env` from `.env.example`, then run `node --env-file=.env --import tsx cli.ts serve --profile meridian`.
 
+For a CLI posting approval, review the displayed facts, then return to the **Terminal window showing `operator>`**, type `approve`, and press Return. The runner submits the action after checking the facts again. Do not click the browser's final posting button yourself: while approval is pending, that request is blocked and can display `ERR_FAILED`. Type `abort` to stop; no response within five minutes also aborts. Browser repair is a separate handoff with its own instructions.
+
 Three live LLM-discovered, reviewed MERIDIAN read artifacts are available: sign-on, member inquiry, and member record. The four write capabilities and verified approved postings remain incomplete. See [live evidence](docs/meridian/live-evidence.md), including the separately recorded unknown posting. Existing mock fixtures are not a substitute for live evidence.

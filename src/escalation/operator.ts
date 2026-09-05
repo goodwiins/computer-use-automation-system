@@ -23,10 +23,10 @@ export class OperatorConsole {
     this.logger.log('handoff.to_human', { request: { ...req } });
 
     const detach = await this.recordHumanActions();
-    // Bring the live window to the operator's attention.
-    await this.page.bringToFront().catch(() => {});
-
     const isRiskApproval = req.kind === 'risk_approval';
+    // Browser repair happens in the live page. Risk approval happens here in
+    // the terminal so the runner, not the operator, performs the action.
+    if (!isRiskApproval) await this.page.bringToFront().catch(() => {});
 
     // "Attended" only means "a human" when the decision comes from a
     // terminal. A piped stdin is an automated caller, which must not be able
@@ -51,9 +51,11 @@ export class OperatorConsole {
       // A risk approval is a go/no-go on an action that has not run yet —
       // "skip" (human performed it manually) would double-execute it, so it
       // is not offered here.
-      console.log('│ This action needs approval before it runs. Choose:');
-      console.log('│   approve — proceed with the action');
+      console.log('│ Review the facts above. Do not click the browser\'s final posting button.');
+      console.log('│ Type approve here in this Terminal and press Return to let the runner submit.');
+      console.log('│   approve — allow the runner to proceed with the action');
       console.log('│   abort   — stop the run');
+      console.log('│ No response aborts the run after five minutes.');
       console.log('└──────────────────────────────────────────────────────────────');
     } else {
       console.log('│ The live browser window is now yours. Fix the state, then choose:');
