@@ -2,7 +2,7 @@
 
 Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The integrated runtime baseline is `dev` at `601e2660cc7f23572a4f65f4677e6ec84af174b4` through PR #54; reviewed head and merge gates passed. Passing source and offline gates did not create live acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
 
-The user has separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. The controller verified that commits `7eeb447` and `6353741` exist only in a separate, unpublished local UI worktree; they are external to PR #48 and are not checkoutable from its remote refs. UI tests, a UI PR and integrated acceptance remain unverified. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries. Package versions and visual/interaction scope remain an integration gate.
+The user separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. Local commit `c89f3d4` passed the checks summarized in [the requirement matrix](implementation-progress.md#integrated-demonstration-documentation-and-final-gates), but remains unpublished and absent from `dev`. A UI PR, hosted checks and integrated acceptance remain open. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries.
 
 ## Setup
 
@@ -158,7 +158,7 @@ cu serve --profile meridian
 
 Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The isolated assistant-ui/Vercel AI SDK work may later map stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Its backend commits exist only in the separate unpublished local UI worktree and are unavailable from PR #48's remote refs. Until package versions, UI tests, a PR and integrated acceptance are independently reviewed, use the current dashboard/API behavior described here and do not claim a completed chat implementation.
+The isolated assistant-ui/Vercel AI SDK work maps stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Local commit `c89f3d4` passed the checks summarized in [the requirement matrix](implementation-progress.md#integrated-demonstration-documentation-and-final-gates), but remains unpublished and absent from `dev`. Until a UI PR, hosted checks and integrated acceptance exist, use the current dashboard/API behavior described here and do not claim a completed chat integration.
 
 ## Faults, restart and result classes
 
@@ -187,7 +187,7 @@ npm run validate
 git diff --check
 ```
 
-Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current source gates through PR #49, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); PR #49 merge workflow `33952963465` / producer `101271025160` passed, and none of these gates closes the four writes.
+Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current runtime source gates through PR #54, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); PR #54 head workflow `33958769455` / producer `101286792115` and merge workflow `33960952350` / producer `101292625264` passed. None of these gates closes the four writes or raises live acceptance above 3/7.
 
 Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise `3/7`. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.
 
