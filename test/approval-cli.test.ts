@@ -219,6 +219,27 @@ describe('standalone approval CLI transport', () => {
     } finally { approval.cancel(); await wait; await server.close(); await runtime.close(); }
   });
 
+  it.each([
+    ['https://example.test/#access_token=short-credential&account=123', '/#access_token=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2&account=123'],
+    ['https://example.test/delete/a%2Fb%3Fc%23d/%73ensitive-value#ordinary%2Froute', '/delete/a%2Fb%3Fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#ordinary%2Froute'],
+    ['https://example.test/delete/%61%2fb%3fc%23d/sensitive-value#route=sensitive-value', '/delete/%61%2fb%3fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#route=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2'],
+  ])('masks fragment credentials without changing encoded route identity: %s', async (url, expected) => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const secrets = new Redactor();
+    secrets.addSensitiveValues(['sensitive-value']);
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const waiting = approval.wait({ ...request, url }, { ...action(runId), destination: url });
+    const server = await startApprovalServer(runId, approval, secrets);
+    try {
+      const shown = describePendingApproval(approval.pending, secrets);
+      expect(shown.url).toBe(`https://example.test${expected}`);
+      expect(shown.action!.destination).toBe(shown.url);
+      expect(await requestApproval(runId, { action: 'status' })).toEqual({ ok: true, pending: shown });
+      expect(JSON.stringify(shown)).not.toMatch(/short-credential|sensitive-value/);
+    } finally { approval.cancel(); await waiting; await server.close(); }
+  });
+
   it.each(['occupied', 'insecure', 'early-close', 'recorder-close', 'cleanup'] as const)('pairs pending with one abort on %s', async scenario => {
     process.env.CU_APPROVAL_DIR = temp();
     const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');

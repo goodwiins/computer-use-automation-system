@@ -69,6 +69,12 @@ describe('Redactor', () => {
     const out = r.redactString('auth with sk-abcdefghijklmnop1234 done');
     expect(out).not.toContain('sk-abcdefghijklmnop1234');
   });
+  it('preserves URL bytes around unicode, overlapping and encoded secret spans', () => {
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(['é😀', 'abcde', 'defgh']);
+    const safe = redactor.redactUrlComponent('/%61%2fb/%c3%a9%f0%9f%98%80/%61bcdefgh');
+    expect(safe).toBe('/%61%2fb/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2');
+  });
   it('leaves ordinary values alone', () => {
     const r = new Redactor();
     expect(r.redact({ balance: '4,250.13' })).toEqual({ balance: '4,250.13' });

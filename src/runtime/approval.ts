@@ -50,18 +50,14 @@ export function publicIntervention(pending: PendingIntervention, secrets = new R
     try {
       const url = new URL(value);
       url.username = ''; url.password = '';
-      // Decode before masking so percent casing and form-style spaces cannot hide secrets.
-      const safe = (text: string) => {
-        const decoded = decodeURIComponent(text);
-        const masked = redactor.redactString(decoded);
-        return masked === decoded ? text : encodeURI(masked);
-      };
+      const safe = (text: string) => redactor.redactUrlComponent(text);
       const safeQuery = (query: string) => new URLSearchParams(Array.from(new URLSearchParams(query), ([key, value]) =>
         [redactor.redactString(key), /token|password|secret|cookie|authorization/i.test(key) ? '•••redacted•••' : redactor.redactString(value)])).toString();
       if (url.search) url.search = safeQuery(url.search);
       const hashQuery = url.hash.indexOf('?');
-      const hash = hashQuery < 0 ? safe(url.hash) : `${safe(url.hash.slice(0, hashQuery))}?${safeQuery(url.hash.slice(hashQuery + 1))}`;
-      return redactor.redactString(`${url.origin}${safe(url.pathname)}${url.search}${hash}`);
+      const hash = hashQuery >= 0 ? `${safe(url.hash.slice(0, hashQuery))}?${safeQuery(url.hash.slice(hashQuery + 1))}`
+        : /^[^=&/?#]+=[\s\S]*$/.test(url.hash.slice(1)) ? `#${safeQuery(url.hash.slice(1))}` : safe(url.hash);
+      return `${redactor.redactString(url.origin)}${safe(url.pathname)}${url.search}${hash}`;
     } catch { return '(unavailable)'; }
   };
   return {

@@ -39,6 +39,21 @@ export class Redactor {
     return redactor;
   }
 
+  /** Original string spans, merged so overlapping credentials cannot leave a suffix exposed. */
+  private ranges(s: string): Array<[number, number]> {
+    const patterns = [CREDENTIAL_RE, ...this.sensitiveValues.map(value => new RegExp(value.length >= MIN_SUBSTRING_LEN
+      ? escapeRegexChars(value) : `(?<![A-Za-z0-9])${escapeRegexChars(value)}(?![A-Za-z0-9])`, 'g'))];
+    const matches = patterns.flatMap(pattern => Array.from(s.matchAll(pattern), match => [match.index, match.index + match[0].length] as [number, number]))
+      .sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [start, end] of matches) {
+      const previous = merged.at(-1);
+      if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+      else merged.push([start, end]);
+    }
+    return merged;
+  }
+
   redactString(s: string): string {
     let out = s.replace(CREDENTIAL_RE, MASK);
     for (const v of this.sensitiveValues) {
@@ -49,6 +64,24 @@ export class Redactor {
       else out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegexChars(v)}(?![A-Za-z0-9])`, 'g'), MASK);
     }
     return out;
+  }
+
+  /** Mask decoded secrets while retaining every original URL byte outside those spans. */
+  redactUrlComponent(raw: string): string {
+    const decoded = decodeURIComponent(raw);
+    const positions: Array<[number, number]> = [];
+    let offset = 0;
+    for (const chunk of raw.match(/(?:%[0-9a-f]{2})+|[^%]+/gi) ?? []) {
+      for (const character of decodeURIComponent(chunk)) {
+        const end = offset + (chunk.startsWith('%') ? Buffer.byteLength(character, 'utf8') * 3 : character.length);
+        for (let unit = 0; unit < character.length; unit++) positions.push([offset, end]);
+        offset = end;
+      }
+    }
+    for (const [start, end] of this.ranges(decoded).reverse()) {
+      raw = raw.slice(0, positions[start]![0]) + encodeURIComponent(MASK) + raw.slice(positions[end - 1]![1]);
+    }
+    return raw;
   }
 
   /** Concrete values registered for masking (e.g. for screenshot input masking). */
