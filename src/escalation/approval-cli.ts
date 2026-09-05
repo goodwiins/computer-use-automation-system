@@ -72,20 +72,27 @@ function validateSocket(path: string): void {
   if ((stat.mode & 0o077) !== 0) throw new RequestError(503, 'Approval endpoint permissions must be owner-only');
 }
 
-export function describePendingApproval(pending: PendingIntervention | undefined): PublicPendingApproval {
-  if (!pending || pending.request.kind !== 'risk_approval') throw new RequestError(409, 'No pending risk approval');
+/** Strip query strings and sensitive fact keys before a pending intervention leaves the runner (CLI socket, HTTP dashboard). */
+export function sanitizePendingApproval(pending: PendingIntervention): PendingIntervention {
   const action = pending.action && {
     ...pending.action,
     destination: safeUrl(pending.action.destination),
     facts: Object.fromEntries(Object.entries(pending.action.facts).filter(([key]) => !/token|password|secret|cookie|authorization|body/i.test(key))),
   };
+  return { ...pending, request: { ...pending.request, url: safeUrl(pending.request.url) }, ...(action ? { action } : {}) };
+}
+
+export function describePendingApproval(raw: PendingIntervention | undefined): PublicPendingApproval {
+  if (!raw || raw.request.kind !== 'risk_approval') throw new RequestError(409, 'No pending risk approval');
+  const pending = sanitizePendingApproval(raw);
+  const { action } = pending;
   return {
     approvalId: pending.id,
     expiresAt: pending.expiresAt,
     capability: pending.request.capability,
     goal: pending.request.goal,
     reason: pending.request.reason,
-    url: safeUrl(pending.request.url),
+    url: pending.request.url,
     ...(action ? { action } : {}),
   };
 }

@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requestApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
+import { requestApproval, sanitizePendingApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { Approval, type ActionContext } from '../src/runtime/approval.js';
@@ -125,6 +125,19 @@ describe('standalone approval CLI transport', () => {
     await idleClosed;
     expect(idle.destroyed).toBe(true);
     await expect(requestApproval(runId, { action: 'decide', approvalId, decision: 'approve' })).rejects.toThrow(/unavailable/);
+  });
+
+  it('R3-B1: sanitizePendingApproval strips query strings and sensitive fact keys but keeps the intervention shape', () => {
+    const runId = randomUUID();
+    const pending = { id: randomUUID(), expiresAt: Date.now() + 1000, request, action: action(runId) };
+    const safe = sanitizePendingApproval(pending);
+    expect(safe.id).toBe(pending.id);
+    expect(safe.request.kind).toBe('risk_approval');
+    expect(safe.request.url).toBe('https://example.test/review');
+    expect(safe.action?.destination).toBe('https://example.test/hold/post');
+    expect(safe.action?.facts).toEqual({ member: '123' });
+    expect(JSON.stringify(safe)).not.toMatch(/hidden|destination-secret|must-not-cross/);
+    expect(pending.action.facts.token).toBe('must-not-cross'); // input untouched
   });
 
   it('rejects malformed, oversized and insecure endpoints without consuming the approval', async () => {

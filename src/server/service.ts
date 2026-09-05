@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CapabilityArtifact, validateParams, normalizeParams } from '../artifact/schema.js';
 import { toToolSchema } from '../artifact/tools.js';
+import { sanitizePendingApproval } from '../escalation/approval-cli.js';
 import { OperatorConsole } from '../escalation/operator.js';
 import { ControlSession } from '../escalation/session.js';
 import type { ReplayResult } from '../replay/outcomes.js';
@@ -125,7 +126,7 @@ export class InvocationService {
     const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
-      intervention: principal === 'operator' ? live?.approval.pending : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
+      intervention: principal === 'operator' ? live?.approval.pending && sanitizePendingApproval(live.approval.pending) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
       result: safeResult, sensitiveValuesUnavailable: !live, evidence };
   }
   history(principal: Principal) { return [...this.journal.records.values()].filter(r => principal === 'operator' || r.caller === principal).map(r => this.get(principal, r.runId)); }

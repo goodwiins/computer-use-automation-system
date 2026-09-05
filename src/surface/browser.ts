@@ -127,6 +127,9 @@ export class BrowserSurface implements Surface {
     this.page.on('framenavigated', frame => this.bumpFrame(frame));
     this.page.on('framedetached', frame => this.bumpFrame(frame));
     this.page.on('close', () => this.opts.onClose?.());
+    // A popup is a second page the allowlist route never sees. Nothing here acts
+    // on one, so close it rather than let page content reach other origins.
+    this.page.on('popup', popup => popup.close().catch(() => {}));
     if (this.opts.profile) await this.page.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
