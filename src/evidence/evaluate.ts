@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { RiskClass } from '../artifact/schema.js';
 import type { JournalRecord } from '../runtime/journal.js';
-import { safeEvent } from './safe-event.js';
 
 const Event = z.object({ seq: z.number().int().nonnegative(), event: z.string() }).passthrough();
 
@@ -22,9 +21,9 @@ export function evaluateRun(jsonl: string, record: JournalRecord) {
     if (event.event === expectedTerminal || ['replay.success', 'replay.failure', 'replay.business_outcome'].includes(event.event)) {
       if ((record.kind === 'discovery') !== (event.event === 'discovery.finish')) incomplete.add('WRONG_RUN_KIND');
       terminals++;
-      const status = event.event === 'discovery.finish' ? safeEvent(event.event, event).data.status : event.event.slice(7);
+      const status = event.event === 'discovery.finish' ? event.status : event.event.slice(7);
       terminal = typeof status === 'string' ? status : undefined;
-      if (!terminal) incomplete.add('INVALID_TERMINAL_STATUS');
+      if (!terminal || (event.event === 'discovery.finish' && !['success', 'business_outcome', 'stopped', 'escalated'].includes(terminal))) incomplete.add('INVALID_TERMINAL_STATUS');
       if (event.code !== undefined && typeof event.code !== 'string') incomplete.add('INVALID_TERMINAL_CODE');
       terminalCode = event.code;
     }

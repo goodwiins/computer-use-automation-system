@@ -160,8 +160,9 @@ it('rejects malformed action results instead of skipping successful-mutation int
 });
 
 it('rejects malformed discovery terminal statuses without coercing them to journal state', () => {
-  for (const status of [['success'], [['success']], undefined, null, false, 1, {}, '', 'invalid']) {
-    const result = evaluateRun(encode([...trajectory.slice(0, -1), { event: 'discovery.finish', status }]), { ...record, kind: 'discovery' });
+  for (const status of [['success'], [['success']], undefined, null, false, 1, {}, '', 'invalid', 'failure']) {
+    const events = [{ ...trajectory[0]!, action: 'navigate' }, trajectory[4]!, { event: 'discovery.finish', status }];
+    const result = evaluateRun(encode(events), { ...record, kind: 'discovery', state: status === 'failure' ? 'failure' : 'success' });
     expect(result).toMatchObject({ status: 'unknown', incomplete: expect.arrayContaining(['INVALID_TERMINAL_STATUS']) });
   }
 });
