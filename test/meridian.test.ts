@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
 import { applyMeridianContract, assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
-import { Approval } from '../src/runtime/approval.js';
+import { Approval, publicIntervention } from '../src/runtime/approval.js';
+import { describePendingApproval, requestApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams, type OutputValue } from '../src/artifact/schema.js';
@@ -1229,6 +1230,70 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.run.surface.mutationDispatched).toBe(true);
     expect(harness.readOnlyPage).toHaveBeenCalledOnce();
   });
+
+  it('projects inspected hidden credentials through the guard, prompt, socket and API while preserving visible transfer facts', async () => {
+    const app = express();
+    app.get('/menu', (_req, res) => res.send(`<script>history.replaceState(null, "", "/members/9001/transfer/review")</script><p>OPR SUPER1 | BR MAIN-001 | SID session-private</p>
+      <form method="post" action="/members/9001/transfer/post">
+      <input type="hidden" name="_token" value="token-private"><input type="hidden" name="nonce" value="nonce-private"><input type="hidden" name="sid" value="sid-private"><input type="hidden" name="csrf" value="csrf-private">
+      <input type="hidden" name="from" value="9001-A"><input type="hidden" name="to" value="9001-B"><input type="hidden" name="amount" value="1.00"><input type="hidden" name="memo" value="fixture">
+      <input type="password" value="password-private"><input name="visible" value="visible-business">
+      <table>${Object.entries(validReviewFacts).filter(([key]) => key.startsWith('review:')).map(([key, value]) => `<tr><td class="lbl">${key.slice(7)}</td><td>${value}</td></tr>`).join('')}</table>
+      <input type="submit" value="Post Transfer"></form>`));
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const secrets = new Redactor();
+    const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile, sensitive: (_values, hidden = [], credentials = []) => {
+      secrets.addSensitiveValues(hidden, true); secrets.addSensitiveValues(credentials);
+    } });
+    const originalDir = process.env.CU_APPROVAL_DIR;
+    const approvalDir = mkdtempSync('/tmp/cu-ap-');
+    process.env.CU_APPROVAL_DIR = approvalDir;
+    try {
+      await browser.start(`${localOrigin}/menu`);
+      const prepared = await browser.prepareClick({ description: 'post', strategies: [{ kind: 'role', role: 'button', name: 'Post Transfer' }] });
+      const inspected = await prepared.inspect();
+      const raw = structuredClone(inspected.facts);
+      const harness = await eligibleTransfer(eligibleRows, inspected.facts as typeof validReviewFacts);
+      harness.setLive({ facts: inspected.facts, visibleFacts: inspected.visibleFacts });
+      harness.gate.mockImplementation(async (...args: unknown[]) => {
+        const context = args[3] as import('../src/runtime/approval.js').ActionContext;
+        expect(context.facts).toEqual(raw);
+        const approval = new Approval(new ControlSession(), () => {}, Date.now() + 10_000);
+        const waiting = approval.wait({ kind: 'risk_approval', capability: 'transfer', goal: 'review', reason: 'nonce-private', url: `${localOrigin}/review?member=9001&sid=sid-private#csrf-private` }, context);
+        const transport = await startApprovalServer(context.runId, approval, secrets);
+        try {
+          const prompt = describePendingApproval(approval.pending, secrets);
+          const socket = await requestApproval(context.runId, { action: 'status' });
+          const journal = new Journal(temp(), key);
+          const record = journal.reserve('caller', 'projection-test', 'transfer', '1', {});
+          const service = new InvocationService(journal, policy, profile, temp(), [], temp());
+          service.live.set(record.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval, redactor: secrets });
+          const api = service.get('operator', record.runId).intervention as ReturnType<typeof publicIntervention>;
+          expect(service.get('caller', record.runId).intervention).toEqual({ kind: 'risk_approval', awaitingOperator: true });
+          journal.close();
+          expect(socket).toEqual({ ok: true, pending: prompt });
+          expect(api.action).toEqual(prompt.action);
+          expect(prompt.action!.facts).toMatchObject({ 'review:Member:': '9001 - Fixture Member', 'review:Amount:': '$1.00', visible: 'visible-business' });
+          expect(prompt.action!.facts).not.toHaveProperty('amount');
+          expect(JSON.stringify([prompt, socket, api])).not.toMatch(/nonce-private|sid-private|csrf-private|token-private|password-private|session-private|businessValues|visibleFacts/);
+          expect(context.facts).toEqual(raw);
+          expect(approval.pending!.action!.facts).toEqual(raw);
+        } finally { approval.cancel(); await waiting; await transport.close(); }
+        return false;
+      });
+      await expect(harness.run.surface.click(target, 1000, 'irreversible')).rejects.toThrow(/aborted/i);
+      expect(harness.run.dispatch).not.toHaveBeenCalled();
+      expect(harness.run.beforeDispatch).not.toHaveBeenCalled();
+      expect(inspected.facts).toEqual(raw);
+      expect(secrets.forVisibleValues(['session-private', 'password-private', 'nonce-private']).redactString('session-private password-private nonce-private')).not.toMatch(/session-private|password-private|nonce-private/);
+    } finally {
+      if (originalDir === undefined) delete process.env.CU_APPROVAL_DIR; else process.env.CU_APPROVAL_DIR = originalDir;
+      rmSync(approvalDir, { recursive: true, force: true });
+      await browser.close(); await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }, 15_000);
 
   it('compares rendered transfer memo after edge trimming while keeping native memo exact', async () => {
     const expected = { ...request, memo: ' fixture ' };

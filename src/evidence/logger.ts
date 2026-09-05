@@ -43,8 +43,10 @@ export class RunLogger {
 
   log(event: string, data: Record<string, unknown> = {}): void {
     const safe = safeEvent(event, data);
+    const approvalId = ['intervention.pending', 'intervention.decided'].includes(event) && typeof data.approvalId === 'string'
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.approvalId) ? { approvalId: data.approvalId } : {};
     const entry = this.strict
-      ? { ...safe.data, ts: new Date().toISOString(), seq: this.seq++, event: safe.event }
+      ? { ...safe.data, ...approvalId, ts: new Date().toISOString(), seq: this.seq++, event: safe.event }
       : this.redactor.redact({ ...data, ts: new Date().toISOString(), seq: this.seq++, event });
     appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 });
     // Observers receive only typed metadata, after persistence. Their failures

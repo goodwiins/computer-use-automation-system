@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { ControlSession, type InterventionRequest } from '../escalation/session.js';
+import { Redactor } from '../safety/redact.js';
 import { RequestError } from './journal.js';
 
 export interface ActionContext {
   runId: string; artifact: string; version: string; stepId: string;
   destination: string; method: string; operator: string; branch: string; role: string;
+  visibleFacts?: Record<string, string>; businessValues?: string[];
   facts: Record<string, string>; tokenPresent: boolean; control: string;
 }
 export interface PendingIntervention {
@@ -38,4 +40,38 @@ export class Approval {
     this.pending = undefined; this.resolve = undefined;
     this.session.transfer('automation', decision); this.changed(); resolve?.(decision);
   }
+}
+
+/** A copy for human review; native facts remain private and unchanged for dispatch checks. */
+export function publicIntervention(pending: PendingIntervention, secrets = new Redactor()): PendingIntervention {
+  const { visibleFacts, businessValues, ...action } = pending.action ?? {};
+  const redactor = secrets.forVisibleValues(businessValues ?? []);
+  const safeUrl = (value: string) => {
+    try {
+      const url = new URL(value);
+      url.username = ''; url.password = '';
+      // Decode before masking so percent casing and form-style spaces cannot hide secrets.
+      const safe = (text: string) => {
+        const decoded = decodeURIComponent(text);
+        const masked = redactor.redactString(decoded);
+        return masked === decoded ? text : encodeURI(masked);
+      };
+      const safeQuery = (query: string) => new URLSearchParams(Array.from(new URLSearchParams(query), ([key, value]) =>
+        [redactor.redactString(key), /token|password|secret|cookie|authorization/i.test(key) ? '•••redacted•••' : redactor.redactString(value)])).toString();
+      if (url.search) url.search = safeQuery(url.search);
+      const hashQuery = url.hash.indexOf('?');
+      const hash = hashQuery < 0 ? safe(url.hash) : `${safe(url.hash.slice(0, hashQuery))}?${safeQuery(url.hash.slice(hashQuery + 1))}`;
+      return redactor.redactString(`${url.origin}${safe(url.pathname)}${url.search}${hash}`);
+    } catch { return '(unavailable)'; }
+  };
+  return {
+    ...pending,
+    request: { ...redactor.redact(pending.request), url: safeUrl(pending.request.url) },
+    ...(pending.action ? { action: { ...redactor.redact(action) as ActionContext,
+      destination: safeUrl(pending.action.destination),
+      facts: Object.fromEntries(Object.entries(visibleFacts ?? {})
+        .filter(([key]) => !/token|password|secret|cookie|authorization|body/i.test(key))
+        .map(([key, value]) => [redactor.redactString(key), redactor.redactString(value)])),
+    } } : {}),
+  };
 }

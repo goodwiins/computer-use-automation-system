@@ -1039,7 +1039,7 @@ export class GuardedSurface implements Surface {
           if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
           const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
             destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: live.role,
-            facts: live.facts, tokenPresent: live.tokenPresent, control: live.control };
+            facts: live.facts, visibleFacts: live.visibleFacts, businessValues: Object.values(transferPost ? this.runtime.transfer!.expected : openSharePost ? this.runtime.openShare!.expected : holdPost ? this.runtime.hold!.expected : {}), tokenPresent: live.tokenPresent, control: live.control };
           // Profile mutation rules require approval even when policy/model says allow.
           const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');
           if (verdict.verdict === 'deny') throw new PolicyViolationError(verdict, 'click');

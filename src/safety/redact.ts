@@ -15,18 +15,28 @@ const escapeRegexChars = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export class Redactor {
   private sensitiveValues: string[] = [];
+  private protectedValues = new Set<string>();
 
   /** Register concrete runtime values that must never be logged. */
-  addSensitiveValues(values: Array<string | number>): void {
+  addSensitiveValues(values: Array<string | number>, allowVisible = false): void {
     for (const v of values) {
       const s = String(v);
       if (s.length === 0) continue;
       if (!this.sensitiveValues.includes(s)) this.sensitiveValues.push(s);
       // Values surface URL-encoded in query strings and form bodies too.
       const enc = encodeURIComponent(s);
+      if (!allowVisible) { this.protectedValues.add(s); this.protectedValues.add(enc); }
       if (enc !== s && !this.sensitiveValues.includes(enc)) this.sensitiveValues.push(enc);
     }
     this.sensitiveValues.sort((a, b) => b.length - a.length);
+  }
+
+  /** Exempt only corroborated business values registered as hidden, never credentials. */
+  forVisibleValues(values: string[]): Redactor {
+    const visible = new Set(values.flatMap(value => [value, encodeURIComponent(value)]));
+    const redactor = new Redactor();
+    redactor.addSensitiveValues(this.sensitiveValues.filter(value => !visible.has(value) || this.protectedValues.has(value)));
+    return redactor;
   }
 
   redactString(s: string): string {
