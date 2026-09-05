@@ -109,7 +109,7 @@ node --env-file=.env --import tsx scripts/evaluate-run.ts "$EVIDENCE_DIR" "$RUN_
 
 - [ ] Inspect retained result evidence for exact label/value and confirmation relationships. Verify whether existing `Surface.readTable` can produce the canonical row; it reads descendants per row and does not join unrelated rows. If unsupported, prepare only an observation-backed extractor/contract repair and review it before a recording promise.
 - [ ] For an extractor change, add actual sanitized layout fixtures proving a legacy `td` header is excluded and a headerless first data row is preserved. Exercise blank/missing/duplicate values and confirmation mismatch; none may become a valid transaction.
-- [ ] Request a new eligible source/destination choice. Prior selection was $1.00 for member 100234 with memo “MERIDIAN acceptance recording,” but one selected share was not OPEN. Refresh exact member rows, select distinct OPEN shares and check current source funds. Do not choose a replacement pair silently.
+- [ ] Request a new eligible source/destination choice. The prior selection is retained only in the private operator worksheet; one selected share was not OPEN. Refresh exact member rows, select distinct OPEN shares and check current source funds. Do not choose a replacement pair silently.
 - [ ] Retain the existing semantic test controls, including this failure case; add only missing regression coverage for the observed repair:
 
 ```ts
