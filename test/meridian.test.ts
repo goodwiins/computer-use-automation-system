@@ -1431,7 +1431,7 @@ describe('MERIDIAN guarded member-update path', () => {
     addressLabel: 'Address:', address: request.address, ...overrides,
   });
 
-  function harness(gate = vi.fn(async () => true), initialRows: Array<Record<string, string>> = [contactRow()], operationOrigin = origin) {
+  function harness(gate = vi.fn(async () => true), initialRows: Array<Record<string, string>> = [contactRow()], operationOrigin = origin, completionRedirectOrigin?: string) {
     let rows = initialRows;
     let url = `${operationOrigin}/members/9001/update`;
     let navigation = 0;
@@ -1443,11 +1443,11 @@ describe('MERIDIAN guarded member-update path', () => {
       currentFrame: frame,
       lastResolvedFrame: frame,
       frameUrls: () => [`${operationOrigin}/frameset`, url],
-      navigate: async next => { url = next; navigation++; },
+      navigate: async next => { url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next; navigation++; },
       readTable: async () => { if (changeFrameDuringRead) frameId = 'replacement-workarea'; return rows; },
     }, gate, { artifact: 'meridian-update-member', memberUpdate: { expected: request, contactTable: meridianMemberContactTable } }, undefined,
     async expected => { url = expected.destination; navigation++; }, undefined,
-    Policy.parse({ ...policy, allowedOrigins: operationOrigin === origin ? [origin] : ['https://policy-first.example', operationOrigin] }));
+    Policy.parse({ ...policy, allowedOrigins: operationOrigin === origin ? [origin] : ['https://policy-first.example', operationOrigin, ...(completionRedirectOrigin ? [completionRedirectOrigin] : [])] }));
     const setLive = (next: Partial<LiveControl> = {}) => run.change({
       url: `${operationOrigin}/members/9001/update`, destination: `${operationOrigin}/members/9001/update`, method: 'POST',
       control: 'Save Changes', submit: true, facts: { ...request }, frame: frame(), ...next,
@@ -1551,6 +1551,15 @@ describe('MERIDIAN guarded member-update path', () => {
     await h.run.surface.click(target);
     await h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' });
     expect(h.currentUrl()).toBe(`${operationOrigin}/members/9001`);
+  });
+
+  it('rejects same-path completion read-back redirected to another allowed origin', async () => {
+    const operationOrigin = 'https://member-system.example';
+    const redirectOrigin = 'https://member-redirect.example';
+    const h = harness(vi.fn(async () => true), [contactRow()], operationOrigin, redirectOrigin);
+    await h.run.surface.click(target);
+    await expect(h.run.surface.validateMemberUpdateCompletion({ saved: 'Member saved' })).rejects.toThrow(/member-update/i);
+    expect(h.run.surface.mutationDispatched).toBe(true);
   });
 
   it.each([

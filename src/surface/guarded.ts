@@ -754,13 +754,15 @@ export class GuardedSurface implements Surface {
     if (!binding || !this.memberUpdateOrigin || !this.mutationDispatched) throw new Error('Member-update completion is not bound to a dispatched request');
     if (Object.keys(outputs).length !== 1 || typeof outputs.saved !== 'string' || !outputs.saved.trim()) throw new Error('Member-update saved output is missing');
     const memberUrl = new URL(`/members/${binding.expected.member}`, this.memberUpdateOrigin).toString();
+    const memberOrigin = new URL(memberUrl).origin;
+    const sameOrigin = (url: string) => { try { return new URL(url).origin === memberOrigin; } catch { return false; } };
     await this.navigate(memberUrl);
     const before = this.inner.currentFrame?.();
-    if (!before || this.path(before.url) !== this.path(memberUrl)) throw new Error('Member-update read-back frame is unavailable');
+    if (!before || !sameOrigin(before.url) || this.path(before.url) !== this.path(memberUrl)) throw new Error('Member-update read-back frame is unavailable');
     const rows = await this.readTable({ ...binding.contactTable.target, frame: before.name }, binding.contactTable.columns, undefined, binding.contactTable.rowSelector);
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.inner.currentFrame?.();
-    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberUrl)) {
+    if (!resolved || !sameOrigin(resolved.url) || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberUrl)) {
       throw new Error('Member-update read-back frame changed');
     }
     if (rows.length !== 1) throw new Error('Member-update resulting state is missing or ambiguous');
