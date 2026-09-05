@@ -2,7 +2,7 @@
 
 Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The integrated runtime baseline is `dev` at `2c7f4ed4577fe01bbfb441525b7cccc14128c46b` through PR #47; reviewed head and merge CI passed. Passing source and offline gates did not create live acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
 
-The user has separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. No UI commit or PR is verified here. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries. Package versions and visual/interaction scope remain an integration gate.
+The user has separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. Backend commits `7eeb447` and `6353741` resolve locally; root has not independently verified UI tests, a PR or integrated acceptance. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries. Package versions and visual/interaction scope remain an integration gate.
 
 ## Setup
 
@@ -24,6 +24,8 @@ cu() { node --env-file=.env --import tsx cli.ts "$@"; }
 `--profile meridian` selects the hosted entry point, route/form rules and policy. An explicit `POLICY_PATH` remains authoritative. `CU_CDP_PORT` is refused. Stop `cu serve` before CLI discovery/replay because the journal supports one process.
 
 ## Select and preserve request facts before any write
+
+Current `2c7f4ed` still lacks the canonical discovery-input preflight and promotion binding required by matrix `CONTRACT-02`. Do not launch any discovery template below until the separate repair is integrated and verifies unknown, missing, extra and invalid public inputs before journal/runtime/model work, and verifies every required public input remains executable in the promoted artifact. The transfer backstop blocks an incomplete canonical transfer post, but the generic compiler/promotion gap and premature lower-layer success remain open. Approved replay validates its inputs separately and remains the supported checkpoint path.
 
 Do not start a write discovery until the operator has refreshed current state and explicitly selected every fact below. The target can reset and a share can change status. Do not assume seed data, select the first ambiguous match, or reuse old consent.
 
@@ -122,7 +124,19 @@ Promote each reviewed artifact separately. The server refuses duplicate versions
 
 ## Replay and dashboard
 
-Generate and privately save a new replay key for each genuinely new replay. Serialize selected values with Node so punctuation is preserved:
+Generate and privately save a new replay key for each genuinely new replay. The approved member-record artifact is the supported read demonstration; serialize its selected member input with Node:
+
+```sh
+MEMBER_RECORD_REPLAY_KEY="$(openssl rand -hex 32)"
+MEMBER_RECORD_PARAMS="$(node -e 'process.stdout.write(JSON.stringify({member:process.env.MEMBER}))')"
+
+cu replay --profile meridian \
+  --artifact artifacts/meridian-member-record.v1.0.0.json \
+  --params "$MEMBER_RECORD_PARAMS" \
+  --idempotency-key "$MEMBER_RECORD_REPLAY_KEY"
+```
+
+The transfer command is future-only. Run it only after `CONTRACT-02`, result extraction, complete recording, promotion review and the approved transfer artifact all exist. Serialize the selected values with Node so punctuation is preserved:
 
 ```sh
 TRANSFER_REPLAY_KEY="$(openssl rand -hex 32)"
@@ -142,7 +156,7 @@ cu serve --profile meridian
 
 Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The isolated assistant-ui/Vercel AI SDK work may later map stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Until its branch, package versions, tests and integration are reviewed, use the current dashboard/API behavior described here and do not claim a new chat implementation.
+The isolated assistant-ui/Vercel AI SDK work may later map stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Its backend commits exist locally; until package versions, UI tests, a PR and integrated acceptance are independently reviewed, use the current dashboard/API behavior described here and do not claim a completed chat implementation.
 
 ## Faults, restart and result classes
 
@@ -171,6 +185,14 @@ npm run validate
 git diff --check
 ```
 
-Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current source gates through PR #46, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); they do not close the four writes.
+Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current source gates through PR #47, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); they do not close the four writes.
 
 Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise `3/7`. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.
+
+The existing **offline fixture** command is:
+
+```sh
+npx vitest run test/e2e.test.ts
+```
+
+It exercises the scripted-model/local-target discovery-to-replay path. It is not hosted evidence and does not increase `3/7`. These commands are documented for an operator; none was run during this prose-only repair.

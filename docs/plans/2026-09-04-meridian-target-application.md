@@ -48,7 +48,7 @@ The separate discovery-input audit remains open from this baseline and confirmed
 
 | Assignment requirement | Existing code/evidence | Remaining delivery |
 | --- | --- | --- |
-| Hosted sign-on; operator/password/branch; idle timeout | `config/app-profiles/meridian.json`, `config/policy-meridian.json`, `src/runtime/run.ts`; approved sign-on artifact | Keep explicit profile commands; natural bad-login and idle-expiry acceptance in Task B |
+| Hosted sign-on; operator/password/branch; idle timeout | `config/app-profiles/meridian.json`, `config/policy-meridian.json`, `src/runtime/run.ts`; approved sign-on artifact | [Natural bad-login replay](../meridian/evidence/natural-bad-login/summary.json) is verified for shared-runtime/artifact scope; discovery/API login and idle-expiry acceptance remain open |
 | Member inquiry by number/name and unambiguous selection | Approved inquiry artifact; #37 read acceptance | Retain number/name/ambiguous/not-found evidence; refresh after target reset |
 | Member record with balances/share status | Approved record artifact; #37 read acceptance | Retain read baseline; never infer current funds from old evidence |
 | Transfer: input → review → approved post | #39 comparators and guard; #43–#46 outcome/loader/review/approval repairs; draft discovery exists only in the preserved acceptance worktree | Execution Tasks 5c–5d: observed result extraction, genuine recording, reviewed promotion, separately approved replay |
@@ -62,7 +62,7 @@ The six-column transfer row, single-process runtime and separate PR boundaries a
 
 ## Integration prerequisite
 
-- [x] PRs #37, #39, #41 and #43–#46 were reviewed and integrated in dependency order. Their source and producer gates are recorded above.
+- [x] PRs #37, #39, #41 and #43–#47 were reviewed and integrated in dependency order. Their source and producer gates are recorded above.
 - [x] Confirmed `dev` at `2c7f4ed4577fe01bbfb441525b7cccc14128c46b` includes read acceptance, transfer protections, terminal lifecycle, insufficient-funds classification, CLI loader inspection, sibling review mapping, Terminal approval guidance and trusted evidence metadata.
 - [x] Task A was implemented on its isolated branch and merged through PR #43. Its offline proof does not close live underfunded acceptance.
 
@@ -307,7 +307,7 @@ Keep catch/finally cleanup, durable intent precedence and success-only artifact 
 
 | Case | Required acceptance / expected outcome |
 | --- | --- |
-| Natural bad login | Observe the actual rejection, no authenticated member action or mutation; record the controlled failure and sanitized evidence. Do not guess a detector string or expose credentials. |
+| Natural bad login | Verified shared-runtime replay at source `2c7f4ed`: actual invalid-credentials rejection, terminal/journal failure, evaluator pass/task failure, six attempts, zero intents and zero member requests. [Sanitized summary](../meridian/evidence/natural-bad-login/summary.json). This does not establish discovery or HTTP API login acceptance. |
 | Injected `validation` / 400 | Exact observed operation-entry GET, one-shot injection; pre-intent replay `VALIDATION_REJECTED` business result. A rejection visible only after mutation intent remains unknown. |
 | Injected `notfound` / 404 and absent search member | `NO_SUCH_MEMBER` business result in replay; no alternate member selected. |
 | Injected `permission` / 403 and natural teller hold | `PERMISSION_DENIED` or separately documented pre-intent rejection; no automatic supervisor login, approval or mutation. |
@@ -324,7 +324,7 @@ Keep catch/finally cleanup, durable intent precedence and success-only artifact 
 ## Self-review and execution boundary
 
 - All seven §2.1 functions and the six §2.2 injected faults have an owner above; natural bad login, funds/contact rejection, teller denial and idle expiry are explicit.
-- Existing #34/#35/#37/#39 implementation is reused. Task A is delivered through #43, and CLI/review/approval repairs are delivered through #44–#46. Four write artifact/acceptance tasks remain open, so coverage is still 3/7.
+- Existing #34/#35/#37/#39 implementation is reused. Task A is delivered through #43, and CLI/review/approval/evidence-metadata repairs are delivered through #44–#47. Four write artifact/acceptance tasks remain open, so coverage is still 3/7.
 - `InsufficientFundsError` is produced only after valid request/member/share/status/money checks. Both callers check dispatch uncertainty first. CLI, journal and result-file propagation are included, not merely the validator unit test.
 - All snippets use existing interfaces or the fields introduced here. Hosted selectors and results remain observation-gated in their original tasks.
 - This plan records the delivered Task A source and remaining execution. This documentation refresh does not promote an artifact, perform a live operation or close any unchecked live gate.
