@@ -1562,6 +1562,33 @@ it('redacts extracted secrets before sending tool results to discovery', async (
   expect(requests[1]).toContain('SID [REDACTED]');
 });
 
+it('bounds discovery table metadata sent to the model', async () => {
+  const requests: string[] = [];
+  const rowCells = Array.from({ length: 200 }, () => ['td' as const, 'td' as const, 'td' as const]);
+  const stub = guarded({
+    observe: async () => ({ url: `${origin}/menu`, title: 'Menu', frames: [{
+      frame: '', snapshot: 'Accounts', fields: [], tables: [{
+        selector: '#accounts', headers: ['Account', 'Status'], headerCells: ['th', 'th'], rows: rowCells.length, rowCells,
+      }],
+    }] }),
+  });
+  const client = { chat: { completions: { create: async (request: unknown) => {
+    requests.push(JSON.stringify(request));
+    return { choices: [{ message: { role: 'assistant', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: 'done', arguments: JSON.stringify({ summary: 'done' }) } }] } }] };
+  } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
+  const result = await runDiscovery('read accounts', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger: new RunLogger('discovery', new Redactor(), temp(), true), openai: client, model: 'fixture', maxSteps: 1,
+  });
+  expect(result.status).toBe('success');
+  const request = JSON.parse(requests[0]!);
+  const observation = request.messages[1].content as string;
+  expect(observation).toContain('"selector":"#accounts"');
+  expect(observation).toContain('"headers":["Account","Status"]');
+  expect(observation).toContain('"headerCells":["th","th"]');
+  expect(observation).toContain('"rows":200');
+  expect(observation).not.toContain('rowCells');
+});
+
 it('renders the dashboard and hostile chat strings inertly without storing credentials', async () => {
   const dir = temp(), artifactDir = temp();
   const artifact = JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8'));
