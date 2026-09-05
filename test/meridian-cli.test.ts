@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { RunLogger } from '../src/evidence/logger.js';
-import { validateIdempotencyKey } from '../src/runtime/journal.js';
+import { Journal, validateIdempotencyKey } from '../src/runtime/journal.js';
 import { meridianContracts } from '../src/runtime/contracts.js';
 import type { Surface } from '../src/surface/types.js';
 import { Redactor } from '../src/safety/redact.js';
@@ -19,7 +19,10 @@ const boundary: {
   beforeDispatch?: () => void;
   dispatchCount: number;
   closeCalls: number;
-} = { mode: 'pre', dispatchCount: 0, closeCalls: 0 };
+  modelSetupCalls: number;
+  runtimeCalls: number;
+  runtimeFault?: unknown;
+} = { mode: 'pre', dispatchCount: 0, closeCalls: 0, modelSetupCalls: 0, runtimeCalls: 0 };
 
 interface BoundaryRun {
   stdout: string;
@@ -31,6 +34,10 @@ interface BoundaryRun {
   dispatchCount: number;
   closeCalls: number;
   modelCalls: number;
+  modelSetupCalls: number;
+  runtimeCalls: number;
+  runtimeFault?: unknown;
+  requests: string[];
 }
 
 async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = [], command: 'replay' | 'discover' = 'replay', condition?: { id: string; post?: boolean }): Promise<BoundaryRun> {
@@ -50,15 +57,23 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   boundary.beforeDispatch = undefined;
   boundary.dispatchCount = 0;
   boundary.closeCalls = 0;
+  boundary.modelSetupCalls = 0;
+  boundary.runtimeCalls = 0;
+  boundary.runtimeFault = undefined;
 
   vi.resetModules();
   const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ id: 'done', type: 'function', function: { name: 'done', arguments: '{}' } }] } }] }));
-  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => ({ openai: { chat: { completions: { create } } }, model: 'offline' }) }));
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => {
+    boundary.modelSetupCalls++;
+    return { openai: { chat: { completions: { create } } }, model: 'offline' };
+  } }));
   vi.doMock('../src/runtime/run.js', async () => {
     const actual = await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js');
     return {
       ...actual,
       createRuntime: (options: Parameters<typeof actual.createRuntime>[0]) => {
+        boundary.runtimeCalls++;
+        boundary.runtimeFault = options.fault;
         if (boundary.mode === 'construct') throw new Error(PRIVATE_FAILURE);
         boundary.beforeDispatch = options.beforeDispatch ? () => options.beforeDispatch!(undefined as never) : undefined;
         const redactor = new Redactor();
@@ -128,7 +143,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     const { runCli } = await import('../cli.js');
     await runCli(command === 'replay'
       ? ['replay', '--artifact', ARTIFACT, '--profile', 'meridian', '--idempotency-key', key, ...extraArgs]
-      : ['discover', '--name', 'meridian-sign-on', '--goal', 'Sign on', '--profile', 'meridian', '--idempotency-key', key]);
+      : ['discover', '--name', 'meridian-sign-on', '--goal', 'Sign on', '--profile', 'meridian', '--idempotency-key', key, ...extraArgs]);
   } catch (caught) {
     failed = true;
     failure = caught;
@@ -137,7 +152,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   const stderr = error.mock.calls.map(call => call.join(' ')).join('\n');
   const journalDir = join(dir, 'journal');
   const files = existsSync(journalDir) ? readdirSync(journalDir).filter(name => name.endsWith('.json')) : [];
-  const records = files.map(name => JSON.parse(readFileSync(join(journalDir, name), 'utf8')).record as { runId: string; state: string });
+  const records = files.map(name => JSON.parse(readFileSync(join(journalDir, name), 'utf8')).record as { runId: string; state: string; request: string });
   const resultPath = records.map(record => join(dir, record.runId, 'result.json')).find(existsSync);
   const result = resultPath ? readFileSync(resultPath, 'utf8') : undefined;
   const outcome = {
@@ -150,6 +165,10 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     dispatchCount: boundary.dispatchCount,
     closeCalls: boundary.closeCalls,
     modelCalls: create.mock.calls.length,
+    modelSetupCalls: boundary.modelSetupCalls,
+    runtimeCalls: boundary.runtimeCalls,
+    runtimeFault: boundary.runtimeFault,
+    requests: records.map(record => record.request),
   };
   vi.doUnmock('../src/agent/client.js');
   vi.doUnmock('../src/runtime/run.js');
@@ -363,6 +382,102 @@ it('handles malformed replay setup before acquiring the journal', async () => {
     expect(run.closeCalls).toBe(0);
     expect(`${run.stdout}\n${run.stderr}`).not.toContain(PRIVATE_FAILURE);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each([
+  ['--inject', 'maintenance'],
+  ['--fault-route', '/members/9001/transfer'],
+  ['--inject', 'invalid', '--fault-route', '/members/9001/transfer'],
+  ['--inject', 'maintenance', '--fault-route', '/invalid'],
+] as const)('rejects malformed discovery fault options before setup: %s', async (...args) => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-preflight-'));
+  try {
+    const run = await runReplayBoundary('pre', dir, 'fault-preflight', 'teller-test', [...args], 'discover');
+    expect(run).toMatchObject({ exitCode: 1, states: [], modelSetupCalls: 0, runtimeCalls: 0, closeCalls: 0, lockPresent: false });
+    expect(readdirSync(dir)).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('rejects discovery faults for the legacy profile before provider or runtime setup', async () => {
+  const previousExitCode = process.exitCode;
+  const model = vi.fn();
+  const createRuntime = vi.fn();
+  process.exitCode = undefined;
+  vi.resetModules();
+  vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: model }));
+  vi.doMock('../src/runtime/run.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/runtime/run.js')>('../src/runtime/run.js')),
+    createRuntime,
+  }));
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { runCli } = await import('../cli.js');
+    await runCli(['discover', '--profile', 'cu-nexus', '--name', 'fixture', '--goal', 'Fixture', '--inject', 'maintenance', '--fault-route', '/members/9001/transfer']);
+    expect(process.exitCode).toBe(1);
+    expect(model).not.toHaveBeenCalled();
+    expect(createRuntime).not.toHaveBeenCalled();
+  } finally {
+    error.mockRestore();
+    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
+    process.exitCode = previousExitCode;
+  }
+});
+
+it.each(['discover', 'replay'] as const)('forwards an exact validated fault scenario to %s runtime', async command => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-'));
+  try {
+    const faultArgs = ['--inject', 'maintenance', '--fault-route', '/members/9001/transfer'];
+    const run = await runReplayBoundary('pre', dir, `fault-forward-${command}`, 'teller-test', faultArgs, command);
+    expect(run.runtimeCalls).toBe(1);
+    expect(run.runtimeFault).toEqual({ kind: 'maintenance', path: '/members/9001/transfer' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('dedupes an equivalent discovery fault without starting another runtime', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-dedupe-'));
+  const args = ['--inject', 'maintenance', '--fault-route', '/members/9001/transfer'];
+  try {
+    const first = await runReplayBoundary('pre', dir, 'fault-dedupe', 'teller-test', args, 'discover');
+    expect(first.runtimeCalls).toBe(1);
+    const repeated = await runReplayBoundary('pre', dir, 'fault-dedupe', 'teller-test', args, 'discover');
+    expect(repeated).toMatchObject({ runtimeCalls: 0, states: ['failure'] });
+    expect(repeated.stdout).toContain('Existing discovery run:');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each([
+  [['--inject', 'maintenance', '--fault-route', '/members/9001/transfer'], ['--inject', 'server', '--fault-route', '/members/9001/transfer']],
+  [['--inject', 'maintenance', '--fault-route', '/members/9001/transfer'], ['--inject', 'maintenance', '--fault-route', '/members/9001/hold']],
+  [[], ['--inject', 'maintenance', '--fault-route', '/members/9001/transfer']],
+  [['--inject', 'maintenance', '--fault-route', '/members/9001/transfer'], []],
+] as const)('conflicts when a discovery fault changes under the same key', async (firstArgs, changedArgs) => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-conflict-'));
+  try {
+    const first = await runReplayBoundary('pre', dir, 'fault-conflict', 'teller-test', [...firstArgs], 'discover');
+    expect(first.runtimeCalls).toBe(1);
+    const conflict = await runReplayBoundary('pre', dir, 'fault-conflict', 'teller-test', [...changedArgs], 'discover');
+    expect(conflict.runtimeCalls).toBe(0);
+    expect(conflict.stderr).toContain('Idempotency key already identifies another request');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('preserves the historical no-fault discovery request identity', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-identity-'));
+  const expectedDir = mkdtempSync(join(tmpdir(), 'meridian-cli-fault-identity-expected-'));
+  try {
+    const run = await runReplayBoundary('pre', dir, 'historical-no-fault', 'teller-test', [], 'discover');
+    const journal = new Journal(expectedDir, JOURNAL_KEY);
+    const expected = journal.reserve('operator', 'historical-no-fault', 'meridian-sign-on', '1.0.0', {
+      mode: 'discovery', name: 'meridian-sign-on', goal: 'Sign on',
+      params: { operator: '{{operator}}', password: '{{password}}', branch: '{{branch}}' },
+      operator: { operator: 'teller-test', branch: 'MAIN-001', role: 'TELLER' },
+    }, 'discovery');
+    journal.close();
+    expect(run.requests).toEqual([expected.request]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(expectedDir, { recursive: true, force: true });
+  }
 });
 
 it('rejects a conflicting key at the CLI boundary without starting a second runtime', async () => {
