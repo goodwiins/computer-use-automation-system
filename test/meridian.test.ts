@@ -30,7 +30,7 @@ import type { Surface } from '../src/surface/types.js';
 import { createApp } from '../src/server/http.js';
 import { InvocationService } from '../src/server/service.js';
 import express from 'express';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import { request as httpRequest, createServer } from 'node:http';
 
 const dirs: string[] = [];
@@ -1468,13 +1468,14 @@ describe('MERIDIAN guarded member-update path', () => {
     let navigation = 0;
     let frameId = 'update-workarea';
     let changeFrameDuringRead = false;
+    const navigate = vi.fn(async (next: string) => { url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next; navigation++; });
     const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
     const run = guarded({
       currentUrl: () => url,
       currentFrame: frame,
       lastResolvedFrame: frame,
       frameUrls: () => [`${operationOrigin}/frameset`, url],
-      navigate: async next => { url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next; navigation++; },
+      navigate,
       readTable: async () => { if (changeFrameDuringRead) frameId = 'replacement-workarea'; return rows; },
     }, gate, { artifact: 'meridian-update-member', memberUpdate: { expected: request, contactTable: meridianMemberContactTable } }, undefined,
     async expected => { url = expected.destination; navigation++; }, undefined,
@@ -1485,7 +1486,7 @@ describe('MERIDIAN guarded member-update path', () => {
     });
     setLive();
     return {
-      run, gate, setLive, currentUrl: () => url,
+      run, gate, navigate, setLive, currentUrl: () => url,
       setUrl(next: string) { url = next; navigation++; },
       setRows(next: Array<Record<string, string>>) { rows = next; },
       replaceFrame() { frameId = 'replacement-workarea'; },
@@ -1517,6 +1518,20 @@ describe('MERIDIAN guarded member-update path', () => {
     expect(h.gate).toHaveBeenCalledOnce();
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a wrong-member update GET before native navigation or link dispatch', async () => {
+    const direct = harness();
+    await expect(direct.run.surface.navigate(`${origin}/members/9999/update`)).rejects.toThrow(/member|bound/i);
+    expect(direct.navigate).not.toHaveBeenCalled();
+    expect(direct.run.dispatch).not.toHaveBeenCalled();
+
+    const link = harness();
+    link.setUrl(`${origin}/members/9001`);
+    link.setLive({ url: `${origin}/members/9001`, destination: `${origin}/members/9999/update`, method: 'GET', control: 'Update Member', submit: false, facts: {} });
+    await expect(link.run.surface.click(target)).rejects.toThrow(/member|bound/i);
+    expect(link.run.dispatch).not.toHaveBeenCalled();
+    expect(link.gate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2510,7 +2525,7 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
 }, 15000);
 
 it('reads fresh hold eligibility in the same browser context without invalidating the original review control', async () => {
-  const app = express(); let posted = 0; let redirectFresh = false;
+  const app = express(); let posted = 0; let redirectFresh = false; let reloadFresh = false;
   const identity = '<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>';
   const contact = '<table><tbody><tr><td>Member No.:</td><td>9001</td><td>Name:</td><td>Fixture Member</td></tr><tr><td>E-mail:</td><td>member@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>';
   const shares = '<table><tbody><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001-1</td><td>Regular Shares</td><td>$8.00</td><td>OPEN</td></tr></tbody></table>';
@@ -2519,7 +2534,9 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
   const review = `${identity}<form method="post" action="/members/9001/hold/post"><input type="hidden" name="_token" value="TOKEN"><input type="hidden" name="share" value="9001-S0001-1"><input type="hidden" name="reason" value="FRAUD"><input type="hidden" name="notes" value="fixture"><table><tr><td class="lbl">Member:</td><td>9001 - Fixture Member</td></tr><tr><td class="lbl">Share:</td><td>9001-S0001-1 - Regular Shares</td></tr><tr><td class="lbl">Reason:</td><td>FRAUD</td></tr><tr><td class="lbl">Notes:</td><td>fixture</td></tr></table><input type="submit" value="Apply Hold"></form>`;
   app.use(express.urlencoded({ extended: false }));
   app.get('/menu', (_req, res) => res.send(`<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p>${identity}`));
-  app.get('/members/9001', (_req, res) => redirectFresh ? res.redirect('/members/9999') : res.send(member));
+  app.get('/members/9001', (_req, res) => reloadFresh
+    ? res.send(`${identity}<script>setTimeout(() => location.reload(), 10)</script>`)
+    : redirectFresh ? res.redirect('/members/9999') : res.send(member));
   app.get('/members/9999', (_req, res) => res.send(member));
   app.get('/members/9001/hold', (_req, res) => res.send(hold));
   app.post('/members/9001/hold/review', (_req, res) => res.send(review));
@@ -2551,6 +2568,25 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     redirectFresh = true;
     await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/navigation|redirected/i);
     expect(browser.page.context().pages()).toHaveLength(1);
+    redirectFresh = false;
+    reloadFresh = true;
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 500)).rejects.toThrow(/changed/i);
+    expect(browser.page.context().pages()).toHaveLength(1);
+    reloadFresh = false;
+
+    let auxiliary: Page | undefined;
+    let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const sabotageClose = (opened: Page) => {
+      if (opened === browser.page) return;
+      auxiliary = opened;
+      closeSpy = vi.spyOn(opened, 'close').mockRejectedValue(new Error('fixture close failure'));
+    };
+    browser.page.context().on('page', sabotageClose);
+    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/cleanup/i);
+    browser.page.context().off('page', sabotageClose);
+    expect(auxiliary?.isClosed()).toBe(false);
+    closeSpy?.mockRestore();
+    await auxiliary?.close();
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 

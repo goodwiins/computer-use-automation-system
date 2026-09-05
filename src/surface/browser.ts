@@ -117,7 +117,7 @@ export class BrowserSurface implements Surface {
       args.push(`--remote-debugging-port=${n}`);
     }
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
-    this.context = await this.browser.newContext({ serviceWorkers: 'block' });
+    this.context = await this.browser.newContext(this.opts.profile?.appId === 'meridian' ? { serviceWorkers: 'block' } : {});
     this.page = await this.context.newPage();
     this.trackFrame(this.page.mainFrame());
     this.page.on('frameattached', frame => this.trackFrame(frame));
@@ -381,13 +381,19 @@ export class BrowserSurface implements Surface {
     const remaining = () => timeoutRemaining(deadline);
     const page = await this.context.newPage();
     let violation: string | undefined;
+    let navigation = 0;
+    let stableNavigation: number | undefined;
+    let stableFrames: string | undefined;
+    const unexpectedPages = new Set<Page>();
     const fail = (message: string) => { violation ??= message; };
     const closeUnexpectedPage = (opened: Page) => {
       if (opened === page || opened === this.page) return;
       fail('Read-only page opened a popup');
+      unexpectedPages.add(opened);
       opened.close().catch(() => {});
     };
     this.context.on('page', closeUnexpectedPage);
+    page.on('framenavigated', () => { navigation++; });
     page.on('dialog', dialog => {
       fail('Read-only page opened a dialog');
       dialog.dismiss().catch(() => {});
@@ -407,6 +413,10 @@ export class BrowserSurface implements Surface {
       if (requestPage === this.page) return route.fallback();
       if (requestPage !== page) {
         fail('Read-only page opened a popup');
+        if (requestPage) {
+          unexpectedPages.add(requestPage);
+          requestPage.close().catch(() => {});
+        }
         return route.abort();
       }
       let requested: URL;
@@ -426,6 +436,14 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     };
+    const frameSignature = () => page.frames().map(frame => `${this.frameContext(frame).id}:${frame.url()}`).join('\n');
+    const assertStable = () => {
+      if (violation) throw new Error(violation);
+      if (stableNavigation !== undefined && (navigation !== stableNavigation || frameSignature() !== stableFrames)) {
+        throw new Error('Read-only page changed during eligibility extraction');
+      }
+    };
+    let pendingError: unknown;
     try {
       await this.context.route('**/*', routeReadOnlyRequest);
       await page.goto(expected.href, { waitUntil: 'load', timeout: remaining() });
@@ -440,7 +458,10 @@ export class BrowserSurface implements Surface {
       if (frameUrls.some(frameUrl => frameUrl !== 'about:blank' && (!frameUrl.startsWith('about:') && new URL(frameUrl).origin !== expected.origin))) {
         throw new Error('Read-only page contains a foreign frame');
       }
+      stableNavigation = navigation;
+      stableFrames = frameSignature();
       const body = await work.locator('body').innerText({ timeout: remaining() });
+      assertStable();
       const one = (pattern: RegExp) => {
         const matches = [...body.matchAll(pattern)];
         return matches.length === 1 ? matches[0]![1] : undefined;
@@ -452,11 +473,13 @@ export class BrowserSurface implements Surface {
       this.opts.sensitive?.([operator, branch, session], [session]);
       const results: Array<Array<Record<string, string>>> = [];
       for (const table of tables) {
-        if (violation) throw new Error(violation);
-        const { locator } = await this.resolveOnPage(page, table.target, remaining(), false);
+        assertStable();
+        const { locator, frame } = await this.resolveOnPage(page, table.target, remaining(), false);
+        if (frame !== work) throw new Error('Read-only table did not resolve in the bound member frame');
         results.push(await this.extractTable(locator, table.columns, table.rowSelector));
+        assertStable();
       }
-      if (violation) throw new Error(violation);
+      assertStable();
       return {
         url: work.url(),
         frameUrls,
@@ -467,10 +490,23 @@ export class BrowserSurface implements Surface {
         },
         tables: results,
       };
+    } catch (error) {
+      pendingError = error;
+      throw error;
     } finally {
-      this.context.off('page', closeUnexpectedPage);
-      await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => {});
-      await page.close().catch(() => {});
+      try { assertStable(); } catch (error) { pendingError = error; }
+      let closeFailed = false;
+      for (const opened of [...unexpectedPages, page]) {
+        try { if (!opened.isClosed()) await opened.close(); }
+        catch { closeFailed = true; }
+        if (!opened.isClosed()) closeFailed = true;
+      }
+      if (!closeFailed) {
+        this.context.off('page', closeUnexpectedPage);
+        await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
+      }
+      if (closeFailed) throw new Error('Read-only page cleanup failed');
+      if (pendingError) throw pendingError;
     }
   }
 

@@ -15,6 +15,7 @@ const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
 const OPEN_SHARE_ROUTE = /^\/members\/(\d+)\/open-share(?:\/(review|post))?$/;
 const MEMBER_ROUTE = /^\/members\/(\d+)$/;
+const MEMBER_SCOPE_ROUTE = /^\/members\/(\d+)(?:\/|$)/;
 const UPDATE_ROUTE = /^\/members\/(\d+)\/update$/;
 const HOLD_ROUTE = /^\/members\/(\d+)\/hold(?:\/(review|post))?$/;
 const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
@@ -220,8 +221,8 @@ export class GuardedSurface implements Surface {
       : runtime?.artifact === 'meridian-open-share' ? runtime.openShare?.expected.member
         : runtime?.artifact === 'meridian-update-member' ? runtime.memberUpdate?.expected.member
           : runtime?.artifact === 'meridian-place-hold' ? runtime.hold?.expected.member : undefined;
-    const member = MEMBER_ROUTE.exec(this.path(url));
-    if (member && (!expected || member[1] !== expected)) throw new Error('Canonical member selection is not bound to this run');
+    const member = MEMBER_SCOPE_ROUTE.exec(this.path(url));
+    if (expected && member && member[1] !== expected) throw new Error('Canonical member selection is not bound to this run');
   }
 
   private transferStage(url: string): { member: string; stage: TransferStage } | undefined {
@@ -824,7 +825,7 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
-        this.assertBoundMemberNavigation(live.destination);
+        if (live.method === 'GET' && !live.submit) this.assertBoundMemberNavigation(live.destination);
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
