@@ -193,7 +193,7 @@ describe('AI SDK chat boundary', () => {
     const response = await request('/api/chat', uiBody(), 'provider-error-key');
     expect(response.text).toContain('Request failed; inspect safe run evidence or server configuration');
     expect(response.text).not.toContain(privateDetail);
-    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(privateDetail);
+    expect(errorLog).not.toHaveBeenCalled();
   });
 
   it('drops client system, tool definitions, and displayed tool output before inference', async () => {

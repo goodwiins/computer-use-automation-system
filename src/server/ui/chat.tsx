@@ -68,7 +68,11 @@ export function Chat() {
     () =>
       new AssistantChatTransport({
         api: '/api/chat',
-        prepareSendMessagesRequest: ({ messages, id }) => chatRequest(messages, id),
+        prepareSendMessagesRequest: ({ messages, id }) => {
+          const prepared = chatRequest(messages, id);
+          setError('');
+          return prepared;
+        },
         fetch: (input, init) => request(String(input), init),
       }),
     [request],
@@ -114,7 +118,7 @@ export function Chat() {
             <ThreadPrimitive.Messages components={{ Message }} />
           </ThreadPrimitive.Viewport>
           {error && <p role="alert">{error}</p>}
-          <ComposerPrimitive.Root onSubmit={() => setError('')}>
+          <ComposerPrimitive.Root>
             <label htmlFor="message">Your request</label>
             <ComposerPrimitive.Input
               id="message"

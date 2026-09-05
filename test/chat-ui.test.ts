@@ -624,7 +624,7 @@ it('bounds assistant text and serialized UTF-8 history without changing the late
     expect(() => chatRequest([invalid], 'thread')).toThrow(/No request was sent/);
   }
 });
-it('offline oversized current request reports a client error and sends no POST', async () => {
+it('offline oversized request sends no POST and a subsequent valid send clears the error', async () => {
   const { page, state, connect } = await fixture();
   await connect();
   await page.locator('#message').evaluate((element) => element.removeAttribute('maxlength'));
@@ -634,6 +634,12 @@ it('offline oversized current request reports a client error and sends no POST',
   await page.getByRole('alert').filter({ hasText: 'at most 4000 characters' }).waitFor();
   expect(state.requests.filter((request) => request.path === '/api/chat')).toHaveLength(0);
   expect(state.invocations.size).toBe(0);
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.locator('#messages [data-run-id]').waitFor();
+  expect(state.requests.filter((request) => request.path === '/api/chat')).toHaveLength(1);
+  expect(state.invocations.size).toBe(1);
+  expect(await page.getByRole('alert').filter({ hasText: 'No request was sent' }).count()).toBe(0);
 }, 15000);
 it('offline polling survives identical failures, recovers automatically and stops after unmount', async () => {
   const { page, state, connect } = await fixture();
