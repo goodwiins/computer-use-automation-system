@@ -1,0 +1,26 @@
+{
+  "source": "0baf8df24e5d09a8be3996778afed53a4b221df9",
+  "scope": "Scripted read-only frame diagnosis; not discovery provenance, replay acceptance, journal evidence or target POST proof",
+  "runId": "replay-29b145ef-0f35-4fb2-ab65-4d753061c31d",
+  "observed": {
+    "uniqueShareCount": 30,
+    "sourceMatches": 1,
+    "destinationMatches": 1,
+    "selectedOpen": [
+      false,
+      true
+    ],
+    "frameIdentityStable": true,
+    "failure": "Transfer facts failed validation",
+    "eligibilityBindingPresent": false,
+    "nonSignonNavigationPosts": 0,
+    "mutationDispatched": false,
+    "browserClosed": true
+  },
+  "limitations": {
+    "authenticatedJournal": false,
+    "nativeResponseObserver": false,
+    "selectedValuesRetained": false
+  },
+  "nextSafeStep": "Select a fresh eligible OPEN source and destination pair before any separate posting approval"
+}

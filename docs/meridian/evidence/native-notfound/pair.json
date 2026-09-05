@@ -1,0 +1,7 @@
+{
+  "source": "0baf8df24e5d09a8be3996778afed53a4b221df9",
+  "sameSyntheticQueryVerified": true,
+  "distinctRequestKeysAndJournalsVerified": true,
+  "replayArtifactSha256": "67ebec9bd0691e689efb4e0c4715b283647c4700b5d590b72339b0db469a6311",
+  "scope": "Native absent-member D/R pair only; no injected response or write acceptance. The exact query and fresh keys remain private."
+}

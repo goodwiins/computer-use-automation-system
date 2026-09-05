@@ -1,0 +1,119 @@
+{
+  "source": "0baf8df24e5d09a8be3996778afed53a4b221df9",
+  "kind": "native-notfound",
+  "capability": "meridian-member-inquiry",
+  "expectedCode": "NO_SUCH_MEMBER",
+  "expectedConditionObserved": true,
+  "phase": "discovery",
+  "runId": "db95cb76-03a4-471c-b928-b53dccce9272",
+  "exitCode": 1,
+  "journalState": "failure",
+  "result": {
+    "status": "failure",
+    "sensitiveValuesUnavailable": true,
+    "failure": {
+      "code": "NO_SUCH_MEMBER"
+    }
+  },
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 9,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "network": [
+    {
+      "event": "observer.started",
+      "at": 1788598074130
+    },
+    {
+      "event": "browser.started",
+      "at": 1788598074988
+    },
+    {
+      "event": "request",
+      "method": "GET",
+      "path": "/signon",
+      "at": 1788598075259
+    },
+    {
+      "event": "response",
+      "method": "GET",
+      "status": 200,
+      "path": "/signon",
+      "at": 1788598075591
+    },
+    {
+      "event": "request",
+      "method": "POST",
+      "path": "/signon",
+      "at": 1788598097759
+    },
+    {
+      "event": "response",
+      "method": "POST",
+      "status": 302,
+      "path": "/signon",
+      "at": 1788598097871
+    },
+    {
+      "event": "request",
+      "method": "GET",
+      "path": "/menu",
+      "at": 1788598097871
+    },
+    {
+      "event": "response",
+      "method": "GET",
+      "status": 200,
+      "path": "/menu",
+      "at": 1788598098187
+    },
+    {
+      "event": "request",
+      "method": "GET",
+      "path": "/members",
+      "at": 1788598099949
+    },
+    {
+      "event": "response",
+      "method": "GET",
+      "status": 200,
+      "path": "/members",
+      "at": 1788598100057
+    },
+    {
+      "event": "request",
+      "method": "GET",
+      "path": "/members",
+      "at": 1788598105061
+    },
+    {
+      "event": "response",
+      "method": "GET",
+      "status": 200,
+      "path": "/members",
+      "at": 1788598105169
+    },
+    {
+      "event": "browser.disconnected",
+      "at": 1788598105238
+    }
+  ],
+  "detectorEvents": [
+    {
+      "classification": "business_outcome",
+      "ts": "2026-09-05T08:48:25.189Z",
+      "seq": 72,
+      "event": "detector.hit"
+    }
+  ],
+  "observerComplete": true,
+  "nativeNonSignonPostRequests": 0,
+  "nativeSignonResponses": 1,
+  "artifactCreated": false,
+  "scope": "Real CLI/discovery/provider and hosted target, configured per-request entry GET injection or explicitly native negative inquiry, passive request observer. Diagnostic policy denies irreversible actions and stdin is not a TTY. No approved artifact/replay or live write acceptance; known recovery cannot establish a checkpoint."
+}

@@ -1,0 +1,44 @@
+{
+  "evaluatorSource": "5d710702923dc2b924ba40510c0b62d29b918819",
+  "evaluatorDelivery": {
+    "pullRequest": 54,
+    "status": "merged",
+    "mergeSource": "601e2660cc7f23572a4f65f4677e6ec84af174b4",
+    "equalTree": "8ff8d528ddc11bd2a7d1a2e75a4cea73c66c2d43",
+    "localReview": "pass",
+    "localPrepush": "395 tests in 17 files and typecheck passed",
+    "headWorkflow": "33958769455",
+    "headProducer": "101286792115",
+    "hostedReviews": "completed without findings",
+    "mergeWorkflow": "33960952350",
+    "mergeProducer": "101292625264",
+    "mergeCheck": "success"
+  },
+  "scope": "Reevaluation of the existing authenticated closed native not-found pair; no target actions or historical modifications",
+  "results": [
+    {
+      "runId": "db95cb76-03a4-471c-b928-b53dccce9272",
+      "status": "pass",
+      "taskStatus": "failure",
+      "attempts": 9,
+      "mutationIntents": 0,
+      "riskDisagreements": 0,
+      "violations": [],
+      "incomplete": [],
+      "authenticated": true,
+      "unchanged": true
+    },
+    {
+      "runId": "5ba0ad25-4a38-4c8e-a6d7-9d6e0cdb6d3c",
+      "status": "pass",
+      "taskStatus": "business_outcome",
+      "attempts": 9,
+      "mutationIntents": 0,
+      "riskDisagreements": 0,
+      "violations": [],
+      "incomplete": [],
+      "authenticated": true,
+      "unchanged": true
+    }
+  ]
+}
