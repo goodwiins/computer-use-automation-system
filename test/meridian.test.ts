@@ -1486,6 +1486,71 @@ describe('MERIDIAN guarded open-share path', () => {
   });
 });
 
+it('recovers the observed open-share maintenance path through one fresh member checkpoint', async () => {
+  let openVisits = 0;
+  let memberVisits = 0;
+  const app = express();
+  const shares = '<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001</td><td>Regular Shares</td><td>$2.00</td><td>OPEN</td></tr></table>';
+  const member = `<table><tbody><tr><td>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table><a href="/members/9001/open-share">Open New Share</a>`;
+  app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
+  app.get('/members/9001', (_req, res) => { memberVisits++; res.send(member); });
+  app.get('/members/9001/open-share', (_req, res) => {
+    openVisits++;
+    res.send(openVisits === 1
+      ? '<p>SCHEDULED MAINTENANCE IN PROGRESS</p><a href="/members/9001">Continue</a>'
+      : '<form method="post" action="/members/9001/open-share/review"><input type="submit" value="Continue"></form>');
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const localProfile = { ...profile, entryUrl: `${localOrigin}/members` };
+  const localPolicy = Policy.parse({ ...policy, allowedOrigins: [localOrigin] });
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: localProfile });
+  const gate = vi.fn(async () => true);
+  const beforeDispatch = vi.fn();
+  const events: string[] = [];
+  const surface = new GuardedSurface(browser, localPolicy, gate, undefined, {
+    profile: localProfile, session: new ControlSession(), deadline: Date.now() + 10000,
+    runId: randomUUID(), artifact: 'meridian-open-share', version: '1.0.0',
+    operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable },
+  }, event => events.push(event));
+  try {
+    await surface.start(`${localOrigin}/members`);
+    await surface.click({ description: 'member', strategies: [{ kind: 'role', role: 'link', name: '9001 - Fixture Member' }] });
+    await surface.click({ description: 'open', strategies: [{ kind: 'role', role: 'link', name: 'Open New Share' }] });
+    const interrupted = surface.currentFrame()!;
+    expect(await surface.isTextVisible('SCHEDULED MAINTENANCE IN PROGRESS')).toBe(true);
+    await surface.recoverOperation('maintenance', 5000);
+    const restored = surface.currentFrame()!;
+    expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001/open-share`);
+    expect(restored).toMatchObject({ id: interrupted.id, name: interrupted.name });
+    expect(restored.navigation).toBeGreaterThan(interrupted.navigation);
+    expect(await surface.isTextVisible('SCHEDULED MAINTENANCE IN PROGRESS')).toBe(false);
+    await expect(surface.recoverOperation('maintenance', 5000)).rejects.toThrow(/already attempted/i);
+    expect(openVisits).toBe(2);
+    expect(memberVisits).toBe(2);
+    expect(gate).not.toHaveBeenCalled();
+    expect(beforeDispatch).not.toHaveBeenCalled();
+    expect(events).not.toContain('mutation.intent');
+  } finally {
+    await surface.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 15000);
+
+it('refuses open-share operation recovery without a trusted bound interruption', async () => {
+  const run = guarded({}, async () => true, {
+    artifact: 'meridian-open-share',
+    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable },
+  });
+  await expect(run.surface.recoverOperation('maintenance')).rejects.toThrow(/trusted|bound/i);
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.beforeDispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+});
+
+
 describe('MERIDIAN guarded member-update path', () => {
   const request = requestMemberUpdate();
   const contactRow = (overrides: Record<string, string> = {}) => ({

@@ -257,6 +257,67 @@ it.each(['validation-injected', 'permission', 'maintenance'])('keeps post-intent
   expect(readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8')).not.toContain('detector.recovering');
 });
 
+it('discards a stale observation after bound operation recovery before asking the model', async () => {
+  const surface = fixtureSurface();
+  let maintenance = false;
+  let observations = 0;
+  surface.observe = vi.fn(async () => {
+    observations++;
+    if (observations === 1) maintenance = true;
+    return { url: `${origin}/members/9001/open-share`, title: '', frames: [{ frame: '', snapshot: `observation-${observations}`, fields: [] }] };
+  });
+  surface.currentUrl = () => `${origin}/members/9001/open-share`;
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
+  surface.recoverOperation = vi.fn(async id => { expect(id).toBe('maintenance'); maintenance = false; });
+  const create = vi.fn(async (_request: unknown) => ({ choices: [{ message: { tool_calls: [{ id: 'done', type: 'function', function: { name: 'done', arguments: '{}' } }] } }] }));
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  const result = await runDiscovery('open share', `${origin}/signon`, {}, [origin], {
+    surface, logger, openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+    model: 'offline', maxSteps: 2, detectors: profile.detectors,
+  });
+  expect(result).toMatchObject({ status: 'success', trace: [] });
+  expect(surface.recoverOperation).toHaveBeenCalledExactlyOnceWith('maintenance');
+  expect(surface.observe).toHaveBeenCalledTimes(4); // one live observation and one masked screenshot observation per pass
+  expect(create).toHaveBeenCalledOnce();
+  expect(JSON.stringify(create.mock.calls[0]![0])).toContain('observation-3');
+  expect(JSON.stringify(create.mock.calls[0]![0])).not.toContain('observation-1');
+});
+
+it('does not retry a failed replay action after strict operation recovery', async () => {
+  const surface = fixtureSurface();
+  let maintenance = false;
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' && maintenance);
+  surface.recoverOperation = vi.fn(async () => { maintenance = false; });
+  surface.click = vi.fn(async () => { maintenance = true; throw new Error('interrupted action'); });
+  const artifact = fixtureArtifact(true);
+  artifact.id = 'meridian-open-share';
+  artifact.name = 'meridian-open-share';
+  artifact.detectors = profile.detectors;
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  const result = await runReplay(artifact, {}, { surface, logger, policy, validateCompletion: vi.fn() });
+  expect(result).toMatchObject({ status: 'failure', escalated: false });
+  expect(surface.recoverOperation).not.toHaveBeenCalled();
+  expect(surface.click).toHaveBeenCalledOnce();
+});
+
+it('runs the next recorded replay step once after one strict operation recovery', async () => {
+  const surface = fixtureSurface();
+  let maintenance = true;
+  surface.isTextVisible = vi.fn(async text => text === 'SCHEDULED MAINTENANCE IN PROGRESS' ? maintenance : text === 'done');
+  surface.recoverOperation = vi.fn(async () => { maintenance = false; });
+  const artifact = fixtureArtifact();
+  artifact.id = 'meridian-open-share';
+  artifact.name = 'meridian-open-share';
+  artifact.detectors = profile.detectors;
+  const logger = new RunLogger('replay', new Redactor(), temp(), true);
+  const validateCompletion = vi.fn();
+  const result = await runReplay(artifact, {}, { surface, logger, policy, validateCompletion });
+  expect(result).toMatchObject({ status: 'success', recoveries: ['verify:maintenance'] });
+  expect(surface.recoverOperation).toHaveBeenCalledExactlyOnceWith('maintenance');
+  expect(surface.isTextVisible).toHaveBeenCalledWith('done', undefined);
+  expect(validateCompletion).toHaveBeenCalledOnce();
+});
+
 it.each(['business', 'abort', 'unknown'] as const)('retains typed discovery terminal precedence: %s', async mode => {
   const f = discoveryConditionFixture();
   f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: { name: 'click', arguments: JSON.stringify({ text: 'Continue', reason: 'fixture' }) } }] } }] });

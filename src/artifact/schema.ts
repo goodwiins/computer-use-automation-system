@@ -63,7 +63,11 @@ export const Detector = z.object({
   // recoverable: how to get past it (dismiss an interstitial), bounded to one
   // attempt per step so a persistent condition can't loop forever
   recovery: z
-    .object({ action: z.enum(['click', 'none']), target: TargetDescriptor.optional() })
+    .object({
+      action: z.enum(['click', 'none']),
+      target: TargetDescriptor.optional(),
+      resume: z.literal('open-share-member-entry').optional(),
+    })
     .optional(),
 });
 export type Detector = z.infer<typeof Detector>;

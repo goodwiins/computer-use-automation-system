@@ -84,6 +84,8 @@ export interface Surface {
   // policy gate; unguarded implementations ignore it.
   /** Guarded recovery only: explicit reversible-write risk, no mutation or approval. */
   recoverClick?(target: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport>;
+  /** Guard-owned operation recovery; never represented as a recorded action. */
+  recoverOperation?(detectorId: string, timeoutMs?: number): Promise<void>;
   click(target: TargetDescriptor, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   fill(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass): Promise<ResolutionReport>;
   select(target: TargetDescriptor, value: string, timeoutMs?: number, risk?: RiskClass, selectBy?: 'label' | 'value'): Promise<ResolutionReport>;

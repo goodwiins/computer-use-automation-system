@@ -60,6 +60,7 @@ export interface DiscoveryDeps {
 
 const MAX_SNAPSHOT_CHARS = 4000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+const RECOVERED = Symbol('recovered');
 
 export async function runDiscovery(
   goal: string,
@@ -97,6 +98,7 @@ export async function runDiscovery(
     for (let turn = 1; turn <= deps.maxSteps; turn++) {
       if (Date.now() > deadline) return finish('stopped', `timeout: discovery exceeded ${deps.timeoutMs ?? 600_000}ms`);
       const condition = await handleConditions();
+      if (condition === RECOVERED) { turn--; continue; }
       if (condition) return condition;
       const obs = await surface.observe();
       const shot = await logger.screenshot(surface, `turn${turn}`);
@@ -115,6 +117,7 @@ export async function runDiscovery(
       logger.log('discovery.observe', { turn, url: obs.url, screenshot: shot });
 
       const beforeModel = await handleConditions();
+      if (beforeModel === RECOVERED) { messages.pop(); turn--; continue; }
       if (beforeModel) return beforeModel;
       const started = performance.now();
       logger.log('llm.start', { turn });
@@ -131,6 +134,7 @@ export async function runDiscovery(
         throw error;
       });
       const beforeAction = await handleConditions();
+      if (beforeAction === RECOVERED) { messages.pop(); turn--; continue; }
       if (beforeAction) return beforeAction;
       const msg = completion.choices[0]?.message;
       const call = msg?.tool_calls?.[0];
@@ -243,10 +247,11 @@ export async function runDiscovery(
             respond(`Unknown tool ${call.function.name}`);
         }
         const afterAction = await handleConditions();
+        if (afterAction === RECOVERED) { consecutiveFailures = 0; turn--; continue; }
         if (afterAction) return afterAction;
         consecutiveFailures = 0;
       } catch (err) {
-        const terminal = await handleError(err);
+        const terminal = await handleError(err, false);
         if (terminal) return terminal;
         consecutiveFailures++;
         const message = err instanceof Error ? err.message : String(err);
@@ -285,14 +290,15 @@ export async function runDiscovery(
     throw err;
   }
 
-  async function handleError(err: unknown): Promise<DiscoveryResult | null> {
+  async function handleError(err: unknown, allowOperationRecovery = true): Promise<DiscoveryResult | null> {
     if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
     if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED');
     if (err instanceof InsufficientFundsError) {
       return finish('business_outcome', err.outcomeCode, undefined, undefined,
         { outcomeCode: err.outcomeCode, detail: err.message });
     }
-    return handleConditions();
+    const condition = await handleConditions(allowOperationRecovery);
+    return condition === RECOVERED ? finish('stopped', 'RECOVERY_FAILED') : condition;
   }
 
   function stopForDetector(detector: Detector): DiscoveryResult {
@@ -301,7 +307,7 @@ export async function runDiscovery(
     return finish('stopped', typeof code === 'string' ? code : 'DISCOVERY_FAILED');
   }
 
-  async function handleConditions(): Promise<DiscoveryResult | null> {
+  async function handleConditions(allowOperationRecovery = true): Promise<DiscoveryResult | typeof RECOVERED | null> {
     if (!deps.detectors) return null;
     let recovering = false;
     try {
@@ -310,12 +316,21 @@ export async function runDiscovery(
       if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
       logger.log('detector.hit', { classification: detector.classification });
       if (detector.classification !== 'recoverable') return stopForDetector(detector);
-      if (recoveryAttempted || detector.recovery?.action !== 'click' || !detector.recovery.target || !surface.recoverClick) return finish('stopped', 'RECOVERY_FAILED');
+      const recovery = detector.recovery;
+      const operationRecovery = recovery?.resume === 'open-share-member-entry' && !!surface.recoverOperation;
+      const clickRecovery = recovery?.action === 'click' && !!recovery.target && !!surface.recoverClick;
+      if (operationRecovery && !allowOperationRecovery) return finish('stopped', 'RECOVERY_FAILED');
+      if (recoveryAttempted || (!operationRecovery && !clickRecovery)) return finish('stopped', 'RECOVERY_FAILED');
       recoveryAttempted = true;
       recovering = true;
       logger.log('detector.recovering', { action: 'click' });
       surface.setStep?.('(discovery-recovery)');
-      await surface.recoverClick(detector.recovery.target);
+      if (recovery?.resume === 'open-share-member-entry') {
+        await surface.recoverOperation!(detector.id);
+        if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
+        return RECOVERED;
+      }
+      await surface.recoverClick!(recovery!.target!);
       if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
       const persistent = await matchDetector(surface, detector);
       if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');

@@ -7,7 +7,8 @@ import type { ControlSession } from '../escalation/session.js';
 // discovery, the deterministic replayer, a future caller — goes through the
 // same gate, so no code path can act outside the allowlist.
 
-import { moneyCents, RiskClass, type OutputValue, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
+import { moneyCents, RiskClass, type Detector, type OutputValue, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
+import { BUILTIN_DETECTORS } from '../replay/detectors.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ReadOnlyPageSnapshot, ResolutionReport, Surface } from './types.js';
 
@@ -111,6 +112,7 @@ type HoldBinding = {
 };
 type HoldStage = 'member' | 'hold' | 'review';
 type HoldState = { member: string; name: string; selected: HoldShare; frame: FrameContext; stage: HoldStage };
+type RecoveryClickBoundary = { source: FrameContext; destination: string };
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -136,6 +138,7 @@ export class GuardedSurface implements Surface {
   private openShareState?: OpenShareState;
   private memberUpdateOrigin?: string;
   private holdState?: HoldState;
+  private maintenanceAttempted = false;
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -823,7 +826,114 @@ export class GuardedSurface implements Surface {
   recoverClick(t: TargetDescriptor, timeoutMs?: number): Promise<ResolutionReport> {
     return this.clickAction(t, timeoutMs, 'reversible_write', true);
   }
-  private async clickAction(t: TargetDescriptor, timeoutMs: number | undefined, risk: RiskClass, recovery = false): Promise<ResolutionReport> {
+  private exactUrl(actual: string, expected: string): boolean {
+    try {
+      const parsed = new URL(actual);
+      return parsed.search === '' && parsed.hash === '' && parsed.toString() === expected;
+    } catch { return false; }
+  }
+
+  private assertRecoveryControl(live: LiveControl, boundary: RecoveryClickBoundary): void {
+    if (!live.frame || !this.sameFrameRevision(live.frame, boundary.source)
+      || live.url !== boundary.source.url || !this.exactUrl(live.destination, boundary.destination)
+      || live.method !== 'GET' || live.submit) {
+      throw new Error('Recovery control is outside the bound frame or destination');
+    }
+  }
+
+  private async trustedDetectorVisible(detector: Detector, frame: FrameContext): Promise<boolean> {
+    if (detector.match.kind === 'textVisible') return this.inner.isTextVisible(detector.match.text, frame.name);
+    try { return new RegExp(detector.match.pattern).test(frame.url); } catch { return false; }
+  }
+
+  private async assertTrustedConditionsClear(frame: FrameContext): Promise<void> {
+    const before = this.currentOpenShareFrame();
+    if (!this.sameFrameRevision(frame, before)) return this.openShareFrameFailed();
+    for (const detector of [...(this.runtime?.profile.detectors ?? []), ...BUILTIN_DETECTORS]) {
+      if (await this.trustedDetectorVisible(detector, frame)) throw new Error('Runtime condition remains after recovery');
+    }
+    const after = this.currentOpenShareFrame();
+    if (!this.sameFrameRevision(frame, after)) return this.openShareFrameFailed();
+  }
+
+  async recoverOperation(detectorId: string, timeoutMs?: number): Promise<void> {
+    const runtime = this.runtime;
+    const binding = runtime?.openShare;
+    const state = this.openShareState;
+    const detector = runtime?.profile.detectors.find(candidate => candidate.id === detectorId);
+    if (runtime?.profile.appId !== 'meridian' || runtime.artifact !== 'meridian-open-share'
+      || !binding || !state || detector?.recovery?.resume !== 'open-share-member-entry'
+      || detector.recovery.action !== 'click' || !detector.recovery.target || this.mutationDispatched) {
+      throw new Error('Operation recovery is not trusted for this run');
+    }
+    if (!/^[0-9]{1,12}$/.test(binding.expected.member)) throw new Error('Operation recovery member is invalid');
+    if (this.maintenanceAttempted) throw new Error('Operation recovery was already attempted');
+    this.maintenanceAttempted = true;
+    this.assertAutomation();
+
+    const budget = timeoutMs ?? DEFAULT_TIMEOUT;
+    const deadline = Date.now() + budget;
+    const remaining = () => {
+      const value = deadline - Date.now();
+      if (!Number.isFinite(value) || value <= 0) throw new Error('Recovery timeout expired');
+      return Math.max(1, value);
+    };
+    const origin = this.origin(state.frame.url);
+    const memberUrl = new URL(`/members/${binding.expected.member}`, origin).toString();
+    const openUrl = new URL(`/members/${binding.expected.member}/open-share`, origin).toString();
+    const interrupted = this.currentOpenShareFrame();
+    if (state.member !== binding.expected.member || state.stage !== 'open-share'
+      || !this.sameFrameRevision(interrupted, state.frame) || !this.exactUrl(interrupted.url, openUrl)
+      || !(await this.trustedDetectorVisible(detector, interrupted))) {
+      return this.openShareFrameFailed();
+    }
+
+    await this.clickAction(detector.recovery.target, remaining(), 'reversible_write', true, {
+      source: interrupted, destination: memberUrl,
+    });
+    this.assertAutomation();
+    const memberFrame = this.currentOpenShareFrame();
+    if (!this.sameFrame(interrupted, memberFrame) || memberFrame.navigation <= interrupted.navigation
+      || !this.exactUrl(memberFrame.url, memberUrl)) return this.openShareFrameFailed();
+
+    const checkpoint: TargetDescriptor = {
+      description: 'Member record checkpoint', frame: memberFrame.name,
+      strategies: [{ kind: 'text', text: 'Member No.:', exact: true }],
+    };
+    await this.gate('extract', 'read');
+    const described = await this.inner.describeTarget(checkpoint, remaining());
+    const resolvedDescription = this.inner.lastResolvedFrame?.();
+    const read = await this.inner.readText(described, remaining());
+    const resolvedRead = this.inner.lastResolvedFrame?.();
+    const afterCheckpoint = this.currentOpenShareFrame();
+    this.assertAutomation();
+    if (read.text.trim() !== 'Member No.:' || !resolvedDescription || !resolvedRead
+      || !this.sameFrameRevision(memberFrame, resolvedDescription)
+      || !this.sameFrameRevision(memberFrame, resolvedRead)
+      || !this.sameFrameRevision(memberFrame, afterCheckpoint)) return this.openShareFrameFailed();
+
+    await this.captureOpenShareState(memberUrl, remaining());
+    this.assertAutomation();
+    const refreshed = this.openShareState!;
+    const refreshedFrame = { ...refreshed.frame };
+    await this.assertTrustedConditionsClear(refreshed.frame);
+    const resume: TargetDescriptor = {
+      description: 'Open New Share', frame: refreshed.frame.name,
+      strategies: [{ kind: 'role', role: 'link', name: 'Open New Share' }],
+    };
+    await this.clickAction(resume, remaining(), 'reversible_write', true, {
+      source: refreshedFrame, destination: openUrl,
+    });
+    this.assertAutomation();
+    const restored = this.openShareState;
+    const finalFrame = this.currentOpenShareFrame();
+    if (!restored || restored.stage !== 'open-share' || !this.sameFrame(restored.frame, refreshedFrame)
+      || restored.frame.navigation <= refreshedFrame.navigation || !this.sameFrameRevision(restored.frame, finalFrame)
+      || !this.exactUrl(finalFrame.url, openUrl)) return this.openShareFrameFailed();
+    await this.assertTrustedConditionsClear(finalFrame);
+  }
+
+  private async clickAction(t: TargetDescriptor, timeoutMs: number | undefined, risk: RiskClass, recovery = false, recoveryBoundary?: RecoveryClickBoundary): Promise<ResolutionReport> {
     if (recovery && this.mutationDispatched) throw new Error('POST_OUTCOME_UNKNOWN: recovery refused');
     return this.action('click', risk, async () => {
       this.assertAutomation();
@@ -848,6 +958,7 @@ export class GuardedSurface implements Surface {
         const live = await prepared.inspect(remaining());
         remaining();
         if (live.method === 'GET') this.assertBoundMemberNavigation(live.destination);
+        if (recoveryBoundary) this.assertRecoveryControl(live, recoveryBoundary);
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
@@ -926,6 +1037,11 @@ export class GuardedSurface implements Surface {
           await outsideBudget(() => this.gate('click', risk, live.destination));
         }
         this.assertAutomation();
+        if (recoveryBoundary) {
+          const refreshed = await prepared.inspect(remaining());
+          if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Recovery invalidated by changed page state');
+          this.assertRecoveryControl(refreshed, recoveryBoundary);
+        }
         if (signOn && live.submit) this.signOnSubmitted = true;
         const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
