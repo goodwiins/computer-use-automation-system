@@ -8,7 +8,11 @@
 import { createInterface } from 'node:readline/promises';
 import type { Page } from 'playwright';
 import type { RunLogger } from '../evidence/logger.js';
+import { Approval, type ActionContext } from '../runtime/approval.js';
+import { describePendingApproval, startApprovalServer } from './approval-cli.js';
 import { ControlSession, type InterventionDecision, type InterventionRequest } from './session.js';
+
+const terminalText = (value: string) => JSON.stringify(value).slice(1, -1);
 
 export class OperatorConsole {
   constructor(
@@ -17,27 +21,14 @@ export class OperatorConsole {
     private readonly session: ControlSession,
   ) {}
 
-  async intervene(req: InterventionRequest): Promise<InterventionDecision> {
+  async intervene(req: InterventionRequest, action?: ActionContext): Promise<InterventionDecision> {
     if (this.page.isClosed()) return 'abort';
+    if (req.kind === 'risk_approval') return this.approveRisk(req, action);
     this.session.transfer('human', req.reason);
     this.logger.log('handoff.to_human', { request: { ...req } });
 
     const detach = await this.recordHumanActions();
-    const isRiskApproval = req.kind === 'risk_approval';
-    // Browser repair happens in the live page. Risk approval happens here in
-    // the terminal so the runner, not the operator, performs the action.
-    if (!isRiskApproval) await this.page.bringToFront().catch(() => {});
-
-    // "Attended" only means "a human" when the decision comes from a
-    // terminal. A piped stdin is an automated caller, which must not be able
-    // to approve a risky action (it may still fix stuck steps and hand back).
-    if (isRiskApproval && !process.stdin.isTTY) {
-      console.log('risk approval requires an interactive terminal (stdin is not a TTY); aborting');
-      await detach();
-      this.session.transfer('automation', 'risk approval refused: stdin is not a TTY');
-      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'stdin_not_tty' });
-      return 'abort';
-    }
+    await this.page.bringToFront().catch(() => {});
 
     console.log('\n┌──────────────── HUMAN INTERVENTION REQUIRED ────────────────');
     console.log(`│ capability : ${req.capability}`);
@@ -47,23 +38,11 @@ export class OperatorConsole {
     console.log(`│ url        : ${req.url}`);
     if (req.screenshot) console.log(`│ screenshot : ${req.screenshot}`);
     console.log('│');
-    if (isRiskApproval) {
-      // A risk approval is a go/no-go on an action that has not run yet —
-      // "skip" (human performed it manually) would double-execute it, so it
-      // is not offered here.
-      console.log('│ Review the facts above. Do not click the browser\'s final posting button.');
-      console.log('│ Type approve here in this Terminal and press Return to let the runner submit.');
-      console.log('│   approve — allow the runner to proceed with the action');
-      console.log('│   abort   — stop the run');
-      console.log('│ No response aborts the run after five minutes.');
-      console.log('└──────────────────────────────────────────────────────────────');
-    } else {
-      console.log('│ The live browser window is now yours. Fix the state, then choose:');
-      console.log('│   retry — automation re-attempts the stuck step');
-      console.log('│   skip  — you completed the step manually; continue after it');
-      console.log('│   abort — stop the run');
-      console.log('└──────────────────────────────────────────────────────────────');
-    }
+    console.log('│ The live browser window is now yours. Fix the state, then choose:');
+    console.log('│   retry — automation re-attempts the stuck step');
+    console.log('│   skip  — you completed the step manually; continue after it');
+    console.log('│   abort — stop the run');
+    console.log('└──────────────────────────────────────────────────────────────');
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const controller = new AbortController();
@@ -73,18 +52,6 @@ export class OperatorConsole {
     let decision: InterventionDecision;
     for (;;) {
       const answer = (await rl.question('operator> ', { signal: controller.signal }).catch(() => 'abort')).trim().toLowerCase();
-      if (isRiskApproval) {
-        if (answer === 'approve') {
-          decision = 'retry';
-          break;
-        }
-        if (answer === 'abort') {
-          decision = 'abort';
-          break;
-        }
-        console.log('Please type: approve | abort');
-        continue;
-      }
       if (answer === 'retry' || answer === 'skip' || answer === 'abort') {
         decision = answer;
         break;
@@ -99,6 +66,109 @@ export class OperatorConsole {
     this.session.transfer('automation', `operator chose ${decision}`);
     this.logger.log('handoff.to_automation', { decision });
     return decision;
+  }
+
+  private async approveRisk(req: InterventionRequest, action?: ActionContext): Promise<InterventionDecision> {
+    // A piped caller must not create an endpoint that another process can use
+    // to turn an unattended run into an attended one.
+    if (!process.stdin.isTTY) {
+      this.session.transfer('human', req.reason);
+      this.logger.log('handoff.to_human', { request: { ...req } });
+      const detach = await this.recordHumanActions();
+      console.log('risk approval requires an interactive terminal (stdin is not a TTY); aborting');
+      await detach();
+      this.session.transfer('automation', 'risk approval refused: stdin is not a TTY');
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'stdin_not_tty' });
+      return 'abort';
+    }
+
+    const approval = new Approval(this.session, () => {}, Date.now() + 300_000);
+    const pending = approval.wait(req, action);
+    const id = approval.pending!.id;
+    this.logger.log('handoff.to_human', { request: { ...req } });
+    this.logger.log('intervention.pending', { kind: 'risk_approval', approvalId: id, expiresAt: approval.pending!.expiresAt });
+    const detach = await this.recordHumanActions();
+    const controller = new AbortController();
+    const onClose = () => approval.cancel();
+    this.page.on('close', onClose);
+    if (this.page.isClosed()) approval.cancel();
+
+    if (!approval.pending) {
+      await detach();
+      this.page.off('close', onClose);
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'browser_closed' });
+      return 'abort';
+    }
+
+    let transport: Awaited<ReturnType<typeof startApprovalServer>> | undefined;
+    try {
+      transport = await startApprovalServer(action?.runId ?? this.logger.runId, approval);
+    } catch {
+      approval.cancel();
+      await detach();
+      this.page.off('close', onClose);
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'approval_endpoint_unavailable' });
+      return 'abort';
+    }
+    if (!approval.pending) {
+      try { await transport.close(); } finally { await detach(); this.page.off('close', onClose); }
+      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'browser_closed' });
+      return 'abort';
+    }
+
+    const details = describePendingApproval(approval.pending);
+    console.log('\n┌──────────────── HUMAN APPROVAL REQUIRED ────────────────────');
+    console.log(`│ run        : ${action?.runId ?? this.logger.runId}`);
+    console.log(`│ endpoint   : ${terminalText(transport.endpoint)}`);
+    console.log(`│ capability : ${terminalText(details.capability)}`);
+    console.log(`│ goal       : ${terminalText(details.goal)}`);
+    console.log(`│ reason     : ${terminalText(details.reason)}`);
+    console.log(`│ url        : ${terminalText(details.url)}`);
+    if (details.action) console.log(`│ facts      : ${JSON.stringify(details.action.facts)}`);
+    console.log(`│ expires    : ${new Date(details.expiresAt).toISOString()}`);
+    console.log(`│ approval   : ${details.approvalId}`);
+    console.log('│');
+    console.log('│ Review the facts above. Do not click the browser\'s final posting button.');
+    console.log('│ Decide here or from another Terminal:');
+    console.log('│   approve — allow the runner to proceed with the action');
+    console.log('│   refuse  — stop the run');
+    console.log(`│   npx tsx cli.ts approval --run ${action?.runId ?? this.logger.runId}`);
+    console.log(`│   npx tsx cli.ts approve --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
+    console.log(`│   npx tsx cli.ts refuse --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
+    console.log('│ No response aborts the run after five minutes.');
+    console.log('└──────────────────────────────────────────────────────────────');
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const readDecision = (async () => {
+      for (;;) {
+        const answer = (await rl.question('operator> ', { signal: controller.signal }).catch(() => {
+          if (approval.pending && !controller.signal.aborted) approval.decide(id, 'abort');
+          return '';
+        })).trim().toLowerCase();
+        if (!approval.pending) return;
+        if (answer === 'approve' || answer === 'refuse' || answer === 'abort') {
+          try { approval.decide(id, answer === 'approve' ? 'approve' : 'abort'); } catch { /* another input won */ }
+          return;
+        }
+        if (!controller.signal.aborted) console.log('Please type: approve | refuse');
+      }
+    })();
+
+    let decision: 'approve' | 'retry' | 'abort';
+    try {
+      decision = await pending;
+      controller.abort();
+      await readDecision;
+    } finally {
+      controller.abort();
+      rl.close();
+      this.page.off('close', onClose);
+      try { await transport.close(); } finally { await detach(); }
+    }
+    const mapped = decision === 'approve' ? 'retry' : 'abort';
+    this.logger.log('intervention.decided', { decision });
+    this.logger.log('handoff.to_automation', { decision: mapped });
+    return mapped;
   }
 
   /**
