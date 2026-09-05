@@ -50,7 +50,6 @@ export class BrowserSurface implements Surface {
   private readonly frameNavigations = new WeakMap<Frame, number>();
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
-  private readOnlyWebSocketViolation?: (message: string) => void;
 
   // When allowedOrigins is set, frames outside it are invisible to observation
   // and untouchable by locator resolution — a foreign iframe embedded in a
@@ -120,7 +119,6 @@ export class BrowserSurface implements Surface {
     this.browser = await chromium.launch({ headless: !this.opts.headful, args });
     this.context = await this.browser.newContext(this.opts.profile?.appId === 'meridian' ? { serviceWorkers: 'block' } : {});
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
-      this.readOnlyWebSocketViolation?.('Read-only page attempted a WebSocket connection');
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
     this.page = await this.context.newPage();
@@ -402,7 +400,6 @@ export class BrowserSurface implements Surface {
     let stableFrames: string | undefined;
     const unexpectedPages = new Set<Page>();
     const fail = (message: string) => { violation ??= message; };
-    if (this.opts.profile?.appId === 'meridian') this.readOnlyWebSocketViolation = fail;
     const closeUnexpectedPage = (opened: Page) => {
       if (opened === page || opened === this.page) return;
       fail('Read-only page opened a popup');
@@ -534,7 +531,6 @@ export class BrowserSurface implements Surface {
       if (!closeFailed) {
         this.context.off('page', closeUnexpectedPage);
         await this.context.unroute('**/*', routeReadOnlyRequest).catch(() => { closeFailed = true; });
-        if (!closeFailed && this.readOnlyWebSocketViolation === fail) this.readOnlyWebSocketViolation = undefined;
       }
       if (closeFailed) throw new Error('Read-only page cleanup failed');
       if (pendingError) throw pendingError;
