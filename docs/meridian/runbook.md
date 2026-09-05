@@ -1,10 +1,12 @@
 # MERIDIAN demonstration runbook
 
-Status: acceptance in progress. Three of seven live LLM-discovered capabilities are reviewed and replayed: sign-on, member inquiry, and member record. Four write capabilities and verified approved postings remain incomplete. [Live evidence](live-evidence.md) records the completed reads, the genuine dashboard read, the current caller chat/API read and the separate unknown posting; never retry that posting. The current runtime through PRs #37, #39 and #41 is integrated in `dev` at `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; those integrations did not create new live evidence. All new PRs target `dev`, while `master` remains production and untouched.
+Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The integrated runtime baseline is `dev` at `2c7f4ed4577fe01bbfb441525b7cccc14128c46b` through PR #47; reviewed head and merge CI passed. Passing source and offline gates did not create live acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
+
+The user has separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. No UI commit or PR is verified here. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries. Package versions and visual/interaction scope remain an integration gate.
 
 ## Setup
 
-Use Node 22 and the existing dependencies:
+Use Node 22 and the repository's existing dependencies:
 
 ```sh
 npm ci
@@ -13,117 +15,155 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Fill the local `.env` with the demo operator credentials from the assignment, one OpenAI/Azure provider, and distinct random caller/operator/HMAC keys. The HMAC key must remain stable for the lifetime of the journal. Generate each key with `openssl rand -hex 32` and put it only in `.env`. The file is ignored by Git. Azure requires endpoint, API key, and deployment; otherwise set `OPENAI_API_KEY`. Empty credentials fail startup or discovery.
+Fill `.env` with the supplied demo operator credentials, one configured OpenAI/Azure provider, distinct caller/operator tokens and a stable journal HMAC key. MERIDIAN resolves `operator`, `password` and `branch` from the configured TELLER or SUPERVISOR context; never pass them with `--param`. Generate secrets with `openssl rand -hex 32`, store them only in `.env`, and keep the HMAC key unchanged for the journal lifetime.
 
 ```sh
 cu() { node --env-file=.env --import tsx cli.ts "$@"; }
 ```
 
-The default MERIDIAN entry point is `https://web-sample.interface-hiring.com/signon`. `--profile meridian` chooses its route/form rules and policy. An explicit `POLICY_PATH` remains authoritative; selecting a profile never widens that policy. `CU_CDP_PORT` is refused for MERIDIAN. Browser windows open locally.
+`--profile meridian` selects the hosted entry point, route/form rules and policy. An explicit `POLICY_PATH` remains authoritative. `CU_CDP_PORT` is refused. Stop `cu serve` before CLI discovery/replay because the journal supports one process.
 
-## Record the seven capabilities
+## Select and preserve request facts before any write
 
-Stop the API before CLI discovery/replay: the filesystem journal permits one process. Each CLI invocation below needs a fresh `--idempotency-key` for a genuinely new request; reuse the same key after a transport retry. The key identifies discovery as well as replay. Never use a new key to retry an uncertain posting.
+Do not start a write discovery until the operator has refreshed current state and explicitly selected every fact below. The target can reset and a share can change status. Do not assume seed data, select the first ambiguous match, or reuse old consent.
 
-First select current synthetic data manually from the hosted app. Set the following shell variables to those explicit choices (do not assume seed balances or select the first ambiguous result): `MEMBER`, `LAST_NAME`, `SOURCE_SHARE`, `DESTINATION_SHARE`, `HOLD_SHARE`, `EMAIL`, `PHONE`, `ADDRESS`. The source and destination must be suitable current shares; the target has accumulated state and some shares are on hold. These values are chosen operation facts and require a separate human decision before any posting.
+```sh
+export MEMBER='<selected exact member number>'
+export SOURCE_SHARE='<selected eligible source share>'
+export DESTINATION_SHARE='<selected distinct eligible destination share>'
+export AMOUNT='<selected transfer amount>'
+export MEMO='<selected transfer memo>'
+export SHARE_TYPE='<selected new-share type>'
+export DEPOSIT='<selected opening deposit>'
+export EMAIL='<selected email>'
+export PHONE='<selected phone>'
+export ADDRESS='<selected address>'
+export HOLD_SHARE='<selected share for hold>'
+export HOLD_REASON='<selected hold reason>'
+export HOLD_NOTES='<selected hold notes>'
+```
 
-The commands below are recording instructions, not a claim that these recordings have run:
+Before transfer, run the accepted member-inquiry/member-record read path only when current-state refresh is operationally required. Resolve `MEMBER` to one exact result, open that exact member record, and verify `SOURCE_SHARE` and `DESTINATION_SHARE` belong to it, are distinct, eligible and currently funded. Enter **Funds Transfer from that member record**. The global transfer menu bypasses this prerequisite and the guard refuses it.
+
+Result extraction is still unresolved. The transaction result's physical row/header shape and confirmation relationship have not been observed well enough to promise a valid artifact. Do not guess selectors, promise a six-column row, or post solely to inspect the result. Stop before launch if a complete recording still cannot establish the declared outputs from observed HTML.
+
+Generate and privately save a distinct request identity before each new request. Keep the same value only for a transport retry of that exact invocation. Never generate a new key to retry an uncertain post.
+
+```sh
+SIGNON_DISCOVERY_KEY="$(openssl rand -hex 32)"
+INQUIRY_DISCOVERY_KEY="$(openssl rand -hex 32)"
+MEMBER_DISCOVERY_KEY="$(openssl rand -hex 32)"
+TRANSFER_DISCOVERY_KEY="$(openssl rand -hex 32)"
+OPEN_SHARE_DISCOVERY_KEY="$(openssl rand -hex 32)"
+UPDATE_DISCOVERY_KEY="$(openssl rand -hex 32)"
+HOLD_DISCOVERY_KEY="$(openssl rand -hex 32)"
+```
+
+Record these values in the private operator worksheet before starting their commands. The accepted read discoveries must not be rerun merely to refresh this document. The following are exact CLI templates for a separately authorized recording session.
+
+## Discovery commands
+
+Every goal names the server references explicitly. The runtime records fill `operator`, fill `password` and select `branch` before Sign On even when the configured branch already appears selected.
 
 ```sh
 cu discover --profile meridian --name meridian-sign-on \
-  --goal 'Sign on and extract operator, branch and role as separate outputs; assert the authenticated menu.' \
-  --idempotency-key record-signon-1
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Assert the authenticated menu and extract operator, branch and role as separate outputs.' \
+  --idempotency-key "$SIGNON_DISCOVERY_KEY"
 
 cu discover --profile meridian --name meridian-member-inquiry \
-  --goal 'Sign on, search using searchMode/searchValue, and extract the results table as members. Do not select a match. Use named member-number and name columns and exclude the td header row.' \
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Search using searchMode and searchValue. Extract members with named member-number and name columns, excluding the legacy td header row. Do not select an ambiguous match.' \
   --param searchMode=number --param searchValue="$MEMBER" --sensitive searchValue \
-  --idempotency-key record-inquiry-1
+  --idempotency-key "$INQUIRY_DISCOVERY_KEY"
 
 cu discover --profile meridian --name meridian-member-record \
-  --goal 'Sign on, open the exact member record, assert it, and extract shares as a table with shareId, type, balance (money) and status. Exclude the td header row.' \
-  --param member="$MEMBER" --sensitive member --idempotency-key record-member-1
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result, open that exact member record, assert the member identity, and extract shares with shareId, type, balance and status, excluding the observed header row.' \
+  --param member="$MEMBER" --sensitive member \
+  --idempotency-key "$MEMBER_DISCOVERY_KEY"
 
 cu discover --profile meridian --name meridian-funds-transfer \
-  --goal 'Sign on and transfer amount from sourceShare to destinationShare for member with memo. Select share values, inspect review, request the posting click, then assert completion and extract confirmation and a transaction table verifying the posted details.' \
-  --param member="$MEMBER" --param sourceShare="$SOURCE_SHARE" --param destinationShare="$DESTINATION_SHARE" \
-  --param amount=0.01 --param memo=Demo --sensitive member --sensitive sourceShare --sensitive destinationShare \
-  --sensitive amount --sensitive memo --idempotency-key record-transfer-1
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result, open that exact member record, verify its current eligible shares, and enter Funds Transfer from that record. Use only sourceShare, destinationShare, amount and memo selected by the operator. Inspect the uniquely associated review facts and request the native posting control. After the runner posts, assert completion and extract only result fields whose selectors, header handling and confirmation relationship are observed in this recording; stop if they cannot be established.' \
+  --param member="$MEMBER" --param sourceShare="$SOURCE_SHARE" \
+  --param destinationShare="$DESTINATION_SHARE" --param amount="$AMOUNT" --param memo="$MEMO" \
+  --sensitive member --sensitive sourceShare --sensitive destinationShare --sensitive amount --sensitive memo \
+  --idempotency-key "$TRANSFER_DISCOVERY_KEY"
 
 cu discover --profile meridian --name meridian-open-share \
-  --goal 'Sign on, open shareType for member with deposit, review, request the posting click, assert completion and extract the new shareId.' \
-  --param member="$MEMBER" --param shareType=S0001 --param deposit=5.00 \
-  --sensitive member --sensitive deposit --idempotency-key record-share-1
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Resolve member to one exact record, use only shareType and deposit selected by the operator, inspect review, request the native posting control, assert the observed completion, and extract the observed new share identifier. Stop if completion or its selector is unresolved.' \
+  --param member="$MEMBER" --param shareType="$SHARE_TYPE" --param deposit="$DEPOSIT" \
+  --sensitive member --sensitive deposit \
+  --idempotency-key "$OPEN_SHARE_DISCOVERY_KEY"
 
 cu discover --profile meridian --name meridian-update-member \
-  --goal 'Sign on, fill email/phone/address for member, request Save Changes approval, assert the saved result and extract saved containing the verified updated information.' \
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Resolve member to one exact record, use only email, phone and address selected by the operator, request approval for the native Save Changes action, then verify the saved values from observed current UI.' \
   --param member="$MEMBER" --param email="$EMAIL" --param phone="$PHONE" --param address="$ADDRESS" \
-  --sensitive member --sensitive email --sensitive phone --sensitive address --idempotency-key record-update-1
+  --sensitive member --sensitive email --sensitive phone --sensitive address \
+  --idempotency-key "$UPDATE_DISCOVERY_KEY"
 
 cu discover --profile meridian --operator SUPERVISOR --name meridian-place-hold \
-  --goal 'Sign on as the configured supervisor, place a hold on share for member with reason/notes, review, request Apply Hold approval, assert completion and extract heldShare.' \
-  --param member="$MEMBER" --param share="$HOLD_SHARE" --param reason=FRAUD --param notes=Demo \
-  --sensitive member --sensitive share --sensitive notes --idempotency-key record-hold-1
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Resolve member to one exact record, use only share, reason and notes selected by the operator, inspect review, request the native Apply Hold control, assert observed completion, and extract the observed held share. Stop if completion or its selector is unresolved.' \
+  --param member="$MEMBER" --param share="$HOLD_SHARE" --param reason="$HOLD_REASON" --param notes="$HOLD_NOTES" \
+  --sensitive member --sensitive share --sensitive notes \
+  --idempotency-key "$HOLD_DISCOVERY_KEY"
 ```
 
-Discovery requires a real interactive terminal for each posting approval. Approval permits automation to execute and record the click. An actual human repair makes the discovery incomplete and requires a fresh complete recording. Runtime passwords resolve from environment configuration; do not pass operator, password, or branch with `--param`.
+## Approval and native posting
 
-Inspect every draft artifact. Confirm login references, selectors, table row/column selectors, post-action assertions, outputs, sensitive metadata, and effective mutation risk. MERIDIAN's data tables use `td` headers; use an explicit data-row selector such as `:scope > tbody > tr:nth-child(n+2)` where the live table warrants it. Do not manufacture provenance or replace missing live behavior with a fixture.
+Each write form's hidden native token stays in browser memory. The runtime rechecks origin, frame, operator role/session, selected facts, token and outgoing URL-encoded body immediately before dispatch. Approval applies only to the current facts and expires after five minutes.
 
-Promotion is a review operation, distinct from approving a transaction:
+At a `risk_approval` prompt, the human reviews the current facts in **Terminal**, types `approve`, and presses Return. The runner then performs the native post. Do not click `Post Transfer` or another final submit in the browser. Direct browser submission is unarmed, is blocked by the route guard and may display `ERR_FAILED`. Type `abort` + Return to refuse. A timeout aborts the run. Human repair is separate from a complete discovery and does not become reusable provenance.
+
+Inspect a successful draft before promotion: login references, selectors, row/header handling, assertions, outputs, sensitive metadata, effective risk, native post ordering and result binding must all be supported by the recording. Promotion is artifact review, not transaction approval:
 
 ```sh
-cu replay --artifact artifacts/meridian-member-record.v1.0.0.json --approve
+cu replay --artifact artifacts/meridian-funds-transfer.v1.0.0.json --approve
 ```
 
-Promote each reviewed artifact separately. Keep one pinned version per ID in `ARTIFACT_DIR`; the server refuses duplicate versions. Loading a MERIDIAN artifact validates the seven named contracts, login references and required recorded outputs. Write artifacts also require a posting step followed by assertions and extraction.
+Promote each reviewed artifact separately. The server refuses duplicate versions, unapproved artifacts and incomplete MERIDIAN contracts.
 
-## Replay and launch the dashboard
+## Replay and dashboard
+
+Generate and privately save a new replay key for each genuinely new replay. Serialize selected values with Node so punctuation is preserved:
 
 ```sh
-cu replay --profile meridian --artifact artifacts/meridian-member-record.v1.0.0.json \
-  --params "{\"member\":\"${MEMBER}\"}" --idempotency-key lookup-1
+TRANSFER_REPLAY_KEY="$(openssl rand -hex 32)"
+TRANSFER_PARAMS="$(node -e 'process.stdout.write(JSON.stringify({member:process.env.MEMBER,sourceShare:process.env.SOURCE_SHARE,destinationShare:process.env.DESTINATION_SHARE,amount:process.env.AMOUNT,memo:process.env.MEMO}))')"
+
+cu replay --profile meridian \
+  --artifact artifacts/meridian-funds-transfer.v1.0.0.json \
+  --params "$TRANSFER_PARAMS" --attended \
+  --idempotency-key "$TRANSFER_REPLAY_KEY"
+```
+
+`--attended` is required for a replay that can post. Repeat the same command/key only after a transport failure where the existing run can safely be returned; an unknown outcome is terminal and is never retried.
+
+```sh
 cu serve --profile meridian
 ```
 
-Open `http://127.0.0.1:4180` exactly (the Host check rejects other aliases). Enter the caller or operator API token; it stays in page memory and a reload signs out. Choose a capability and enter its public inputs, or use chat. Chat always uses caller authority, including when an operator is logged into the page.
+Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The runtime verifies the operator role on the signed-on menu and binds it to the current target session identity. Posting rechecks that identity, profile detectors, review facts, and the current token. The outgoing native URL-encoded POST must exactly match the inspected form data; JavaScript changes during submission are refused. Unsupported form encodings or field types fail closed. Token values and session identifiers remain private in memory.
+The isolated assistant-ui/Vercel AI SDK work may later map stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Until its branch, package versions, tests and integration are reviewed, use the current dashboard/API behavior described here and do not claim a new chat implementation.
 
-The dashboard displays progress, recovery, results, safe evidence, pending interventions and elapsed time when the API supplies a finite nonnegative duration. Durations under one second use milliseconds; longer durations use seconds, and historical runs without timing keep the timing label absent. The operator sees the live transaction facts and selects Approve submission or Abort. Repair interventions allow Retry after repair or Abort; there is no unchecked Skip. The browser remains the same window during a handoff. Closing it cancels the intervention. Runs have a ten-minute deadline and approvals a five-minute maximum. The current caller chat/API read and the separate dashboard chat/read both succeeded as reads; neither was a posting.
+## Faults, restart and result classes
 
-## API
-
-All API and evidence routes require a bearer header; only the page and static assets are public. Configure `CALLER_CAPABILITIES` as a comma-separated allowlist. Only operator credentials can select `SUPERVISOR` or decide an intervention.
-
-| Method and route | Contract |
-| --- | --- |
-| GET `/capabilities` | Principal and authorized pinned catalog; OpenAI and MCP descriptors; server parameters omitted |
-| POST `/capabilities/:id/invoke` | `{args: {...}, operator?: "TELLER" or "SUPERVISOR"}` plus `Idempotency-Key`; returns `202 {runId}` |
-| GET `/runs`, `/runs/:id` | Authorized history/detail; results and evidence filenames |
-| POST `/runs/:id/decision` | `{approvalId, decision: "approve" or "retry" or "abort"}`; only the matching pending decision is accepted |
-| GET `/runs/:id/evidence/:file` | Authenticated, validated evidence file |
-| POST `/chat` | `{messages: [{role: "user" or "assistant", content}]}` plus a request key; one bounded interpretation call and the same invocation service |
-
-Same principal/key and normalized request return the original run, including after restart. A changed payload or context returns 409. One active run causes 429 for a different request. Caller access to an operator run or approval returns 403. Duplicate/stale decisions return 409. Keep secrets in headers, never query strings.
-
-## Faults, restart, and uncertainty
-
-Test-only CLI fault injection applies once to the actual operation request, not sign-on, and never changes global settings:
+Use `--inject <kind> --fault-route <observed operation-entry GET path>` only after observing that exact GET route. The hook never applies to `/review`, `/post` or a POST. Do not guess a route or run a write-fault loop. Native POST-only rejection must be classified from its actual phase.
 
 ```sh
-cu replay --profile meridian --artifact artifacts/meridian-funds-transfer.v1.0.0.json \
-  --params "{\"member\":\"${MEMBER}\",\"sourceShare\":\"${SOURCE_SHARE}\",\"destinationShare\":\"${DESTINATION_SHARE}\",\"amount\":\"0.01\",\"memo\":\"Demo\"}" \
-  --inject maintenance --fault-route "/members/${MEMBER}/transfer" \
-  --attended --idempotency-key maintenance-test-1
+FAULT_REPLAY_KEY="$(openssl rand -hex 32)"
+cu replay --profile meridian \
+  --artifact artifacts/meridian-funds-transfer.v1.0.0.json \
+  --params "$TRANSFER_PARAMS" --inject maintenance \
+  --fault-route '<observed operation-entry GET path>' --attended \
+  --idempotency-key "$FAULT_REPLAY_KEY"
 ```
 
-Run that command once per scenario by changing `--inject` and the request key to fresh values for `validation`, `notfound`, `permission`, `timeout`, and `server`; inspect each target response and run classification before starting another. These flags are absent from chat and ordinary API invocation schemas. Maintenance's observed Continue link returns to the menu; clearing the notice alone does not prove the interrupted capability can finish. It may require bounded human repair. Session expiry and permission errors stop; they do not upgrade roles or log in again. Never use a new key to retry an uncertain or `POST_OUTCOME_UNKNOWN` operation.
+- **Business outcome:** an observed pre-intent business rejection, including validated `INSUFFICIENT_FUNDS`, terminates without approval or dispatch.
+- **Recoverable:** only a known pre-intent condition such as maintenance may receive one bounded same-browser repair; revalidate the checkpoint before approval.
+- **Hard error:** permission, expiry, policy/validation or application failures stop. A failed or unverified completion after durable intent is `POST_OUTCOME_UNKNOWN`.
 
-The journal lives at `EVIDENCE_DIR/journal` with signed records, exclusive creation, atomic replacement and file/directory synchronization. On restart, incomplete undispatched runs become interrupted; dispatching runs become `POST_OUTCOME_UNKNOWN`. No browser action resumes. The same key still identifies that run. A separate read-only inquiry can help investigate; it does not rewrite the original outcome. This is request deduplication, not exactly-once execution at a UI-only target.
+The signed journal lives under `EVIDENCE_DIR/journal`. On restart, incomplete undispatched runs become interrupted and dispatching runs become `POST_OUTCOME_UNKNOWN`; no browser action resumes. Do not delete records, replace the HMAC key or clear a lock owned by a live process.
 
-Do not delete records or replace the HMAC key during the demo. A wrong key fails startup. A dead process's main lock is recovered under an exclusive startup lock. If a process dies during the short startup-lock section, verify it is stopped before manually removing `startup.lock`. Never clear a lock held by a live process.
-
-## Verification and remaining live gates
+## Verification and demonstration labels
 
 ```sh
 npm run ci
@@ -131,16 +171,6 @@ npm run validate
 git diff --check
 ```
 
-`test/meridian.test.ts` contains small offline fixtures for request identity, approvals, live-control checks, private credential resolution, structured extraction, masking and HTTP auth. Existing mock fixtures remain under `test/fixtures/` and can be exercised with `npm test`. They are not a second MERIDIAN app or proof of live coverage.
+Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current source gates through PR #46, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); they do not close the four writes.
 
-The published Task9a/9b checkpoint at `ca5d99a21e7274445eb119a71bc8c61f548fa9a7` passed 199 local tests across 15 files, typecheck, validation and diff-check, plus hosted workflow `33854138902` with producer `100963404693`. Task9d's focused dashboard browser check was red on the missing timing label, then green after the shared renderer repair; it covers known elapsed time, true zero and missing historical timing. No full suite rerun is claimed for the new head; its required typecheck, diff-check and controller-owned pre-push/hosted checks remain pending. The earlier full 198-test run belongs to `4ec9b933c9e39fcf471c52f7f5b2bcf7479f1457` and is historical.
-
-Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors (including last-name ambiguity and teller/supervisor holds), check token rejection, complete a separately approved chat/API/dashboard write rehearsal, exercise same-browser repair and approval/handoff keyboard controls, and inspect hosted CI on the final SHA. The recorded dashboard read/reload/Refresh/Send/evidence/role checks do not close these remaining gates, and none may be inferred from the offline suite alone.
-
-## Explicit fallback demo modes
-
-Label each demonstration as **live**, **offline fixture**, or **recorded evidence**. In **live** mode, use hosted MERIDIAN, the real model, current facts and separate human approval for each post. In **offline fixture** mode, reuse the verified `test/e2e.test.ts` fixture and existing sanitized saved evidence; add no mock app or service. It exercises the local core flow only and does not count toward live coverage. In **recorded evidence** mode, show the sanitized files under `evidence/` and [live evidence](live-evidence.md) without claiming a new run.
-
-If the live model alone is unavailable, use the existing API/operator invocation path to replay an already approved artifact with a fresh idempotency key for each genuinely new replay while labeling chat/discovery unavailable. Reuse a key only for a transport retry of that exact invocation. If the hosted target is unavailable, show recorded evidence and run the offline fixture only if a browser is available; if the browser is also unavailable, use evidence only and do not claim the fixture ran. Never auto-switch during a live write, retry an unknown posting, or change its preserved run, request key, or terminal outcome. Independent build and documentation work may continue while live acceptance is blocked.
-
-Before delivery, obtain real LLM recording/replay evidence for all seven functions, approve and verify each actual posting, exercise natural and injected errors, check token rejection, rehearse the accepted API/operator controls, and inspect hosted CI on the final SHA. Assistant-ui remains the last phase after capability/runtime/API acceptance and user direction. The offline fixture and recorded-evidence contingencies do not satisfy these gates.
+Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise `3/7`. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.

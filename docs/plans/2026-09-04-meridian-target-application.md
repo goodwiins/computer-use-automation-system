@@ -4,9 +4,9 @@
 
 **Goal:** Close the assignment's target-application gaps using the existing runtime and PRs, then finish the four missing live write capabilities.
 
-**Architecture:** Retain the hosted MERIDIAN profile, native browser forms, guarded runtime, deterministic replay and authenticated journal. Add one narrowly typed insufficient-funds error and propagate it through the existing result paths; do not build another error framework. The existing execution plan continues to own recording, promotion and live acceptance.
+**Architecture:** Retain the hosted MERIDIAN profile, native browser forms, guarded runtime, deterministic replay and authenticated journal. The narrowly typed insufficient-funds result is delivered through PR #43. The existing execution plan continues to own recording, promotion and live acceptance.
 
-**Tech Stack:** Existing Node 22, TypeScript, Playwright, Express, Zod and Vitest. No new runtime dependencies. Assistant-ui remains the final chat UI phase.
+**Tech Stack:** Existing Node 22, TypeScript, Playwright, Express, Zod and Vitest. The user separately selected Vercel AI SDK for the conversational backend and [assistant-ui](https://www.assistant-ui.com/) for the final chat component map; an isolated sibling task owns that work.
 
 **Spec:** User-supplied *Adaptation Project — MERIDIAN CORE (Demo Day, Fri Aug 28)*, §2 “The target application,” §2.1 capabilities and §2.2 exceptional states. Read alongside the [replacement design](2026-09-03-meridian-adaptation.md) and [execution plan](2026-09-04-meridian-superpowers.md). The PDF is the assignment source; implementation choices in these plans are not additional assignment requirements. This supplement replaces only the generic insufficient-funds outcome expectation and adds a §2 coverage map; it does not restart completed tasks.
 
@@ -21,22 +21,28 @@
 - Refresh member/share state before each operation: the target is in-memory and can reset on redeploy. Seed IDs, balances and the held share are not permanent fixtures.
 - Every major implementation task gets its own PR against `dev`; `master` is production. Use isolated `codex/` branches and preserve the dirty acceptance worktree and its unpromoted draft.
 - Do not merge, record or post as part of writing this plan. Future live posts retain individual human approval on current facts.
-- Keep all new chat/UI work until the final assistant-ui phase and ask the user for UI direction then. No dashboard rewrite is implied.
+- Keep the isolated Vercel AI SDK/assistant-ui work independent from capability acceptance. Final integration must preserve Express, the shared `InvocationService`, server approval and the existing dashboard/auth/operator controls. Package versions and visual/interaction scope remain a gate; no dashboard rewrite is implied.
 - Document mocked boundaries when access fails, but label offline fixtures and recorded evidence separately from live completion. A contingency demonstration does not increase live coverage.
 
-## Verified implementation and PR ledger — September 4, 2026
+## Verified implementation and PR ledger — September 5, 2026
 
-Current runtime baseline: `aa90387244be07b9955b8b5b83eacf4b9f3058a1`. Passing runtime and integration checks do not establish live acceptance.
+Current runtime baseline: `2c7f4ed4577fe01bbfb441525b7cccc14128c46b`. Passing runtime and integration checks do not establish live acceptance.
 
 | PR | Reviewed/final source | Integrated result | Reuse boundary |
 | --- | --- | --- | --- |
 | [#34](https://github.com/goodwiins/computer-use-automation-system/pull/34) / [#35](https://github.com/goodwiins/computer-use-automation-system/pull/35) | Historical reviewed heads `def4b38a2f906f725813f5c89563f3fe82e31140` / `338734d16e7fc0f30f239886660e0f1af30a6c` | Runtime and safety baseline in `dev` | Reuse; retain regression gates |
 | [#37](https://github.com/goodwiins/computer-use-automation-system/pull/37) | `745ef645ae48730e769e6fc639ec4f71739d23e8` | Merged as `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`; merge producer passed | Reuse read acceptance, catalog tests and elapsed rendering |
-| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | Repair `05f0647`; final reviewed head `64c9b11` | Merged as `fcd87f7fb8d573c8d44d43436310cce07baae06a`; head/merge producers and 257 local tests passed | Reuse transfer fact, approval and completion binding; **does not implement Task A** |
+| [#39](https://github.com/goodwiins/computer-use-automation-system/pull/39) | Repair `05f0647`; final reviewed head `64c9b11` | Merged as `fcd87f7fb8d573c8d44d43436310cce07baae06a`; head/merge producers and 257 local tests passed | Reuse transfer fact, approval and completion binding |
 | [#41](https://github.com/goodwiins/computer-use-automation-system/pull/41) | Repair `3aacfac`; final reviewed head `ec5f6a1ea421c7d4b5b345c4d83614eb513d3ec9` | Merged as `aa90387244be07b9955b8b5b83eacf4b9f3058a1`; head/merge producers and 269 local tests passed | Reuse terminal setup, cleanup and cancellation fixes |
-| [#40](https://github.com/goodwiins/computer-use-automation-system/pull/40) | Remote head `f635798435dca7fb7eb40c616df74f26e4ccb69f`; newer local documentation candidate pending | Unmerged; final candidate review, hosted CI and merge remain open | Preserve the latest plan; do not treat it as runtime or live evidence |
+| [#43](https://github.com/goodwiins/computer-use-automation-system/pull/43) | Source `6ab82fe`; reviewed head `834f060` | Merged as `4f84b9f`; 131 focused and 274 full offline tests plus merge CI passed | Typed pre-intent `INSUFFICIENT_FUNDS`; no live underfunded acceptance |
+| [#44](https://github.com/goodwiins/computer-use-automation-system/pull/44) | Reviewed head `0001b3d` | Merged as `0968556`; 275 tests/17 files and head/merge CI passed | Actual-`tsx` CLI browser inspection |
+| [#45](https://github.com/goodwiins/computer-use-automation-system/pull/45) | Reviewed head `4789be8` | Merged as `5c18923`; 275 tests/17 files and head/merge CI passed | Sibling transfer review/form association and submit overrides |
+| [#46](https://github.com/goodwiins/computer-use-automation-system/pull/46) | Reviewed head `c4279ac` | Merged as `8e625cc`; 276 tests/17 files and head/merge CI passed | Terminal-only CLI approval guidance |
+| [#47](https://github.com/goodwiins/computer-use-automation-system/pull/47) | Reviewed head `66a9fb0` | Merged as `2c7f4ed`; 278 tests/17 files, final review and head/merge CI passed | Trusted event/result metadata; historical evidence unchanged |
 
 No listed PR contains an approved transfer, open-share, update-member, or place-hold artifact. The runtime fixes do not promote the transfer draft. Current live acceptance remains `3/7`, and the producing SHAs in the evidence ledger remain source-specific.
+
+The separate discovery-input audit remains open from this baseline and confirmed canonical discovery can reach runtime/model work with missing public inputs and can compile literal values for non-transfer capabilities; the transfer post backstop remains effective. That shared preflight/promotion repair is queued. PR #47 and the open audit do not close a live capability.
 
 ### What §2 already has, and what remains
 
@@ -45,7 +51,7 @@ No listed PR contains an approved transfer, open-share, update-member, or place-
 | Hosted sign-on; operator/password/branch; idle timeout | `config/app-profiles/meridian.json`, `config/policy-meridian.json`, `src/runtime/run.ts`; approved sign-on artifact | Keep explicit profile commands; natural bad-login and idle-expiry acceptance in Task B |
 | Member inquiry by number/name and unambiguous selection | Approved inquiry artifact; #37 read acceptance | Retain number/name/ambiguous/not-found evidence; refresh after target reset |
 | Member record with balances/share status | Approved record artifact; #37 read acceptance | Retain read baseline; never infer current funds from old evidence |
-| Transfer: input → review → approved post | #39 comparators and guard; draft discovery exists only in the preserved acceptance worktree | Task A outcome fix, then execution Tasks 5c–5d: genuine recording, reviewed promotion, separately approved replay |
+| Transfer: input → review → approved post | #39 comparators and guard; #43–#46 outcome/loader/review/approval repairs; draft discovery exists only in the preserved acceptance worktree | Execution Tasks 5c–5d: observed result extraction, genuine recording, reviewed promotion, separately approved replay |
 | Open share: type/deposit → review → approved post | Profile route/form and parameter/output declarations exist | Execution Task 6: observe result, bind requested facts, record and accept |
 | Contact update: email/phone/address → save | Profile and declarations exist | Execution Task 7: direct-save approval, bound read-back, record and accept |
 | Supervisor hold with reason/notes; teller denial | Profile role guard and declarations exist | Execution Task 8: supervisor acceptance plus teller denial; no role escalation |
@@ -56,11 +62,13 @@ The six-column transfer row, single-process runtime and separate PR boundaries a
 
 ## Integration prerequisite
 
-- [x] PRs #37, #39 and #41 were reviewed and integrated in order, preserving the newest #40 planning content. Their reviewed heads, repair commits, merge commits and passing producer checks are recorded in the integration ledger.
-- [x] Confirmed the resulting `dev` at `aa90387244be07b9955b8b5b83eacf4b9f3058a1` includes #37 read acceptance, #39 transfer protections and #41 terminal-lifecycle repairs; the recorded PR-head and merge producer checks passed. Final PR #40 documentation gates remain separate.
-- [ ] After PR #40 is merged and its final `dev` producer passes, create an isolated `codex/meridian-insufficient-funds-outcome` branch from that verified baseline using the worktree skill. Keep Task A out of the documentation integration branch.
+- [x] PRs #37, #39, #41 and #43–#46 were reviewed and integrated in dependency order. Their source and producer gates are recorded above.
+- [x] Confirmed `dev` at `2c7f4ed4577fe01bbfb441525b7cccc14128c46b` includes read acceptance, transfer protections, terminal lifecycle, insufficient-funds classification, CLI loader inspection, sibling review mapping, Terminal approval guidance and trusted evidence metadata.
+- [x] Task A was implemented on its isolated branch and merged through PR #43. Its offline proof does not close live underfunded acceptance.
 
 ## Task A: Return insufficient funds as a terminal business result
+
+**Delivered checkpoint:** Source `6ab82fe0cde9cc9dae64e5c69ca019753c42ad89` passed 131 focused and 274 full offline tests and merged through PR #43 as `4f84b9fbcb9b5a1fc09cd05611277b3357561728`. The historical implementation steps below are retained for traceability; their unchecked boxes are not current work and do not imply missing delivery. Live underfunded acceptance remains open.
 
 **Files:**
 - Modify `src/replay/outcomes.ts`: one fixed error type shared by the guard's validator and its callers.
@@ -311,12 +319,12 @@ Keep catch/finally cleanup, durable intent precedence and success-only artifact 
 | Missing/stale token and unexpected dialog | Reuse existing token/dialog regressions; capture hosted evidence only when encountered. Client refusal is distinct from a server rejection after intent; neither warrants an automatic repeat. |
 
 - [ ] Record each run's exact route, injection or natural trigger, discovery versus replay phase, terminal result, journal state, intent count, independently observed POST count, and verified business state. The global settings/random fault mode is not needed for deterministic acceptance; restore any deliberately changed target setting and never inject an unapproved POST.
-- [ ] Keep the PDF's business/recoverable/hard-failure distinction in the report. Record the remaining 1–2 page write-up, exact commands and labeled offline/recorded fallback through Task 9. Ask for assistant-ui direction only after capability/runtime/API acceptance; the final chat rehearsal may reuse accepted request identity and evidence.
+- [x] Keep the PDF's business/recoverable/hard-failure distinction in the current 1–2 page checkpoint report and record exact commands plus labeled offline/recorded fallback through Task 9. Final integration of the independently authorized Vercel AI SDK/assistant-ui task may reuse accepted request identity and evidence after capability/runtime/API acceptance; it cannot create posting authority.
 
 ## Self-review and execution boundary
 
 - All seven §2.1 functions and the six §2.2 injected faults have an owner above; natural bad login, funds/contact rejection, teller denial and idle expiry are explicit.
-- Existing #34/#35/#37/#39 implementation is reused. The newly proposed source change is Task A; four write artifact/acceptance tasks remain open, so coverage is still 3/7.
+- Existing #34/#35/#37/#39 implementation is reused. Task A is delivered through #43, and CLI/review/approval repairs are delivered through #44–#46. Four write artifact/acceptance tasks remain open, so coverage is still 3/7.
 - `InsufficientFundsError` is produced only after valid request/member/share/status/money checks. Both callers check dispatch uncertainty first. CLI, journal and result-file propagation are included, not merely the validator unit test.
 - All snippets use existing interfaces or the fields introduced here. Hosted selectors and results remain observation-gated in their original tasks.
-- This plan is documentation only. It does not implement Task A, merge a PR, promote an artifact or perform a live operation.
+- This plan records the delivered Task A source and remaining execution. This documentation refresh does not promote an artifact, perform a live operation or close any unchecked live gate.
