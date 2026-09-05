@@ -409,8 +409,15 @@ async function approvalCommand(command: 'approval' | 'approve' | 'refuse', argv:
     console.log(`capability : ${terminalText(pending.capability)}`);
     console.log(`goal       : ${terminalText(pending.goal)}`);
     console.log(`reason     : ${terminalText(pending.reason)}`);
+    console.log(`artifact   : ${terminalText(pending.action ? `${pending.action.artifact}@${pending.action.version}` : '(unavailable)')}`);
+    console.log(`step       : ${terminalText(pending.action?.stepId ?? '(unavailable)')}`);
     console.log(`destination: ${terminalText(pending.action?.destination ?? pending.url)}`);
     console.log(`method     : ${terminalText(pending.action?.method ?? '(unavailable)')}`);
+    console.log(`operator   : ${terminalText(pending.action?.operator ?? '(unavailable)')}`);
+    console.log(`branch     : ${terminalText(pending.action?.branch ?? '(unavailable)')}`);
+    console.log(`role       : ${terminalText(pending.action?.role ?? '(unavailable)')}`);
+    console.log(`control    : ${terminalText(pending.action?.control ?? '(unavailable)')}`);
+    console.log(`token      : ${pending.action ? pending.action.tokenPresent ? 'present' : 'missing' : '(unavailable)'}`);
     console.log(`facts      : ${JSON.stringify(pending.action?.facts ?? {})}`);
     console.log(`expires    : ${new Date(pending.expiresAt).toISOString()}`);
     console.log(`approval   : ${pending.approvalId}`);

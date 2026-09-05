@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
@@ -9,6 +9,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 8 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024;
 const SOCKET_TIMEOUT_MS = 3_000;
+const MAX_CONNECTIONS = 16;
 const MAX_SOCKET_PATH_BYTES = 103;
 
 type ApprovalRequest =
@@ -75,19 +76,23 @@ export function describePendingApproval(pending: PendingIntervention | undefined
   if (!pending || pending.request.kind !== 'risk_approval') throw new RequestError(409, 'No pending risk approval');
   const action = pending.action && {
     ...pending.action,
+    destination: safeUrl(pending.action.destination),
     facts: Object.fromEntries(Object.entries(pending.action.facts).filter(([key]) => !/token|password|secret|cookie|authorization|body/i.test(key))),
   };
-  let url = '(unavailable)';
-  try { const parsed = new URL(pending.request.url); url = `${parsed.origin}${parsed.pathname}`; } catch { /* omit malformed URLs */ }
   return {
     approvalId: pending.id,
     expiresAt: pending.expiresAt,
     capability: pending.request.capability,
     goal: pending.request.goal,
     reason: pending.request.reason,
-    url,
+    url: safeUrl(pending.request.url),
     ...(action ? { action } : {}),
   };
+}
+
+function safeUrl(value: string): string {
+  try { const parsed = new URL(value); return `${parsed.origin}${parsed.pathname}`; }
+  catch { return '(unavailable)'; }
 }
 
 function parseRequest(raw: Buffer, runId: string): ApprovalRequest {
@@ -126,20 +131,25 @@ export async function startApprovalServer(runIdValue: string, approval: Approval
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 
   const sockets = new Map<Socket, 'reading' | 'writing'>();
-  let owned: { dev: number; ino: number } | undefined;
   const server = createServer(socket => {
     sockets.set(socket, 'reading');
     const chunks: Buffer[] = [];
     let length = 0;
     let handled = false;
+    const lifetime = setTimeout(() => socket.destroy(), SOCKET_TIMEOUT_MS);
+    const send = (response: ApprovalResponse) => {
+      clearTimeout(lifetime);
+      socket.setTimeout(0);
+      sockets.set(socket, 'writing');
+      socket.end(responseBody(response));
+    };
     socket.setTimeout(SOCKET_TIMEOUT_MS, () => socket.destroy());
     socket.on('data', chunk => {
       if (handled) return;
       length += chunk.length;
       if (length > MAX_REQUEST_BYTES) {
         handled = true;
-        sockets.set(socket, 'writing');
-        socket.end(responseBody({ ok: false, error: 'Approval request is too large' }));
+        send({ ok: false, error: 'Approval request is too large' });
       } else chunks.push(chunk);
     });
     socket.on('end', () => {
@@ -154,12 +164,12 @@ export async function startApprovalServer(runIdValue: string, approval: Approval
           response = { ok: true, decision: request.decision };
         }
       } catch (error) { response = { ok: false, error: safeError(error) }; }
-      sockets.set(socket, 'writing');
-      socket.end(responseBody(response));
+      send(response);
     });
-    socket.on('close', () => sockets.delete(socket));
+    socket.on('close', () => { clearTimeout(lifetime); sockets.delete(socket); });
     socket.on('error', () => {});
   });
+  server.maxConnections = MAX_CONNECTIONS;
 
   try {
     await new Promise<void>((resolveListen, reject) => {
@@ -168,20 +178,18 @@ export async function startApprovalServer(runIdValue: string, approval: Approval
     });
     const created = lstatSync(endpoint);
     if (!created.isSocket() || typeof process.getuid !== 'function' || created.uid !== process.getuid()) throw new Error('invalid socket');
-    owned = { dev: created.dev, ino: created.ino };
     chmodSync(endpoint, 0o600);
     validateSocket(endpoint);
   } catch (error) {
-    await closeServer(server, sockets, endpoint, owned);
+    await closeServer(server, sockets);
     if (error instanceof RequestError) throw error;
     throw new RequestError(503, 'Cannot start the local approval endpoint');
   }
 
-  return { endpoint, close: () => closeServer(server, sockets, endpoint, owned) };
+  return { endpoint, close: () => closeServer(server, sockets) };
 }
 
-async function closeServer(server: Server, sockets: Map<Socket, 'reading' | 'writing'>, endpoint: string,
-  owned: { dev: number; ino: number } | undefined): Promise<void> {
+async function closeServer(server: Server, sockets: Map<Socket, 'reading' | 'writing'>): Promise<void> {
   for (const [socket, state] of sockets) if (state === 'reading') socket.destroy();
   if (server.listening) {
     await new Promise<void>(resolveClose => {
@@ -189,11 +197,6 @@ async function closeServer(server: Server, sockets: Map<Socket, 'reading' | 'wri
       server.close(() => { clearTimeout(force); resolveClose(); });
     });
   }
-  if (!owned) return;
-  try {
-    const current = lstatSync(endpoint);
-    if (current.isSocket() && current.dev === owned.dev && current.ino === owned.ino) unlinkSync(endpoint);
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 }
 
 export async function requestApproval(runIdValue: string, request: { action: 'status' } | {

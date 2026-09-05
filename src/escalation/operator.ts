@@ -124,7 +124,18 @@ export class OperatorConsole {
     console.log(`│ goal       : ${terminalText(details.goal)}`);
     console.log(`│ reason     : ${terminalText(details.reason)}`);
     console.log(`│ url        : ${terminalText(details.url)}`);
-    if (details.action) console.log(`│ facts      : ${JSON.stringify(details.action.facts)}`);
+    if (details.action) {
+      console.log(`│ artifact   : ${terminalText(`${details.action.artifact}@${details.action.version}`)}`);
+      console.log(`│ step       : ${terminalText(details.action.stepId)}`);
+      console.log(`│ destination: ${terminalText(details.action.destination)}`);
+      console.log(`│ method     : ${terminalText(details.action.method)}`);
+      console.log(`│ operator   : ${terminalText(details.action.operator)}`);
+      console.log(`│ branch     : ${terminalText(details.action.branch)}`);
+      console.log(`│ role       : ${terminalText(details.action.role)}`);
+      console.log(`│ control    : ${terminalText(details.action.control)}`);
+      console.log(`│ token      : ${details.action.tokenPresent ? 'present' : 'missing'}`);
+      console.log(`│ facts      : ${JSON.stringify(details.action.facts)}`);
+    }
     console.log(`│ expires    : ${new Date(details.expiresAt).toISOString()}`);
     console.log(`│ approval   : ${details.approvalId}`);
     console.log('│');

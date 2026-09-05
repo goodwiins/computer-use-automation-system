@@ -14,7 +14,7 @@ const TSX = 'tsx';
 const childFixture = resolve('test/fixtures/approval-cli-child.ts');
 const request = { kind: 'risk_approval' as const, capability: 'hold', goal: 'apply hold', reason: 'review current facts', url: 'https://example.test/review?token=hidden' };
 const action = (runId: string): ActionContext => ({
-  runId, artifact: 'hold', version: '1.0.0', stepId: 'post', destination: 'https://example.test/hold/post', method: 'POST',
+  runId, artifact: 'hold', version: '1.0.0', stepId: 'post', destination: 'https://example.test/hold/post?token=destination-secret', method: 'POST',
   operator: 'OPR1', branch: 'MAIN', role: 'SUPERVISOR', facts: { member: '123', token: 'must-not-cross' }, tokenPresent: true, control: 'Apply Hold',
 });
 
@@ -61,7 +61,15 @@ describe('standalone approval CLI transport', () => {
       expect(shown.stdout).toContain(`approval   : ${approvalId}`);
       expect(shown.stdout).toContain(`npx tsx cli.ts approve --run ${runId} --approval ${approvalId}`);
       expect(shown.stdout).toContain('"member":"123"');
+      expect(shown.stdout).toContain('artifact   : hold@1.0.0');
+      expect(shown.stdout).toContain('step       : post');
+      expect(shown.stdout).toContain('operator   : OPR1');
+      expect(shown.stdout).toContain('branch     : MAIN');
+      expect(shown.stdout).toContain('role       : SUPERVISOR');
+      expect(shown.stdout).toContain('control    : Apply Hold');
+      expect(shown.stdout).toContain('token      : present');
       expect(shown.stdout).not.toContain('must-not-cross');
+      expect(shown.stdout).not.toContain('destination-secret');
 
       const wrong = await child(['refuse', '--run', runId, '--approval', randomUUID()]);
       expect(wrong.code).toBe(1);
@@ -156,6 +164,28 @@ describe('standalone approval CLI transport', () => {
     expect(existsSync(occupied)).toBe(true);
   });
 
+  it('bounds trickle clients by count and absolute lifetime', async () => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const pending = approval.wait(request, action(runId));
+    const server = await startApprovalServer(runId, approval);
+    const clients = Array.from({ length: 128 }, () => createConnection(server.endpoint));
+    const intervals = clients.map(socket => {
+      socket.on('error', () => {});
+      return setInterval(() => { if (!socket.destroyed) socket.write('{'); }, 250);
+    });
+    try {
+      await new Promise(resolveWait => setTimeout(resolveWait, 3_600));
+      expect(clients.every(socket => socket.destroyed)).toBe(true);
+      expect(approval.pending).toBeDefined();
+    } finally {
+      for (const interval of intervals) clearInterval(interval);
+      for (const socket of clients) socket.destroy();
+      approval.cancel(); await pending; await server.close();
+    }
+  }, 10_000);
+
   it('cancels an interactive standalone approval when the browser closes', async () => {
     process.env.CU_APPROVAL_DIR = temp();
     const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
@@ -175,6 +205,8 @@ describe('standalone approval CLI transport', () => {
       expect(result).toBe('abort');
       expect(session.currentOwner).toBe('automation');
       expect(logger.log).toHaveBeenCalledWith('intervention.decided', { decision: 'abort' });
+      expect(consoleLog.mock.calls.flat().join(' ')).toContain('SUPERVISOR');
+      expect(consoleLog.mock.calls.flat().join(' ')).not.toContain('destination-secret');
     } finally {
       consoleLog.mockRestore();
       if (original) Object.defineProperty(process.stdin, 'isTTY', original);
