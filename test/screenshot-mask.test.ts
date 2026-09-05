@@ -3,14 +3,14 @@
 // matching inputs for the duration of the shot.
 
 import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 
-const PORT = 4201;
-const ORIGIN = `http://localhost:${PORT}`;
 const maskShotPath = join(tmpdir(), `cu-mask-test-${process.pid}.png`);
 
 describe('BrowserSurface screenshot masking', () => {
@@ -18,10 +18,11 @@ describe('BrowserSurface screenshot masking', () => {
   let surface: BrowserSurface;
 
   beforeAll(async () => {
-    server = createApp().listen(PORT);
-    await new Promise<void>((r) => server.on('listening', () => r()));
-    surface = new BrowserSurface({ allowedOrigins: [ORIGIN] });
-    await surface.start(`${ORIGIN}/members/search`);
+    server = createApp().listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    surface = new BrowserSurface({ allowedOrigins: [origin] });
+    await surface.start(`${origin}/members/search`);
   });
   afterAll(async () => {
     await surface?.close();

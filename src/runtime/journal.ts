@@ -40,6 +40,7 @@ export function readJournalRecord(dir: string, runId: string, key: string): Jour
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
 export class Journal {
   readonly records = new Map<string, JournalRecord>();
+  private readonly runIdsByIdentity = new Map<string, string>();
   private readonly lock: string;
   private closed = false;
   constructor(readonly dir: string, private readonly key: string) {
@@ -66,6 +67,7 @@ export class Journal {
       for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
         const record = readJournalRecord(dir, file.slice(0, -5), this.key);
         this.records.set(record.runId, record);
+        if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
         if (['reserved', 'running', 'dispatching'].includes(record.state)) {
           this.update(record.runId, record.state === 'dispatching' ? 'POST_OUTCOME_UNKNOWN' : 'interrupted');
         }
@@ -81,11 +83,13 @@ export class Journal {
     try { writeFileSync(fd, JSON.stringify({ record, signature: this.mac(record) })); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, path); this.syncDir();
     this.records.set(record.runId, record);
+    if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
   lookup(caller: string, key: string, request: unknown) {
     validateIdempotencyKey(key);
     const identity = this.mac({ caller, key }), digest = this.mac(request);
-    const existing = [...this.records.values()].find(r => r.identity === identity);
+    const runId = this.runIdsByIdentity.get(identity);
+    const existing = runId === undefined ? undefined : this.records.get(runId);
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');
     return { existing, identity, digest };
   }
