@@ -159,13 +159,20 @@ and require guarded recovery support without invoking the model or escalation.
 These are offline safety checks; no additional hosted invocation was made.
 The three live phases below remain evidence for source `681ab82`.
 
+Local integration `34f59619c25bade62e652c476af1911df7da4451` adds reviewed
+CLI fault-option repair `0baf8df24e5d09a8be3996778afed53a4b221df9`. The same
+combined gates pass with 404 tests / 19 files and zero vulnerabilities. CLI
+regressions cover validated scenario forwarding, malformed-option rejection,
+same-key deduplication/conflict, and unchanged historical no-fault identity.
+No new hosted run or live acceptance is inferred from these offline checks.
+
 | Requirement | Verified result / remaining boundary |
 | --- | --- |
 | AI SDK caller chat and assistant-ui | Genuine configured Azure model invoked an approved read through the production bundle; authoritative card/dashboard result agreement verified |
 | Shared run state, evidence, approval controls, accessibility | Offline bundled browser checks pass; live reads prove history/reconnect and typed results; live mutation approval remains a separate gate |
 | Exceptional read | Separate direct inquiry observed `business_outcome / NO_SUCH_MEMBER`; evaluator passed |
 | Model-free replay | Fresh process without provider credentials/configuration invoked the approved read through the direct UI form; evaluator passed |
-| Integrated local gates | At `3cc0ee4`: both typechecks, build, 391 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
+| Integrated local gates | At `34f5961`: both typechecks, build, 404 tests / 19 files, artifact validation, dependency audit (0 vulnerabilities), and diff check pass |
 | Seven discovery/artifact/replay pairs | Coordinating task owns the complete matrix; this UI verification does not add write acceptance or complete the four write gates |
 | Publication / hosted checks | This task made no push, PR, remote merge or deployment; branch-head hosted checks remain outside this local result |
 
