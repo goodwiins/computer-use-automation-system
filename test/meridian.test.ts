@@ -1049,13 +1049,17 @@ describe('MERIDIAN guarded open-share path', () => {
 
   function harness(initialRows = priorRows, expected = request, allowedOrigins = [origin]) {
     let rows = initialRows;
+    let completionRedirectOrigin: string | undefined;
     const operationOrigin = allowedOrigins[1] ?? allowedOrigins[0]!;
     let url = `${operationOrigin}/members`;
     let navigation = 0;
     let frameId = 'open-share-workarea';
     const frame = () => ({ id: frameId, name: 'workarea', url, navigation });
     const gate = vi.fn(async () => true);
-    const navigate = vi.fn(async next => { url = next; navigation++; });
+    const navigate = vi.fn(async next => {
+      url = completionRedirectOrigin ? new URL(new URL(next).pathname, completionRedirectOrigin).toString() : next;
+      navigation++;
+    });
     const run = guarded({
       currentUrl: () => url,
       currentFrame: frame,
@@ -1074,6 +1078,7 @@ describe('MERIDIAN guarded open-share path', () => {
       run, gate, navigate, startUrl: `${operationOrigin}/members`, memberUrl, openUrl, reviewUrl, postUrl,
       setRows(next: typeof priorRows) { rows = next; },
       setFrame(id: string) { frameId = id; },
+      redirectCompletionTo(nextOrigin: string) { completionRedirectOrigin = nextOrigin; },
       setLive,
     };
   }
@@ -1160,6 +1165,44 @@ describe('MERIDIAN guarded open-share path', () => {
     await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).resolves.toBeUndefined();
     expect(h.navigate).toHaveBeenCalledWith(h.memberUrl);
     expect(h.navigate).not.toHaveBeenCalledWith(`${origin}/members/9001`);
+  });
+
+  it('rejects a cross-origin native post before approval or mutation intent', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [otherOrigin, origin]);
+    h.setLive({ destination: `${otherOrigin}/members/9001/open-share/post` });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).not.toHaveBeenCalled();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects a cross-origin transition after capturing member pre-state', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = harness(priorRows, request, [otherOrigin, origin]);
+    await h.run.surface.start(h.startUrl);
+    h.setLive({ url: h.startUrl, destination: h.memberUrl, method: 'GET', control: '9001 - Fixture Member', submit: false, facts: {} });
+    await h.run.surface.click(target);
+    h.run.dispatch.mockClear();
+    h.setLive({
+      url: h.memberUrl, destination: `${otherOrigin}/members/9001/open-share`, method: 'GET',
+      control: 'Open New Share', submit: false, facts: {},
+    });
+    await expect(h.run.surface.click(target)).rejects.toThrow(/frame|origin/i);
+    expect(h.gate).not.toHaveBeenCalled();
+    expect(h.run.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.run.dispatch).toHaveBeenCalledOnce();
+    expect(h.run.surface.mutationDispatched).toBe(false);
+  });
+
+  it('rejects completion redirected to another allowed origin with the same member path', async () => {
+    const otherOrigin = 'https://alternate-web-sample.interface-hiring.com';
+    const h = await reviewedOpenShare(request, [otherOrigin, origin]);
+    await h.run.surface.click(target);
+    h.setRows([...priorRows, { shareId: '9001-S0001-NEW', type: 'Regular Shares', balance: '5.00', status: 'OPEN' }]);
+    h.redirectCompletionTo(otherOrigin);
+    await expect(h.run.surface.validateOpenShareCompletion({ shareId: '9001-S0001-NEW' })).rejects.toThrow(/frame|origin/i);
   });
 
   it.each([

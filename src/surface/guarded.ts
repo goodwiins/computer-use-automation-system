@@ -168,6 +168,10 @@ export class GuardedSurface implements Surface {
     try { return new URL(url, this.policy.allowedOrigins[0]).pathname; } catch { return ''; }
   }
 
+  private origin(url: string): string {
+    try { return new URL(url, this.policy.allowedOrigins[0]).origin; } catch { return ''; }
+  }
+
   private transferRoute(url: string) {
     return TRANSFER_ROUTE.exec(this.path(url));
   }
@@ -194,11 +198,21 @@ export class GuardedSurface implements Surface {
   }
 
   private sameFrame(left: FrameContext | undefined, right: FrameContext | undefined): boolean {
-    return !!left && !!right && left.id === right.id && left.name === right.name;
+    return !!left && !!right && left.id === right.id && left.name === right.name
+      && !!this.origin(left.url) && this.origin(left.url) === this.origin(right.url);
   }
 
   private sameFrameRevision(left: FrameContext | undefined, right: FrameContext | undefined): boolean {
     return this.sameFrame(left, right) && left!.navigation === right!.navigation && left!.url === right!.url;
+  }
+
+  private assertMeridianMutationOrigin(live: LiveControl): void {
+    if (this.runtime?.profile.appId !== 'meridian') return;
+    const frameUrl = live.frame?.url ?? live.url;
+    if (!this.origin(frameUrl) || this.origin(frameUrl) !== this.origin(live.url)
+      || this.origin(frameUrl) !== this.origin(live.destination)) {
+      throw new Error('MERIDIAN mutation origin does not match its source frame');
+    }
   }
 
   private currentTransferFrame(): FrameContext {
@@ -555,6 +569,7 @@ export class GuardedSurface implements Surface {
         const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         const openSharePost = OPEN_SHARE_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         if (rule?.mutation) {
+          this.assertMeridianMutationOrigin(live);
           this.assertCapabilityOperation(live.destination);
           if (this.runtime.transfer && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
         }
@@ -658,7 +673,7 @@ export class GuardedSurface implements Surface {
     const memberUrl = new URL(`/members/${binding.expected.member}`, state.frame.url).toString();
     await this.navigate(memberUrl);
     const before = this.currentOpenShareFrame();
-    if (this.path(before.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
+    if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
     const rows = await this.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, undefined, binding.memberTable.rowSelector);
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.currentOpenShareFrame();
