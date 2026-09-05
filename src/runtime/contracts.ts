@@ -126,9 +126,40 @@ export const meridianContracts = {
   'meridian-place-hold': { parameters: [string('member', 'Member number'), string('share', 'Stable share ID'), string('reason', 'Hold reason', { enum: ['FRAUD', 'LEGAL', 'DECEASED'], sensitive: false }), string('notes', 'Hold notes')], outputs: ['heldShare'] },
 };
 
+function executableParameterReferences(artifact: CapabilityArtifact): Set<string> {
+  const templates = [artifact.app.entryUrl];
+  const addAssertion = (assertion: CapabilityArtifact['successCondition'] | undefined) => {
+    if (assertion) templates.push(assertion.kind === 'urlMatches' ? assertion.pattern : assertion.text);
+  };
+  const addTarget = (target: CapabilityArtifact['steps'][number]['target']) => {
+    for (const strategy of target?.strategies ?? []) {
+      if (strategy.kind === 'role') templates.push(strategy.name);
+      else if (strategy.kind === 'text') templates.push(strategy.text);
+      else if (strategy.kind === 'css') templates.push(strategy.selector);
+    }
+  };
+  for (const step of artifact.steps) {
+    if (step.action === 'navigate' && step.url) templates.push(step.url);
+    if (['click', 'fill', 'select', 'extract'].includes(step.action)) addTarget(step.target);
+    if (['fill', 'select'].includes(step.action) && step.value) templates.push(step.value);
+    if (step.action === 'assert') addAssertion(step.assert);
+    if (step.action === 'extract' && step.extract?.pattern) templates.push(step.extract.pattern);
+  }
+  addAssertion(artifact.successCondition);
+  return new Set(templates.flatMap(template => [...template.matchAll(/\{\{(\w+)\}\}/g)].map(match => match[1]!)));
+}
+
 export function applyMeridianContract(artifact: CapabilityArtifact): CapabilityArtifact {
   if (!Object.hasOwn(meridianContracts, artifact.id)) throw new Error('Unknown MERIDIAN capability contract');
   const contract = meridianContracts[artifact.id as keyof typeof meridianContracts];
+  const publicNames = artifact.parameters.filter(parameter => parameter.source !== 'server').map(parameter => parameter.name);
+  const expectedPublicNames = contract.parameters.map(parameter => parameter.name);
+  if (publicNames.length !== expectedPublicNames.length || new Set(publicNames).size !== publicNames.length || expectedPublicNames.some(name => !publicNames.includes(name))) {
+    throw new Error(`Recording parameters must exactly match the ${artifact.id} contract`);
+  }
+  const executableReferences = executableParameterReferences(artifact);
+  const unbound = contract.parameters.filter(parameter => parameter.required && !executableReferences.has(parameter.name));
+  if (unbound.length) throw new Error(`Executable recording does not bind required parameter ${unbound[0]!.name}`);
   const outputNames = artifact.outputs.map(o => o.name);
   if (new Set(outputNames).size !== outputNames.length || outputNames.length !== contract.outputs.length || contract.outputs.some(name => !outputNames.includes(name))) {
     throw new Error(`Recording outputs must exactly match the ${artifact.id} contract`);

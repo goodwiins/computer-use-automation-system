@@ -27,13 +27,14 @@ export function createRuntime(options: {
   session?: ControlSession; gate: HumanGate; beforeDispatch?: (context: ActionContext) => void;
   onEvent?: (event: string, data: Record<string, unknown>) => void; onClose?: () => void;
 }) {
+  const transfer = transferFactsFromParams(options.params);
+  if (options.artifact === 'meridian-funds-transfer' && !transfer) throw new Error('Canonical funds transfer requires a complete transfer request');
   const redactor = new Redactor();
   const promptRedactor = new Redactor();
   if (options.operator) promptRedactor.addSensitiveValues([options.operator.password]);
   redactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   if (options.operator) redactor.addSensitiveValues([options.operator.password]);
   const strict = options.profile?.appId === 'meridian';
-  const transfer = strict ? transferFactsFromParams(options.params) : undefined;
   const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId, options.onEvent);
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
