@@ -13,7 +13,7 @@ const targetProps = {
   name: { type: 'string', description: 'Accessible name to match with the role' },
   text: { type: 'string', description: 'Exact visible text of the element' },
   nameAttr: { type: 'string', description: 'Form-control name attribute' },
-  css: { type: 'string', description: 'CSS selector (last resort only)' },
+  css: { type: 'string', description: 'Playwright CSS selector for the target element (last resort only)' },
   reason: { type: 'string', description: 'Why this action moves toward the goal' },
 } as const;
 
@@ -70,7 +70,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
       description: 'Read a piece of on-screen text as a named output of the capability (e.g. a balance).',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'CSS selecting data rows within the table; exclude header rows, including legacy td headers' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
+        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'Native CSS selecting each data row or grouped container within the target table. Each match must contain td cells and no th cells. Playwright selectors such as :text-is are unsupported here.' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string', description: 'Native CSS resolved within each selected row/group; it must match exactly one descendant. Playwright selectors such as :text-is are unsupported.' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
         required: ['outputName', 'reason'],
       },
     },
@@ -150,7 +150,8 @@ Rules:
 - Prefer targeting elements by role + accessible name, or by exact visible text. Use nameAttr for form fields. CSS only as a last resort.
 - The app may use frames; pass the frame name you see in the observation.
 - Use extract to read any data the goal asks for, THEN call done with those outputs.
-- For extract targets inside tables, pass a css selector anchored to a stable row label rather than position, e.g. tr:has(> td:text-is('SAVINGS')) > td:nth-of-type(4) — row order can differ between records.
+- An extract target css is a Playwright target descriptor. Structured rowSelector and columns[].selector values run through the browser's native querySelectorAll inside that target table: use standard CSS only, never Playwright-only selectors such as :text-is or :has-text. Each rowSelector match must contain td cells and no th cells, and every column selector must match exactly one descendant.
+- For a vertical label/value receipt, select one grouped container such as tbody and let each column selector span its child rows, e.g. tr:nth-of-type(1) > td:nth-of-type(2). Keep headers outside the selected group. For ordinary tables, select the data tr elements and exclude headers.
 - Request the required final submission with click. The runtime requires separate human approval before it acts; you cannot approve it. Never claim success after a human repair without recorded checks and extraction.
 - Server-bound parameters are references such as {{password}}. Fill using that reference, never request or echo the literal secret.
 - Use assert for checkpoints and extract with columns for structured table rows.

@@ -197,7 +197,8 @@ export class BrowserSurface implements Surface {
             parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
             node = parent;
           }
-          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: Array.from(table.rows[0]?.cells ?? [], cell => cell.tagName.toLowerCase()), rows: table.rows.length };
+          const rowCells = Array.from(table.rows, row => Array.from(row.cells, cell => cell.tagName.toLowerCase() as 'td' | 'th'));
+          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: rowCells[0] ?? [], rows: table.rows.length, rowCells };
         }));
         frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields, tables });
       } catch {

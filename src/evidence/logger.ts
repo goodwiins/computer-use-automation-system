@@ -9,6 +9,18 @@ import type { Redactor } from '../safety/redact.js';
 import type { Surface } from '../surface/types.js';
 import { safeEvent, safeResult } from './safe-event.js';
 
+const STRUCTURAL_SELECTOR = /^body > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\)(?: > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\))*$/;
+
+function strictTableStructure(table: unknown): { selector: string; rows: number; rowCells: Array<Array<'td' | 'th'>> } | undefined {
+  if (!table || typeof table !== 'object') return undefined;
+  const candidate = table as Record<string, unknown>;
+  if (typeof candidate.selector !== 'string' || !STRUCTURAL_SELECTOR.test(candidate.selector)
+    || !Number.isSafeInteger(candidate.rows) || (candidate.rows as number) < 0
+    || !Array.isArray(candidate.rowCells) || candidate.rowCells.length !== candidate.rows
+    || !candidate.rowCells.every(row => Array.isArray(row) && row.every(cell => cell === 'td' || cell === 'th'))) return undefined;
+  return { selector: candidate.selector, rows: candidate.rows as number, rowCells: candidate.rowCells as Array<Array<'td' | 'th'>> };
+}
+
 export class RunLogger {
   readonly runId: string;
   readonly dir: string;
@@ -49,7 +61,11 @@ export class RunLogger {
       if (existsSync(file)) chmodSync(file, 0o600);
       if (this.strict) {
         const observation = await surface.observe();
-        writeFileSync(file.replace(/\.png$/, '.json'), JSON.stringify({ frames: observation.frames.map(f => ({ frame: f.frame, fields: f.fields })), note: 'Text omitted; sanitized control structure only' }), { mode: 0o600 });
+        writeFileSync(file.replace(/\.png$/, '.json'), JSON.stringify({ frames: observation.frames.map(f => ({
+          frame: f.frame,
+          fields: f.fields,
+          tables: (f.tables ?? []).map(strictTableStructure).filter(table => table !== undefined),
+        })), note: 'Text omitted; sanitized control structure only' }), { mode: 0o600 });
       }
       return file;
     } catch {

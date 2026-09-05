@@ -1273,6 +1273,61 @@ it('extracts typed rows and blocks unsolicited browser POSTs through the real su
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
 }, 15000);
 
+it('extracts one canonical transfer row from a vertical receipt and persists only its table structure', async () => {
+  const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
+  const fields = [
+    ['Member:', request.member], ['From:', request.sourceShare], ['To:', request.destinationShare],
+    ['Amount:', '$1.00'], ['Memo:', request.memo], ['Confirmation:', 'CONF-123'],
+  ].map(([label, value]) => `<tr><td>${label}</td><td>${value}</td></tr>`).join('');
+  const app = express();
+  app.get('/receipt', (_req, res) => res.send(`<table id="transaction" data-token="PRIVATE TABLE TOKEN"><thead><tr><th colspan="2">PRIVATE RECEIPT HEADER</th></tr></thead><tbody>${fields}</tbody></table>`));
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({
+    allowedOrigins: [localOrigin],
+    profile: { ...profile, entryUrl: `${localOrigin}/receipt`, routes: ['^/receipt$'], maskSelectors: ['body'] },
+  });
+  try {
+    await browser.start(`${localOrigin}/receipt`);
+    const columns = [
+      { name: 'member', selector: 'tr:nth-of-type(1) > td:nth-of-type(2)', type: 'string' as const },
+      { name: 'sourceShare', selector: 'tr:nth-of-type(2) > td:nth-of-type(2)', type: 'string' as const },
+      { name: 'destinationShare', selector: 'tr:nth-of-type(3) > td:nth-of-type(2)', type: 'string' as const },
+      { name: 'amount', selector: 'tr:nth-of-type(4) > td:nth-of-type(2)', type: 'money' as const },
+      { name: 'memo', selector: 'tr:nth-of-type(5) > td:nth-of-type(2)', type: 'string' as const },
+      { name: 'confirmation', selector: 'tr:nth-of-type(6) > td:nth-of-type(2)', type: 'string' as const },
+    ];
+    const transaction = await browser.readTable(
+      { description: 'posted transaction', strategies: [{ kind: 'css', selector: '#transaction' }] },
+      columns,
+      1000,
+      'tbody',
+    );
+    const outputs: Record<string, OutputValue> = { confirmation: 'CONF-123', transaction };
+    expect(transaction).toEqual([{ ...request, confirmation: 'CONF-123' }]);
+    expect(() => assertTransferOutputs(request, outputs)).not.toThrow();
+    expect(() => assertTransferOutputs(request, { ...outputs, transaction: [{ ...transaction[0]!, amount: '2.00' }] })).toThrow(/validation/);
+
+    const logger = new RunLogger('replay', new Redactor(), temp(), true);
+    const screenshot = await logger.screenshot(browser, 'receipt');
+    const metadata = readFileSync(screenshot.replace(/\.png$/, '.json'), 'utf8');
+    expect(metadata).not.toMatch(/PRIVATE RECEIPT HEADER|PRIVATE TABLE TOKEN|transaction|9001|CONF-123|fixture/);
+    expect(JSON.parse(metadata).frames[0].tables).toEqual([{
+      selector: 'body > table:nth-of-type(1)', rows: 7,
+      rowCells: [['th'], ...Array.from({ length: 6 }, () => ['td', 'td'])],
+    }]);
+
+    const observe = browser.observe.bind(browser);
+    browser.observe = async () => {
+      const observation = await observe();
+      observation.frames[0]!.tables![0]!.selector = '#PRIVATE-SELECTOR';
+      return observation;
+    };
+    const rejected = await logger.screenshot(browser, 'invalid-structure');
+    expect(JSON.parse(readFileSync(rejected.replace(/\.png$/, '.json'), 'utf8')).frames[0].tables).toEqual([]);
+  } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}, 15000);
+
 it('scopes transfer review facts to its form table and rejects duplicate labels', async () => {
   const app = express();
   const review = (variant: 'duplicate' | 'nested' | 'hidden-table' | 'hidden-row' | 'hidden-label-child' | 'hidden-value-child' | 'clean' = 'clean') => {
