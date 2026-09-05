@@ -411,8 +411,8 @@ export class BrowserSurface implements Surface {
     const trackCreatedPage = (opened: Page) => {
       if (opened === this.page) return;
       pageEvents++;
-      createdPages.add(opened);
       if (opened.isClosed()) return;
+      createdPages.add(opened);
       if (page && opened !== page) markUnexpectedPage(opened);
     };
     this.context.on('page', trackCreatedPage);

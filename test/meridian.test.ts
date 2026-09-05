@@ -2929,9 +2929,17 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     try {
       await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/creation failure/i);
     } finally { creationFailure.mockRestore(); }
-    await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).resolves.toMatchObject({
-      tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })]],
+    const closedPage = await nativeNewPage();
+    await closedPage.close();
+    const delayedClosedPage = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      (context as unknown as { emit(event: string, page: Page): boolean }).emit('page', closedPage);
+      return nativeNewPage();
     });
+    try {
+      await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).resolves.toMatchObject({
+        tables: [[expect.objectContaining({ member: '9001', name: 'Fixture Member' })]],
+      });
+    } finally { delayedClosedPage.mockRestore(); }
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
     expect(browser.currentUrl()).toBe(originalUrl);
 
