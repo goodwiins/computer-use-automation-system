@@ -143,7 +143,7 @@ function executableParameterReferences(artifact: CapabilityArtifact): Set<string
     if (['click', 'fill', 'select', 'extract'].includes(step.action)) addTarget(step.target);
     if (['fill', 'select'].includes(step.action) && step.value) templates.push(step.value);
     if (step.action === 'assert') addAssertion(step.assert);
-    if (step.action === 'extract' && step.extract?.pattern) templates.push(step.extract.pattern);
+    if (step.action === 'extract' && !step.extract?.columns && step.extract?.pattern) templates.push(step.extract.pattern);
   }
   addAssertion(artifact.successCondition);
   return new Set(templates.flatMap(template => [...template.matchAll(/\{\{(\w+)\}\}/g)].map(match => match[1]!)));

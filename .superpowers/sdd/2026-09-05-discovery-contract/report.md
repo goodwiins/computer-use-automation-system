@@ -84,3 +84,31 @@ npx vitest run test/meridian-cli.test.ts test/meridian.test.ts test/meridian-art
 Exit 0: 7 files, 195 tests passed.
 
 `npm run typecheck` and `git diff --check` both exited 0.
+
+## Whole-branch final-review fix
+
+The executable-reference collector now counts `extract.pattern` only for scalar extraction. When `extract.columns` exists, replay calls `readTable` and ignores the pattern, so that property can no longer rescue an otherwise unbound canonical input.
+
+RED:
+
+```sh
+npx vitest run test/meridian.test.ts -t "table extraction pattern|scalar extraction pattern"
+```
+
+Exit 1 before the repair: the ignored table-pattern rejection failed while the scalar-pattern positive control passed.
+
+GREEN:
+
+```sh
+npx vitest run test/meridian.test.ts -t "table extraction pattern|scalar extraction pattern"
+```
+
+Exit 0: 2 tests passed. Both direct `applyMeridianContract` and `promoteToApproved` reject the in-memory genuine member-record clone whose only `member` reference is an ignored table pattern; a scalar extraction pattern remains accepted. No approved artifact was modified.
+
+```sh
+npx vitest run test/meridian-cli.test.ts test/meridian.test.ts test/meridian-artifacts.test.ts test/schema.test.ts test/promote.test.ts test/recorder.test.ts test/runtime-lifecycle.test.ts
+```
+
+Exit 0: 7 files, 197 tests passed.
+
+`npm run typecheck` and `git diff --check` both exited 0.
