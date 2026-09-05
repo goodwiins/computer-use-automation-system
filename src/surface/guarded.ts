@@ -1,18 +1,19 @@
 import { RISK_RANK, riskFloorFor } from '../artifact/recorder.js';
 import { classify, type AppProfile, type FrameContext, type LiveControl } from '../runtime/profile.js';
-import { assertTransferEligibility, assertTransferFacts, meridianContracts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
+import { assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, meridianContracts, type OpenShareFacts, type TransferFacts, type TransferShare } from '../runtime/contracts.js';
 import type { ActionContext } from '../runtime/approval.js';
 import type { ControlSession } from '../escalation/session.js';
 // Policy enforcement as a Surface decorator. Every actor — the LLM during
 // discovery, the deterministic replayer, a future caller — goes through the
 // same gate, so no code path can act outside the allowlist.
 
-import { moneyCents, RiskClass, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
+import { moneyCents, RiskClass, type OutputValue, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
 import type { Observation, ResolutionReport, Surface } from './types.js';
 
 const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
+const OPEN_SHARE_ROUTE = /^\/members\/(\d+)\/open-share(?:\/(review|post))?$/;
 const MEMBER_ROUTE = /^\/members\/(\d+)$/;
 const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
   'meridian-funds-transfer': /^\/members\/\d+\/transfer\/post$/,
@@ -26,6 +27,11 @@ const REVIEW_FACTS = {
   destinationShare: 'review:To:',
   amount: 'review:Amount:',
   memo: 'review:Memo:',
+} as const;
+const OPEN_SHARE_REVIEW_FACTS = {
+  member: 'review:Member:',
+  shareType: 'review:Share Type:',
+  deposit: 'review:Initial Deposit:',
 } as const;
 const DISPLAY_MONEY = /^(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2}$/;
 const DISPLAY_SHARE = /^([0-9]{1,12}-[A-Za-z0-9-]+) \(\$((?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})*)\.\d{2})\)$/;
@@ -56,12 +62,24 @@ function parseDisplayShare(value: string, expected: string): string {
   return match[1]!;
 }
 
+function parseDisplayType(value: string, expected: string): string {
+  const match = /^([A-Za-z0-9]+) - (.+)$/.exec(value.trim());
+  if (!match || match[1] !== expected || !match[2]!.trim()) return transferReviewFailed();
+  return match[1]!;
+}
+
 type TransferBinding = {
   expected: TransferFacts;
   memberTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
 };
 type TransferStage = 'member' | 'transfer' | 'review';
 type TransferEligibility = { member: string; shares: TransferShare[]; frame: FrameContext; stage: TransferStage };
+type OpenShareBinding = {
+  expected: OpenShareFacts;
+  memberTable: { target: TargetDescriptor; columns: TableColumn[]; rowSelector?: string };
+};
+type OpenShareStage = 'member' | 'open-share' | 'review';
+type OpenShareState = { member: string; priorShareIds: string[]; frame: FrameContext; stage: OpenShareStage };
 
 export class PolicyViolationError extends Error {
   constructor(public readonly verdict: Exclude<PolicyVerdict, { verdict: 'allow' }>, action: string) {
@@ -84,6 +102,7 @@ export class GuardedSurface implements Surface {
   private started = false;
   private signOnSubmitted = false;
   private transferEligibility?: TransferEligibility;
+  private openShareState?: OpenShareState;
   get currentStep() { return this.stepId; }
   setStep(id: string) { this.stepId = id; }
 
@@ -103,6 +122,7 @@ export class GuardedSurface implements Surface {
       runId: string; artifact: string; version: string; operator: string; branch: string; role: string;
       beforeDispatch: (context: ActionContext) => void;
       transfer?: TransferBinding;
+      openShare?: OpenShareBinding;
     },
     private readonly onAction?: (event: string, data: Record<string, unknown>) => void,
   ) {}
@@ -141,6 +161,10 @@ export class GuardedSurface implements Surface {
     return TRANSFER_ROUTE.exec(this.path(url));
   }
 
+  private openShareRoute(url: string) {
+    return OPEN_SHARE_ROUTE.exec(this.path(url));
+  }
+
   private assertCapabilityOperation(destination: string): void {
     const artifact = this.runtime?.artifact;
     if (!artifact || this.runtime?.profile.appId !== 'meridian' || !Object.hasOwn(meridianContracts, artifact)) return;
@@ -175,6 +199,118 @@ export class GuardedSurface implements Surface {
   private transferFrameFailed(): never {
     this.transferEligibility = undefined;
     throw new Error('Transfer frame is no longer bound to this run');
+  }
+
+  private openShareFrameFailed(): never {
+    this.openShareState = undefined;
+    throw new Error('Open-share frame is no longer bound to this run');
+  }
+
+  private openShareStage(url: string): { member: string; stage: OpenShareStage } | undefined {
+    const member = MEMBER_ROUTE.exec(this.path(url));
+    if (member) return { member: member[1]!, stage: 'member' };
+    const openShare = this.openShareRoute(url);
+    if (!openShare || openShare[2] === 'post') return undefined;
+    return { member: openShare[1]!, stage: openShare[2] === 'review' ? 'review' : 'open-share' };
+  }
+
+  private currentOpenShareFrame(): FrameContext {
+    const frame = this.inner.currentFrame?.();
+    if (!frame) throw new Error('Open-share frame identity is unavailable');
+    return frame;
+  }
+
+  private preserveOpenShareState(url: string): void {
+    const binding = this.runtime?.openShare;
+    if (!binding || this.mutationDispatched) return;
+    const route = this.openShareStage(url);
+    if (!route || route.member !== binding.expected.member) {
+      this.openShareState = undefined;
+      return;
+    }
+    if (!this.openShareState && route.stage === 'member') return;
+    const state = this.openShareState;
+    if (!state || state.member !== binding.expected.member || state.stage !== route.stage) throw new Error('Open-share prior state has not been verified for this run');
+    const current = this.currentOpenShareFrame();
+    if (!this.sameFrameRevision(current, state.frame) || this.path(current.url) !== this.path(url)) return this.openShareFrameFailed();
+  }
+
+  private preserveOperationState(url: string): void {
+    this.preserveTransferState(url);
+    this.preserveOpenShareState(url);
+  }
+
+  private advanceOpenShareState(url: string, expectedFrame?: FrameContext): void {
+    const binding = this.runtime?.openShare;
+    const route = this.openShareStage(url);
+    if (!binding || !route || route.member !== binding.expected.member) return this.openShareFrameFailed();
+    const state = this.openShareState;
+    if (!state) {
+      if (route.stage === 'member') return;
+      return this.openShareFrameFailed();
+    }
+    if (expectedFrame && !this.sameFrameRevision(expectedFrame, state.frame)) return this.openShareFrameFailed();
+    const current = this.currentOpenShareFrame();
+    if (this.path(current.url) !== this.path(url) || !this.sameFrame(current, state.frame)) return this.openShareFrameFailed();
+    const validTransition = state.stage === route.stage
+      || (state.stage === 'member' && route.stage === 'open-share')
+      || (state.stage === 'open-share' && route.stage === 'review');
+    if (!validTransition || (state.stage !== route.stage && current.navigation === state.frame.navigation)) return this.openShareFrameFailed();
+    state.frame = current;
+    state.stage = route.stage;
+  }
+
+  private async captureOpenShareState(memberPath: string, timeoutMs: number): Promise<void> {
+    const binding = this.runtime?.openShare;
+    const member = MEMBER_ROUTE.exec(this.path(memberPath));
+    if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Open-share member selection is not eligible');
+    if (!this.inner.readTable) throw new Error('Member shares table is unavailable');
+    const before = this.currentOpenShareFrame();
+    if (this.path(before.url) !== this.path(memberPath)) return this.openShareFrameFailed();
+    const target = { ...binding.memberTable.target, frame: before.name };
+    await this.gate('extract', 'read');
+    this.assertStillInBounds('extract');
+    const rows = await this.inner.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
+    this.assertStillInBounds('extract');
+    const resolved = this.inner.lastResolvedFrame?.();
+    const after = this.currentOpenShareFrame();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.openShareFrameFailed();
+    const priorShareIds = rows.map(row => typeof row.shareId === 'string' ? row.shareId : '');
+    if (priorShareIds.some(id => !id.trim()) || new Set(priorShareIds).size !== priorShareIds.length) throw new Error('Member shares are missing or ambiguous');
+    this.openShareState = { member: member[1]!, priorShareIds, frame: resolved, stage: 'member' };
+  }
+
+  private assertOpenShareControl(live: LiveControl): void {
+    const binding = this.runtime?.openShare;
+    const route = this.openShareStage(live.url);
+    if (!binding || !route || route.member !== binding.expected.member || !live.frame) return this.openShareFrameFailed();
+    const current = this.currentOpenShareFrame();
+    if (!this.sameFrameRevision(live.frame, current) || this.path(live.frame.url) !== this.path(live.url) || this.path(current.url) !== this.path(live.url)) return this.openShareFrameFailed();
+    const state = this.openShareState;
+    if (!state) {
+      const destination = this.openShareStage(live.destination);
+      if (route.stage === 'member' && (!destination || destination.stage === 'member')) return;
+      return this.openShareFrameFailed();
+    }
+    if (state.stage !== route.stage || !this.sameFrameRevision(state.frame, live.frame)) return this.openShareFrameFailed();
+  }
+
+  private assertOpenShareReview(live: LiveControl): void {
+    const binding = this.runtime?.openShare;
+    const route = OPEN_SHARE_ROUTE.exec(this.path(live.destination));
+    if (!binding || !route || route[1] !== binding.expected.member || route[2] !== 'post' || this.openShareStage(live.url)?.stage !== 'review') throw new Error('Open-share review is not bound to the requested member');
+    this.assertOpenShareControl(live);
+    const fact = (name: string) => {
+      const value = live.facts[name];
+      if (typeof value !== 'string') throw new Error('Open-share review facts are missing or ambiguous');
+      return value;
+    };
+    assertOpenShareFacts(binding.expected, { member: fact('member'), shareType: fact('type'), deposit: fact('deposit') });
+    assertOpenShareFacts(binding.expected, {
+      member: parseDisplayMember(fact(OPEN_SHARE_REVIEW_FACTS.member), binding.expected.member),
+      shareType: parseDisplayType(fact(OPEN_SHARE_REVIEW_FACTS.shareType), binding.expected.shareType),
+      deposit: parseDisplayMoney(fact(OPEN_SHARE_REVIEW_FACTS.deposit)),
+    });
   }
 
   private requireTransferRoute(url: string): void {
@@ -314,7 +450,7 @@ export class GuardedSurface implements Surface {
       await this.gate('navigate', 'read', entryUrl);
       await this.inner.start(entryUrl);
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
     });
   }
   observe(): Promise<Observation> { return this.inner.observe(); }
@@ -328,7 +464,7 @@ export class GuardedSurface implements Surface {
   // the shot, and dropping them here would render them in the clear in every
   // evidence PNG (the logger always sees the *guarded* surface, never the raw one).
   screenshot(path: string, opts?: { maskValues?: string[] }) { return this.inner.screenshot(path, opts); }
-  close() { this.transferEligibility = undefined; return this.inner.close(); }
+  close() { this.transferEligibility = undefined; this.openShareState = undefined; return this.inner.close(); }
   drainDialogs() { return this.inner.drainDialogs?.() ?? []; }
 
   /** After an action that may navigate, verify we didn't land outside the allowlist. */
@@ -351,12 +487,13 @@ export class GuardedSurface implements Surface {
   async navigate(url: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
       this.assertRoute(url);
-      this.preserveTransferState(url);
+      this.preserveOperationState(url);
       await this.gate('navigate', 'read', url);
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
-      if (this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
-      this.preserveTransferState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
     });
   }
   private assertRoute(url: string) {
@@ -391,7 +528,7 @@ export class GuardedSurface implements Surface {
       };
       if (this.runtime) {
         this.assertStillInBounds('click');
-        if (this.runtime.transfer) this.preserveTransferState(this.inner.currentUrl());
+        this.preserveOperationState(this.inner.currentUrl());
         if (!this.inner.prepareClick) throw new Error('Profile requires live control inspection');
         const prepared = await this.inner.prepareClick(t, remaining());
         remaining();
@@ -399,15 +536,19 @@ export class GuardedSurface implements Surface {
         remaining();
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
+        const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
+        if (this.runtime.openShare && (this.openShareStage(live.url) || (openShareDestination && openShareDestination.stage !== 'member'))) this.assertOpenShareControl(live);
         const signOn = new URL(live.destination).pathname === '/signon';
         if (signOn && this.signOnSubmitted) throw new Error('Mid-flow sign-on is not permitted');
         const rule = classify(this.runtime.profile, live, this.policy.allowedOrigins);
         const transferPost = TRANSFER_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
+        const openSharePost = OPEN_SHARE_ROUTE.exec(this.path(live.destination))?.[2] === 'post';
         if (rule?.mutation) {
           this.assertCapabilityOperation(live.destination);
           if (this.runtime.transfer && !transferPost) throw new Error('Funds-transfer run cannot dispatch another operation');
         }
         if (transferPost) this.assertTransferReview(live);
+        if (openSharePost) this.assertOpenShareReview(live);
         this.effectiveRisk = rule?.mutation ? 'irreversible' : risk;
         this.emit('risk.classified', { requestedRisk: risk, effectiveRisk: this.effectiveRisk, mutation: rule?.mutation ?? false, method: live.method });
         if (recovery && (rule?.mutation || checkAction(this.policy, 'click', live.destination, this.effectiveRisk).verdict !== 'allow')) throw new Error('Recovery requires an allowed nonmutation control');
@@ -427,12 +568,14 @@ export class GuardedSurface implements Surface {
           if (!approved) throw new RunAbortedError('click');
           this.assertAutomation();
           if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
+          if (this.runtime.openShare && this.openShareStage(live.url)) this.assertOpenShareControl(live);
           const refreshed = await prepared.inspect(remaining());
           remaining();
           if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
           if (transferPost) {
             this.assertTransferReview(refreshed);
           }
+          if (openSharePost) this.assertOpenShareReview(refreshed);
           this.assertAutomation();
           this.runtime.beforeDispatch(context);
           this.assertAutomation();
@@ -449,7 +592,9 @@ export class GuardedSurface implements Surface {
         if (this.mutationDispatched) this.transferEligibility = undefined;
         else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
         else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl(), live.frame);
-        this.preserveTransferState(this.inner.currentUrl());
+        if (!this.mutationDispatched && this.runtime.openShare && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureOpenShareState(this.inner.currentUrl(), remaining());
+        else if (!this.mutationDispatched && this.runtime.openShare && this.openShareStage(this.inner.currentUrl())) this.advanceOpenShareState(this.inner.currentUrl(), live.frame);
+        this.preserveOperationState(this.inner.currentUrl());
         return report;
       }
       const live = await this.inner.describeTarget(t, remaining());
@@ -461,46 +606,68 @@ export class GuardedSurface implements Surface {
       await outsideBudget(() => this.gate('click', this.effectiveRisk));
       const report = await this.inner.click(t, remaining());
       this.assertStillInBounds('click');
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       return report;
     });
   }
   async fill(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write'): Promise<ResolutionReport> {
     return this.action('fill', risk, async () => {
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       await this.gate('fill', risk);
       const report = await this.inner.fill(t, value, timeoutMs);
       this.assertStillInBounds('fill'); // change handlers can navigate in legacy apps
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       return report;
     });
   }
   async select(t: TargetDescriptor, value: string, timeoutMs?: number, risk: RiskClass = 'reversible_write', selectBy?: 'label' | 'value'): Promise<ResolutionReport> {
     return this.action('select', risk, async () => {
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       await this.gate('select', risk);
       const report = await this.inner.select(t, value, timeoutMs, risk, selectBy);
       this.assertStillInBounds('select'); // onchange submits are a legacy staple
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       return report;
     });
   }
   async readTable(t: TargetDescriptor, columns: TableColumn[], timeoutMs?: number, rowSelector?: string) {
     return this.action('extract', 'read', async () => {
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       await this.gate('extract', 'read');
       if (!this.inner.readTable) throw new Error('Table extraction unavailable');
       const rows = await this.inner.readTable(t, columns, timeoutMs, rowSelector);
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       return rows;
     });
   }
+  async validateOpenShareCompletion(outputs: Record<string, OutputValue>): Promise<void> {
+    const binding = this.runtime?.openShare;
+    const state = this.openShareState;
+    if (!binding || !state || !this.mutationDispatched || state.member !== binding.expected.member) throw new Error('Open-share completion is not bound to a dispatched request');
+    const memberUrl = new URL(`/members/${binding.expected.member}`, this.policy.allowedOrigins[0]).toString();
+    await this.navigate(memberUrl);
+    const before = this.currentOpenShareFrame();
+    if (this.path(before.url) !== this.path(memberUrl)) return this.openShareFrameFailed();
+    const rows = await this.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, undefined, binding.memberTable.rowSelector);
+    const resolved = this.inner.lastResolvedFrame?.();
+    const after = this.currentOpenShareFrame();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after)) return this.openShareFrameFailed();
+    const shares = rows.map(row => {
+      if (typeof row.shareId !== 'string' || typeof row.type !== 'string' || typeof row.balance !== 'string' || !row.shareId.trim()) throw new Error('Open-share resulting state is incomplete');
+      return { shareId: row.shareId, shareType: row.type, deposit: row.balance };
+    });
+    if (new Set(shares.map(row => row.shareId)).size !== shares.length) throw new Error('Open-share resulting state is ambiguous');
+    if (state.priorShareIds.some(id => !shares.some(row => row.shareId === id))) throw new Error('Open-share resulting state changed concurrently');
+    const added = shares.filter(row => !state.priorShareIds.includes(row.shareId));
+    if (added.length !== 1) throw new Error('Open-share resulting state is missing or ambiguous');
+    assertOpenShareResult(binding.expected, state.priorShareIds, { member: state.member, ...added[0]! }, outputs);
+  }
   async readText(t: TargetDescriptor, timeoutMs?: number) {
     return this.action('extract', 'read', async () => {
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       await this.gate('extract', 'read');
       const result = await this.inner.readText(t, timeoutMs);
-      this.preserveTransferState(this.inner.currentUrl());
+      this.preserveOperationState(this.inner.currentUrl());
       return result;
     });
   }
