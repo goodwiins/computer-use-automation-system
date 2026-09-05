@@ -358,6 +358,59 @@ describe('single-use interventions and live controls', () => {
     expect(run.beforeDispatch).not.toHaveBeenCalled();
     expect(run.dispatch).not.toHaveBeenCalled();
   });
+  it('confines every bound write to its own operation before start, navigation, or control dispatch', async () => {
+    const cases = [
+      {
+        artifact: 'meridian-funds-transfer',
+        context: { transfer: { expected: { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' }, memberTable: meridianTransferMemberTable } },
+        entry: '/members/9001/hold',
+        review: '/members/9001/hold/review',
+      },
+      {
+        artifact: 'meridian-open-share',
+        context: { openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable } },
+        entry: '/members/9001/transfer',
+        review: '/members/9001/transfer/review',
+      },
+      {
+        artifact: 'meridian-update-member',
+        context: { memberUpdate: { expected: requestMemberUpdate(), contactTable: meridianMemberContactTable } },
+        entry: '/members/9001/hold',
+        review: '/members/9001/hold/review',
+      },
+      {
+        artifact: 'meridian-place-hold',
+        context: { hold: { expected: requestHold(), memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } },
+        entry: '/members/9001/transfer',
+        review: '/members/9001/transfer/review',
+      },
+    ];
+    for (const fixture of cases) {
+      for (const action of ['start', 'navigate', 'click'] as const) {
+        const start = vi.fn(async () => {});
+        const navigate = vi.fn(async () => {});
+        const observe = vi.fn(async () => ({ url: `${origin}/members`, title: '', frames: [] }));
+        const run = guarded({ start, navigate, observe }, vi.fn(async () => true), {
+          artifact: fixture.artifact,
+          ...fixture.context,
+        });
+        const attempted = action === 'start'
+          ? run.surface.start(`${origin}${fixture.entry}`)
+          : action === 'navigate'
+            ? run.surface.navigate(`${origin}${fixture.entry}`)
+            : (run.change({
+              url: `${origin}/members`, destination: `${origin}${fixture.review}`,
+              method: 'POST', submit: true, facts: {},
+            }), run.surface.click(target));
+        await expect(attempted).rejects.toThrow(/operation|transfer/i);
+        expect(start).not.toHaveBeenCalled();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(observe).not.toHaveBeenCalled();
+        expect(run.dispatch).not.toHaveBeenCalled();
+        expect(run.beforeDispatch).not.toHaveBeenCalled();
+      }
+    }
+  });
   it.each(['meridian-sign-on', 'meridian-member-inquiry', 'meridian-member-record'] as const)('rejects mutation dispatch for canonical read capability %s', async artifact => {
     const gate = vi.fn(async () => true);
     const run = guarded({}, gate, { artifact });
@@ -1346,7 +1399,7 @@ describe('MERIDIAN guarded open-share path', () => {
     h.run.dispatch.mockClear();
     h.setLive({ url: h.openUrl, destination, method, control: 'Continue', submit: true, facts });
 
-    await expect(h.run.surface.click(target)).rejects.toThrow(/transition|origin/i);
+    await expect(h.run.surface.click(target)).rejects.toThrow(/transition|origin|operation|member|bound/i);
     expect(h.gate).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
     expect(h.run.dispatch).not.toHaveBeenCalled();
@@ -1991,7 +2044,7 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
       facts: { member: '9001', from: '9001-A', to: '9001-B', amount: '1.00', memo: 'unrelated' },
     });
 
-    await expect(h.run.surface.click(target)).rejects.toThrow(/transition/i);
+    await expect(h.run.surface.click(target)).rejects.toThrow(/transition|operation|member|bound/i);
     expect(h.gate).not.toHaveBeenCalled();
     expect(h.run.beforeDispatch).not.toHaveBeenCalled();
     expect(h.run.dispatch).not.toHaveBeenCalled();
@@ -2043,7 +2096,7 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
 
     const unrelated = await reviewedHold();
     unrelated.setLive({ destination: `${origin}/members/9001/update`, control: 'Save Changes' });
-    await expect(unrelated.run.surface.click(target)).rejects.toThrow(/transition/i);
+    await expect(unrelated.run.surface.click(target)).rejects.toThrow(/transition|operation|member|bound/i);
     expect(unrelated.gate).not.toHaveBeenCalled();
     expect(unrelated.run.beforeDispatch).not.toHaveBeenCalled();
 

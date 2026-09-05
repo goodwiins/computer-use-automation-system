@@ -24,6 +24,12 @@ const MERIDIAN_MUTATION_ROUTES: Partial<Record<keyof typeof meridianContracts, R
   'meridian-update-member': /^\/members\/\d+\/update$/,
   'meridian-place-hold': /^\/members\/\d+\/hold\/post$/,
 };
+const MERIDIAN_OPERATION_ROUTES: Partial<Record<keyof typeof meridianContracts, RegExp>> = {
+  'meridian-funds-transfer': TRANSFER_ROUTE,
+  'meridian-open-share': OPEN_SHARE_ROUTE,
+  'meridian-update-member': UPDATE_ROUTE,
+  'meridian-place-hold': HOLD_ROUTE,
+};
 const REVIEW_FACTS = {
   member: 'review:Member:',
   sourceShare: 'review:From:',
@@ -213,7 +219,7 @@ export class GuardedSurface implements Surface {
     throw new Error('Canonical MERIDIAN capability cannot dispatch this operation');
   }
 
-  private assertBoundMemberNavigation(url: string): void {
+  private assertBoundOperationNavigation(url: string): void {
     const runtime = this.runtime;
     if (!runtime || runtime.profile.appId !== 'meridian'
       || !MERIDIAN_MUTATION_ROUTES[runtime.artifact as keyof typeof meridianContracts]) return;
@@ -221,8 +227,14 @@ export class GuardedSurface implements Surface {
       : runtime?.artifact === 'meridian-open-share' ? runtime.openShare?.expected.member
         : runtime?.artifact === 'meridian-update-member' ? runtime.memberUpdate?.expected.member
           : runtime?.artifact === 'meridian-place-hold' ? runtime.hold?.expected.member : undefined;
-    const member = MEMBER_SCOPE_ROUTE.exec(this.path(url));
-    if (expected && member && member[1] !== expected) throw new Error('Canonical member selection is not bound to this run');
+    if (!expected) return;
+    const path = this.path(url);
+    const member = MEMBER_SCOPE_ROUTE.exec(path);
+    if (member && member[1] !== expected) throw new Error('Canonical member selection is not bound to this run');
+    if (path === '/' || path === '/signon' || path === '/menu' || path === '/members' || MEMBER_ROUTE.test(path)) return;
+    const operation = MERIDIAN_OPERATION_ROUTES[runtime.artifact as keyof typeof meridianContracts]?.exec(path);
+    if (operation?.[1] === expected) return;
+    throw new Error('Canonical MERIDIAN capability cannot enter another operation');
   }
 
   private transferStage(url: string): { member: string; stage: TransferStage } | undefined {
@@ -748,7 +760,7 @@ export class GuardedSurface implements Surface {
   async start(entryUrl: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
       if (this.runtime && this.started) throw new Error('A run can start only once');
-      this.assertBoundMemberNavigation(entryUrl);
+      this.assertBoundOperationNavigation(entryUrl);
       this.started = true;
       this.assertRoute(entryUrl);
       this.requireTransferRoute(entryUrl);
@@ -795,7 +807,7 @@ export class GuardedSurface implements Surface {
 
   async navigate(url: string): Promise<void> {
     return this.action('navigate', 'read', async () => {
-      this.assertBoundMemberNavigation(url);
+      this.assertBoundOperationNavigation(url);
       this.assertRoute(url);
       this.preserveOperationState(url);
       await this.gate('navigate', 'read', url);
@@ -847,7 +859,7 @@ export class GuardedSurface implements Surface {
         remaining();
         const live = await prepared.inspect(remaining());
         remaining();
-        if (live.method === 'GET') this.assertBoundMemberNavigation(live.destination);
+        this.assertBoundOperationNavigation(live.destination);
         const transferDestination = this.runtime.transfer ? this.transferStage(live.destination) : undefined;
         if (this.runtime.transfer && (this.transferStage(live.url) || (transferDestination && transferDestination.stage !== 'member'))) this.assertTransferControl(live);
         const openShareDestination = this.runtime.openShare ? this.openShareStage(live.destination) : undefined;
