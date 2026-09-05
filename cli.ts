@@ -17,7 +17,7 @@ import { runDiscovery } from './src/agent/loop.js';
 import { RISK_RANK, recordArtifact, riskFloorFor } from './src/artifact/recorder.js';
 import { applyOverlay, TenantOverlay } from './src/artifact/overlay.js';
 import { assertSafeCapabilityName, promoteToApproved } from './src/artifact/promote.js';
-import { CapabilityArtifact, Detector, normalizeParams } from './src/artifact/schema.js';
+import { CapabilityArtifact, Detector, normalizeParams, validateParams } from './src/artifact/schema.js';
 import { OperatorConsole } from './src/escalation/operator.js';
 import { originAllowed } from './src/safety/policy.js';
 import { runReplay } from './src/replay/executor.js';
@@ -104,23 +104,32 @@ function closeJournal(journal: Journal | undefined): void {
 }
 
 async function discover(argv: string[]) {
-  const { flags, params, sensitive } = parseArgs(argv);
+  const { flags, params: rawParams, sensitive } = parseArgs(argv);
+  let params: Record<string, string | number> = rawParams;
   const goal = typeof flags.goal === 'string' ? flags.goal : fatal('--goal is required');
   const name = typeof flags.name === 'string' ? flags.name : fatal('--name is required (capability id)');
-  assertSafeCapabilityName(name); // becomes a filename under artifacts/
   const profile = loadProfile(typeof flags.profile === 'string' ? flags.profile : 'cu-nexus');
+  const meridian = profile.appId === 'meridian';
+  if (meridian) {
+    if (!Object.hasOwn(meridianContracts, name)) fatal('Unknown MERIDIAN capability contract');
+    if (['operator', 'password', 'branch'].some(parameter => Object.hasOwn(params, parameter))) fatal('Caller cannot override server parameters');
+    const contract = meridianContracts[name as keyof typeof meridianContracts];
+    if (!validateParams(contract, params).ok) fatal('Parameters do not match the capability contract');
+    params = normalizeParams(contract, params);
+  }
+  assertSafeCapabilityName(name); // becomes a filename under artifacts/
   const entry = typeof flags.entry === 'string' ? flags.entry : profile.entryUrl ?? 'http://localhost:4173/';
   const { openai, model } = makeLLMClient();
 
   const policy = profilePolicy(profile);
-  const meridian = profile.appId === 'meridian';
   const key = typeof flags['idempotency-key'] === 'string' ? flags['idempotency-key'] : '';
   if (meridian) validateIdempotencyKey(key);
   const operator = meridian ? operatorContext(flags.operator === 'SUPERVISOR' ? 'SUPERVISOR' : 'TELLER') : undefined;
   const serverParams = operator ? ['operator', 'password', 'branch'] : [];
-  for (const key of serverParams) { if (key in params) fatal(`--param cannot override server parameter ${key}`); params[key] = `{{${key}}}`; }
+  for (const key of serverParams) params[key] = `{{${key}}}`;
   if (operator) sensitive.push('password');
   const expectedTransfer = meridian && name === 'meridian-funds-transfer' ? transferFactsFromParams(params) : undefined;
+  if (meridian && name === 'meridian-funds-transfer' && !expectedTransfer) fatal('Parameters do not match the capability contract');
   const journal = meridian ? new Journal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '') : undefined;
   let record: JournalRecord | undefined;
   let runtime: ReturnType<typeof createRuntime> | undefined;
