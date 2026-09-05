@@ -8,7 +8,7 @@ import { BrowserSurface } from '../surface/browser.js';
 import { GuardedSurface, type HumanGate } from '../surface/guarded.js';
 import { holdFactsFromParams, memberUpdateFactsFromParams, meridianMemberContactTable, meridianTransferMemberTable, openShareFactsFromParams, transferFactsFromParams } from './contracts.js';
 import type { ActionContext } from './approval.js';
-import type { AppProfile, FaultScenario } from './profile.js';
+import { FaultScenario, type AppProfile } from './profile.js';
 
 export interface OperatorContext { operator: string; password: string; branch: string; role: 'TELLER' | 'SUPERVISOR' }
 export function operatorContext(role: 'TELLER' | 'SUPERVISOR'): OperatorContext {
@@ -28,6 +28,7 @@ export function createRuntime(options: {
   onEvent?: (event: string, data: Record<string, unknown>) => void; onClose?: () => void;
 }) {
   const strict = options.profile?.appId === 'meridian';
+  const fault = options.fault ? FaultScenario.parse(options.fault) : undefined;
   const transfer = strict ? transferFactsFromParams(options.params) : undefined;
   const openShare = strict && options.artifact === 'meridian-open-share' ? openShareFactsFromParams(options.params) : undefined;
   const memberUpdate = strict && options.artifact === 'meridian-update-member' ? memberUpdateFactsFromParams(options.params) : undefined;
@@ -44,13 +45,14 @@ export function createRuntime(options: {
   const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId, options.onEvent);
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
-  const browser = new BrowserSurface({ headful: options.headful, fault: options.fault, allowedOrigins: options.policy.allowedOrigins, onClose: options.onClose,
+  const browser = new BrowserSurface({ headful: options.headful, fault, allowedOrigins: options.policy.allowedOrigins, onClose: options.onClose,
     ...(strict ? { profile: options.profile, sensitive: (values: string[], secrets: string[] = []) => { redactor.addSensitiveValues(values); promptRedactor.addSensitiveValues(secrets); } } : {}) });
   const surface = new GuardedSurface(browser, options.policy, options.gate, e => logger.log('policy.decision', e),
     strict ? { profile: options.profile!, session, deadline, runId: logger.runId, artifact: options.artifact, version: options.version,
       operator: options.operator!.operator, role: options.operator!.role, branch: options.operator!.branch,
+      fault,
       transfer: transfer ? { expected: transfer, memberTable: meridianTransferMemberTable } : undefined,
-      openShare: openShare ? { expected: openShare, memberTable: meridianTransferMemberTable } : undefined,
+      openShare: openShare ? { expected: openShare, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } : undefined,
       memberUpdate: memberUpdate ? { expected: memberUpdate, contactTable: meridianMemberContactTable } : undefined,
       hold: hold ? { expected: hold, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } : undefined,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },

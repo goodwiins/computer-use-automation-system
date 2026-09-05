@@ -368,7 +368,7 @@ describe('single-use interventions and live controls', () => {
       },
       {
         artifact: 'meridian-open-share',
-        context: { openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable } },
+        context: { openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } },
         entry: '/members/9001/transfer',
         review: '/members/9001/transfer/review',
       },
@@ -1311,7 +1311,7 @@ describe('MERIDIAN guarded open-share path', () => {
       frameUrls: () => [`${operationOrigin}/frameset`, url],
       navigate,
       readTable: async () => rows,
-    }, gate, { artifact: 'meridian-open-share', openShare: { expected, memberTable: meridianTransferMemberTable } }, undefined,
+    }, gate, { artifact: 'meridian-open-share', openShare: { expected, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } }, undefined,
     async expected => { url = expected.destination; navigation++; }, undefined, Policy.parse({ ...policy, allowedOrigins }));
     const setLive = (next: Partial<LiveControl>) => run.change({ ...next, frame: next.frame ?? frame() });
     const memberUrl = `${operationOrigin}/members/9001`;
@@ -1576,18 +1576,28 @@ describe('MERIDIAN guarded open-share path', () => {
 });
 
 it.each([
-  { checkpoint: 'visible', hidden: false, visibleSubstring: false },
-  { checkpoint: 'hidden', hidden: true, visibleSubstring: false },
-  { checkpoint: 'hidden with visible substring decoy', hidden: true, visibleSubstring: true },
-])('$checkpoint member checkpoint bounds the observed open-share maintenance path', async ({ hidden, visibleSubstring }) => {
+  { checkpoint: 'visible', hidden: false, hiddenMember: false, visibleSubstring: false, displayedMember: '9001', fault: false, query: '', succeeds: true },
+  { checkpoint: 'visible with configured maintenance fault', hidden: false, hiddenMember: false, visibleSubstring: false, displayedMember: '9001', fault: true, query: '', succeeds: true },
+  { checkpoint: 'wrong-member', hidden: false, hiddenMember: false, visibleSubstring: false, displayedMember: '9999', fault: false, query: '', succeeds: false },
+  { checkpoint: 'hidden member value', hidden: false, hiddenMember: true, visibleSubstring: false, displayedMember: '9001', fault: false, query: '', succeeds: false },
+  { checkpoint: 'hidden', hidden: true, hiddenMember: false, visibleSubstring: false, displayedMember: '9001', fault: false, query: '', succeeds: false },
+  { checkpoint: 'hidden with visible substring decoy', hidden: true, hiddenMember: false, visibleSubstring: true, displayedMember: '9001', fault: false, query: '', succeeds: false },
+  { checkpoint: 'visible with arbitrary query', hidden: false, hiddenMember: false, visibleSubstring: false, displayedMember: '9001', fault: false, query: '?inject=maintenance', succeeds: false },
+])('$checkpoint member checkpoint bounds the observed open-share maintenance path', async ({ hidden, hiddenMember, visibleSubstring, displayedMember, fault, query, succeeds }) => {
   let openVisits = 0;
   let memberVisits = 0;
+  let faultRedirected = false;
   const app = express();
   const shares = '<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr><tr><td>9001-S0001</td><td>Regular Shares</td><td>$2.00</td><td>OPEN</td></tr></table>';
-  const member = `<table><tbody><tr><td${hidden ? ' style="display:none"' : ''}>Member No.:</td><td>9001</td></tr><tr><td>Name:</td><td>Fixture</td></tr><tr><td><table></table>${shares}</td></tr></tbody></table>${visibleSubstring ? '<p>Previous Member No.: unavailable</p>' : ''}<a href="/members/9001/open-share">Open New Share</a>`;
+  const contact = `<table><tbody><tr><td${hidden ? ' style="display:none"' : ''}>Member No.:</td><td${hiddenMember ? ' style="display:none"' : ''}>${displayedMember}</td><td>Name:</td><td>Fixture</td></tr><tr><td>E-mail:</td><td>fixture@example.test</td><td>Phone:</td><td>5550001111</td></tr><tr><td>Address:</td><td>1 Main Street</td></tr></tbody></table>`;
+  const member = `<table><tbody><tr></tr><tr></tr><tr><td>${contact}${shares}<a href="/members/9001/open-share${query}">Open New Share</a></td></tr></tbody></table>${visibleSubstring ? '<p>Previous Member No.: unavailable</p>' : ''}`;
   app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
   app.get('/members/9001', (_req, res) => { memberVisits++; res.send(member); });
-  app.get('/members/9001/open-share', (_req, res) => {
+  app.get('/members/9001/open-share', (req, res) => {
+    if (req.query.inject === 'maintenance' && !faultRedirected) {
+      faultRedirected = true;
+      return res.redirect(req.originalUrl);
+    }
     openVisits++;
     res.send(openVisits === 1
       ? '<p>SCHEDULED MAINTENANCE IN PROGRESS</p><a href="/members/9001">Continue</a>'
@@ -1598,7 +1608,8 @@ it.each([
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const localProfile = { ...profile, entryUrl: `${localOrigin}/members` };
   const localPolicy = Policy.parse({ ...policy, allowedOrigins: [localOrigin] });
-  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: localProfile });
+  const configuredFault = fault ? { kind: 'maintenance' as const, path: '/members/9001/open-share' } : undefined;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile: localProfile, fault: configuredFault });
   const gate = vi.fn(async () => true);
   const beforeDispatch = vi.fn();
   const events: string[] = [];
@@ -1606,7 +1617,8 @@ it.each([
     profile: localProfile, session: new ControlSession(), deadline: Date.now() + 10000,
     runId: randomUUID(), artifact: 'meridian-open-share', version: '1.0.0',
     operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
-    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable },
+    fault: configuredFault,
+    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable },
   }, event => events.push(event));
   try {
     await surface.start(`${localOrigin}/members`);
@@ -1614,12 +1626,12 @@ it.each([
     await surface.click({ description: 'open', strategies: [{ kind: 'role', role: 'link', name: 'Open New Share' }] });
     const interrupted = surface.currentFrame()!;
     expect(await surface.isTextVisible('SCHEDULED MAINTENANCE IN PROGRESS')).toBe(true);
-    if (hidden) {
+    if (!succeeds) {
       await expect(surface.recoverOperation('maintenance', 5000)).rejects.toThrow(/frame/i);
-      expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001`);
+      expect(surface.currentUrl()).toBe(query ? `${localOrigin}/members/9001/open-share${query}` : `${localOrigin}/members/9001`);
       if (visibleSubstring) expect(await surface.isTextVisible('Member No.:', surface.currentFrame()!.name)).toBe(true);
       expect(openVisits).toBe(1);
-      expect(memberVisits).toBe(2);
+      expect(memberVisits).toBe(query ? 1 : 2);
       expect(gate).not.toHaveBeenCalled();
       expect(beforeDispatch).not.toHaveBeenCalled();
       expect(events).not.toContain('mutation.intent');
@@ -1646,7 +1658,7 @@ it.each([
 it('refuses open-share operation recovery without a trusted bound interruption', async () => {
   const run = guarded({}, async () => true, {
     artifact: 'meridian-open-share',
-    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable },
+    openShare: { expected: requestOpenShare(), memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable },
   });
   await expect(run.surface.recoverOperation('maintenance')).rejects.toThrow(/trusted|bound/i);
   expect(run.dispatch).not.toHaveBeenCalled();
