@@ -8,7 +8,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { extractText, Assertion, RiskClass, TableColumn, type TargetDescriptor, type OutputValue, type Detector } from '../artifact/schema.js';
 import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
 import { checkDetectors, matchDetector } from '../replay/detectors.js';
-import { safeEvent } from '../evidence/safe-event.js';
+import { safeEvent, safeResult } from '../evidence/safe-event.js';
 import type { RunLogger } from '../evidence/logger.js';
 import type { Surface } from '../surface/types.js';
 import { RunAbortedError } from '../surface/guarded.js';
@@ -307,6 +307,11 @@ export async function runDiscovery(
 
   function stopForDetector(detector: Detector): DiscoveryResult {
     // Persist only known static codes, never profile identifiers or page text.
+    const outcome = safeResult({ status: detector.classification, outcomeCode: detector.outcomeCode });
+    if (outcome.status === 'business_outcome') {
+      return finish('business_outcome', outcome.outcomeCode, undefined, undefined,
+        { outcomeCode: outcome.outcomeCode, detail: outcome.outcomeCode });
+    }
     const code = safeEvent('detector.hit', { code: detector.outcomeCode }).data.code;
     return finish('stopped', typeof code === 'string' ? code : 'DISCOVERY_FAILED');
   }
