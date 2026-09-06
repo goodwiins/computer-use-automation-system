@@ -169,13 +169,15 @@ export async function runDiscovery(
             const finalUrl = surface.currentUrl();
             try { await deps.validateCompletion?.(outputs); }
             catch (err) {
-              logger.log('discovery.completion', { status: 'failure' });
+              try { logger.log('discovery.completion', { status: 'failure' }); }
+              catch { /* Diagnostics must not replace the original completion error. */ }
               throw err;
             }
             return finish('success', undefined, String(args.summary ?? ''), finalUrl);
           }
           case 'escalate': {
-            logger.log('discovery.escalate');
+            try { logger.log('discovery.escalate'); }
+            catch { /* Diagnostics must not replace the model's terminal decision. */ }
             if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
             if (deps.escalate) {
               const decision = await deps.escalate({

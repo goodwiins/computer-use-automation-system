@@ -446,6 +446,31 @@ it.each(['business', 'abort'] as const)('retains the original typed completion e
   expect(log).toContain('discovery.completion'); expect(log).not.toContain('PRIVATE');
 });
 
+it.each(['business', 'abort', 'escalate'].flatMap(mode => [false, true].map(dispatched => ({ mode, dispatched }))))('preserves discovery terminal handling when diagnostic logging fails: $mode dispatched=$dispatched', async ({ mode, dispatched }) => {
+  const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
+  f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: {
+    name: mode === 'escalate' ? 'escalate' : 'done', arguments: '{}',
+  } }] } }] });
+  const validateCompletion = vi.fn(async () => { throw mode === 'business' ? new InsufficientFundsError() : new RunAbortedError('PRIVATE completion'); });
+  const escalate = vi.fn(async () => 'abort' as const);
+  f.deps.validateCompletion = validateCompletion; f.deps.escalate = escalate;
+  const log = f.logger.log.bind(f.logger);
+  vi.spyOn(f.logger, 'log').mockImplementation((event, data) => {
+    if (event === (mode === 'escalate' ? 'discovery.escalate' : 'discovery.completion')) throw new Error('PRIVATE diagnostic write failure');
+    log(event, data);
+  });
+  expect(await f.run()).toMatchObject(dispatched ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
+    : mode === 'business' ? { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' }
+    : mode === 'abort' ? { status: 'stopped', stopReason: 'RUN_ABORTED' } : { status: 'escalated' });
+  expect(f.create).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'escalate' ? 0 : 1);
+  expect(escalate).toHaveBeenCalledTimes(mode === 'escalate' && !dispatched ? 1 : 0);
+  const persisted = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  expect(persisted).not.toContain('PRIVATE');
+  expect(persisted).not.toContain('discovery.action_error');
+  expect(persisted).not.toContain('detector.recovering');
+});
+
 it.each([false, true])('keeps condition-free verified discovery success: dispatched=%s', async dispatched => {
   const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
   const validateCompletion = vi.fn(); f.deps.validateCompletion = validateCompletion;
