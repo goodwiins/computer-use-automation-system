@@ -2,12 +2,11 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CapabilityArtifact, validateParams, normalizeParams } from '../artifact/schema.js';
 import { toToolSchema } from '../artifact/tools.js';
-import { sanitizePendingApproval } from '../escalation/approval-cli.js';
 import { OperatorConsole } from '../escalation/operator.js';
 import { ControlSession } from '../escalation/session.js';
 import type { ReplayResult } from '../replay/outcomes.js';
 import { applyMeridianContract } from '../runtime/contracts.js';
-import { Approval } from '../runtime/approval.js';
+import { Approval, publicIntervention } from '../runtime/approval.js';
 import { Journal, RequestError } from '../runtime/journal.js';
 import { type AppProfile } from '../runtime/profile.js';
 import { closeRuntime, createRuntime, executeReplay, operatorContext } from '../runtime/run.js';
@@ -17,7 +16,7 @@ import type { Policy } from '../safety/policy.js';
 export type Principal = 'caller' | 'operator';
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
-  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; close?: () => Promise<void> }>();
+  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private active?: string;
   private completion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
@@ -71,9 +70,10 @@ export class InvocationService {
         headful: true, runId: record.runId, evidenceDir: this.evidenceDir, session,
         gate: async (action, risk, reason, actionContext) => {
           const pending = approval.wait({ kind: 'risk_approval', capability: id, goal: artifact.description, reason, url: runtime.surface.currentUrl() }, actionContext);
-          runtime.logger.log('intervention.pending', { kind: 'risk_approval', approvalId: approval.pending?.id, expiresAt: approval.pending?.expiresAt });
+          const approvalId = approval.pending?.id;
+          runtime.logger.log('intervention.pending', { kind: 'risk_approval', approvalId, expiresAt: approval.pending?.expiresAt });
           const decision = await pending;
-          runtime.logger.log('intervention.decided', { decision });
+          runtime.logger.log('intervention.decided', { approvalId, decision });
           return decision === 'approve';
         },
         beforeDispatch: () => this.journal.update(record.runId, 'dispatching'), onClose: () => approval.cancel(),
@@ -84,6 +84,7 @@ export class InvocationService {
           if (event === 'step.ok') state.state = 'running';
         },
       });
+      state.redactor = runtime.promptRedactor;
       state.close = () => closeRuntime(runtime);
       this.journal.update(record.runId, 'running');
       this.completion = executeReplay(artifact, params, runtime, this.policy, async req => {
@@ -126,7 +127,7 @@ export class InvocationService {
     const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
-      intervention: principal === 'operator' ? live?.approval.pending && sanitizePendingApproval(live.approval.pending) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
+      intervention: principal === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
       result: safeResult, sensitiveValuesUnavailable: !live, evidence };
   }
   history(principal: Principal) { return [...this.journal.records.values()].filter(r => principal === 'operator' || r.caller === principal).map(r => this.get(principal, r.runId)); }

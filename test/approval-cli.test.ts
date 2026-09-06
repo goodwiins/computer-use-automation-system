@@ -1,13 +1,18 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { requestApproval, sanitizePendingApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
+import { describePendingApproval, requestApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
-import { Approval, type ActionContext } from '../src/runtime/approval.js';
+import { Approval, publicIntervention, type ActionContext } from '../src/runtime/approval.js';
+
+import { createRuntime } from '../src/runtime/run.js';
+import { RunLogger } from '../src/evidence/logger.js';
+import { Redactor } from '../src/safety/redact.js';
+import { Policy } from '../src/safety/policy.js';
 
 const dirs: string[] = [];
 const TSX = 'tsx';
@@ -15,7 +20,7 @@ const childFixture = resolve('test/fixtures/approval-cli-child.ts');
 const request = { kind: 'risk_approval' as const, capability: 'hold', goal: 'apply hold', reason: 'review current facts', url: 'https://example.test/review?token=hidden' };
 const action = (runId: string): ActionContext => ({
   runId, artifact: 'hold', version: '1.0.0', stepId: 'post', destination: 'https://example.test/hold/post?token=destination-secret', method: 'POST',
-  operator: 'OPR1', branch: 'MAIN', role: 'SUPERVISOR', facts: { member: '123', token: 'must-not-cross' }, tokenPresent: true, control: 'Apply Hold',
+  operator: 'OPR1', branch: 'MAIN', role: 'SUPERVISOR', facts: { member: '123', token: 'must-not-cross' }, visibleFacts: { member: '123' }, tokenPresent: true, control: 'Apply Hold',
 });
 
 function temp(): string {
@@ -127,19 +132,6 @@ describe('standalone approval CLI transport', () => {
     await expect(requestApproval(runId, { action: 'decide', approvalId, decision: 'approve' })).rejects.toThrow(/unavailable/);
   });
 
-  it('R3-B1: sanitizePendingApproval strips query strings and sensitive fact keys but keeps the intervention shape', () => {
-    const runId = randomUUID();
-    const pending = { id: randomUUID(), expiresAt: Date.now() + 1000, request, action: action(runId) };
-    const safe = sanitizePendingApproval(pending);
-    expect(safe.id).toBe(pending.id);
-    expect(safe.request.kind).toBe('risk_approval');
-    expect(safe.request.url).toBe('https://example.test/review');
-    expect(safe.action?.destination).toBe('https://example.test/hold/post');
-    expect(safe.action?.facts).toEqual({ member: '123' });
-    expect(JSON.stringify(safe)).not.toMatch(/hidden|destination-secret|must-not-cross/);
-    expect(pending.action.facts.token).toBe('must-not-cross'); // input untouched
-  });
-
   it('rejects malformed, oversized and insecure endpoints without consuming the approval', async () => {
     process.env.CU_APPROVAL_DIR = temp();
     const runId = randomUUID();
@@ -205,6 +197,119 @@ describe('standalone approval CLI transport', () => {
     }
   }, 10_000);
 
+  it('keeps generic runtime query/hash identity while masking declared and URL credentials', async () => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const secret = 'private value/+?';
+    const runtime = createRuntime({ kind: 'replay', artifact: 'generic', version: '1', params: { credential: secret }, sensitive: ['credential'],
+      policy: Policy.parse({ allowedOrigins: ['https://example.test'], allowedActions: ['click'], riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'confirm' } }),
+      evidenceDir: temp(), gate: async () => false,
+    });
+    const approval = new Approval(runtime.session, () => {}, Date.now() + 60_000);
+    const url = `https://user:pass@example.test/action?member=123&choice=a&choice=b&credential=${encodeURIComponent(secret).toLowerCase()}#/account/123?mode=close&token=hash-only-secret`;
+    const wait = approval.wait({ ...request, url });
+    const server = await startApprovalServer(runtime.logger.runId, approval, runtime.promptRedactor);
+    try {
+      const prompt = describePendingApproval(approval.pending, runtime.promptRedactor);
+      const status = await requestApproval(runtime.logger.runId, { action: 'status' });
+      expect(status).toEqual({ ok: true, pending: prompt });
+      expect(prompt.url).toContain('member=123&choice=a&choice=b');
+      expect(prompt.url).toContain('#/account/123?mode=close');
+      expect(decodeURIComponent(prompt.url)).not.toMatch(/private value|hash-only-secret|user:pass/);
+      expect(publicIntervention(approval.pending!, runtime.promptRedactor).request.url).toBe(prompt.url);
+    } finally { approval.cancel(); await wait; await server.close(); await runtime.close(); }
+  });
+
+  it.each([
+    ['https://example.test/#access_token=short-credential&account=123', '/#access_token=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2&account=123'],
+    ['https://example.test/#access_token=short-credential&return=/account?tab=info', '/#access_token=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2&return=%2Faccount%3Ftab%3Dinfo'],
+    ['https://example.test/delete/a%FFb?member=123#review', '/delete/a%FFb?member=123#review'],
+    ['https://example.test/delete/a%FFb/%73ensitive-value?member=123#review%FE', '/delete/a%FFb/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2?member=123#review%FE'],
+    ['https://example.test/delete/a%2Fb%3Fc%23d/%73ensitive-value#ordinary%2Froute', '/delete/a%2Fb%3Fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#ordinary%2Froute'],
+    ['https://example.test/delete/%61%2fb%3fc%23d/sensitive-value#route=sensitive-value', '/delete/%61%2fb%3fc%23d/%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2#route=%E2%80%A2%E2%80%A2%E2%80%A2redacted%E2%80%A2%E2%80%A2%E2%80%A2'],
+  ])('masks fragment credentials without changing encoded route identity: %s', async (url, expected) => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const secrets = new Redactor();
+    secrets.addSensitiveValues(['sensitive-value']);
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const waiting = approval.wait({ ...request, url }, { ...action(runId), destination: url });
+    const server = await startApprovalServer(runId, approval, secrets);
+    try {
+      const shown = describePendingApproval(approval.pending, secrets);
+      expect(shown.url).toBe(`https://example.test${expected}`);
+      expect(shown.action!.destination).toBe(shown.url);
+      expect(await requestApproval(runId, { action: 'status' })).toEqual({ ok: true, pending: shown });
+      expect(JSON.stringify(shown)).not.toMatch(/short-credential|sensitive-value/);
+    } finally { approval.cancel(); await waiting; await server.close(); }
+  });
+
+  it.each(['api_key', 'api-key', 'apiKey', 'API.KEY', 'session', 'Session-ID', 'session_id', 'sid', 'SID', 'csrf', 'CSRF', 'nonce', 'NONCE']
+    .flatMap(key => ['query', 'hash-route', 'fragment'].map(location => ({ key, location }))))
+  ('masks unregistered $key in $location and visible facts while retaining business identity', async ({ key, location }) => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const parameters = new URLSearchParams({ [key]: 'short-credential', member: '123', amount: '1.00' }).toString();
+    const url = `https://example.test/action${location === 'query' ? '?' : location === 'hash-route' ? '#/review?' : '#'}${parameters}`;
+    const context = { ...action(runId), destination: url,
+      facts: { member: '123', amount: '1.00', [key]: 'short-credential' },
+      visibleFacts: { member: '123', amount: '1.00', [key]: 'short-credential', [`review:${key}:`]: 'short-credential' },
+    };
+    const original = structuredClone(context);
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const waiting = approval.wait({ ...request, url }, context);
+    const server = await startApprovalServer(runId, approval);
+    try {
+      const prompt = describePendingApproval(approval.pending);
+      expect(await requestApproval(runId, { action: 'status' })).toEqual({ ok: true, pending: prompt });
+      const api = publicIntervention(approval.pending!);
+      expect(api.action).toEqual(prompt.action);
+      expect(api.request.url).toBe(prompt.url);
+      expect(prompt.action!.facts).toEqual({ member: '123', amount: '1.00' });
+      expect(prompt.url).toContain('member=123&amount=1.00');
+      expect(prompt.action!.destination).toBe(prompt.url);
+      expect(JSON.stringify([prompt, api])).not.toContain('short-credential');
+      expect(context).toEqual(original);
+    } finally { approval.cancel(); await waiting; await server.close(); }
+  });
+
+  it.each(['occupied', 'insecure', 'early-close', 'recorder-close', 'cleanup'] as const)('pairs pending with one abort on %s', async scenario => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+    const observer = vi.fn();
+    const logger = new RunLogger('replay', new Redactor(), temp(), true, randomUUID(), observer);
+    const log = vi.spyOn(logger, 'log');
+    if (scenario === 'occupied' || scenario === 'cleanup') writeFileSync(join(process.env.CU_APPROVAL_DIR, `${logger.runId}.sock`), 'keep');
+    if (scenario === 'insecure') chmodSync(process.env.CU_APPROVAL_DIR, 0o755);
+    let closed = false;
+    const callbacks = new Map<string, () => void>();
+    const page = {
+      isClosed: () => closed,
+      exposeBinding: async () => { if (scenario === 'recorder-close') { closed = true; callbacks.get('close')?.(); } }, frames: () => [],
+      on: (event: string, callback: () => void) => { callbacks.set(event, callback); if (event === 'close' && scenario === 'early-close') { closed = true; callback(); } },
+      off: (event: string) => callbacks.delete(event),
+    };
+    const session = new ControlSession();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const operator = new OperatorConsole(page as never, logger as never, session);
+      if (scenario === 'cleanup') vi.spyOn(operator, 'recordHumanActions').mockResolvedValue(async () => { throw new Error('cleanup failed'); });
+      await expect(operator.intervene(request, action(logger.runId))).resolves.toBe('abort');
+      const pending = log.mock.calls.filter(([event]) => event === 'intervention.pending');
+      const decided = log.mock.calls.filter(([event]) => event === 'intervention.decided');
+      expect(pending).toHaveLength(1);
+      expect(decided).toEqual([['intervention.decided', { decision: 'abort', approvalId: pending[0]![1]!.approvalId }]]);
+      const persisted = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event.startsWith('intervention.'));
+      expect(persisted.map(entry => [entry.event, entry.approvalId])).toEqual([['intervention.pending', pending[0]![1]!.approvalId], ['intervention.decided', pending[0]![1]!.approvalId]]);
+      expect(JSON.stringify(observer.mock.calls)).not.toContain('approvalId');
+      expect(session.currentOwner).toBe('automation');
+      expect(callbacks.size).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(process.stdin, 'isTTY', original);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
+  });
+
   it('cancels an interactive standalone approval when the browser closes', async () => {
     process.env.CU_APPROVAL_DIR = temp();
     const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
@@ -223,7 +328,7 @@ describe('standalone approval CLI transport', () => {
       const result = await new OperatorConsole(page as never, logger as never, session).intervene(request, action(logger.runId));
       expect(result).toBe('abort');
       expect(session.currentOwner).toBe('automation');
-      expect(logger.log).toHaveBeenCalledWith('intervention.decided', { decision: 'abort' });
+      expect(logger.log).toHaveBeenCalledWith('intervention.decided', { decision: 'abort', approvalId: expect.any(String) });
       expect(consoleLog.mock.calls.flat().join(' ')).toContain('SUPERVISOR');
       expect(consoleLog.mock.calls.flat().join(' ')).not.toContain('destination-secret');
     } finally {

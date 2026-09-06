@@ -161,7 +161,7 @@ async function discover(argv: string[]) {
         runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,
         gate: async (action, risk, reason, context) => {
           if (!headful) return false;
-          const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene({
+          const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session, runtime!.promptRedactor).intervene({
             kind: 'risk_approval', capability: name, goal, reason, url: runtime!.surface.currentUrl(),
           }, context);
           return decision === 'retry';
@@ -314,7 +314,7 @@ async function replay(argv: string[]) {
         runId: record?.runId, evidenceDir: meridian ? process.env.EVIDENCE_DIR ?? 'evidence/meridian' : undefined,
         gate: async (action, risk, reason, context) => {
           if (!attended) return false;
-          const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene({
+          const decision = await new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session, runtime!.promptRedactor).intervene({
             kind: 'risk_approval', capability: artifact.id, goal: artifact.description, reason, url: runtime!.surface.currentUrl(),
           }, context);
           return decision === 'retry';
@@ -323,7 +323,7 @@ async function replay(argv: string[]) {
       console.log(`replay run ${runtime.logger.runId} → ${runtime.logger.dir}`);
       updateJournal(journal, record?.runId, 'running');
       const result = await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy,
-        escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session).intervene(req) : undefined,
+        escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session, runtime!.promptRedactor).intervene(req) : undefined,
         validateCompletion: runtime.validateCompletion });
       const uncertain = dispatchIntent(journal, record?.runId, runtime.surface.mutationDispatched);
       const output = result.status === 'failure' && uncertain && result.failure.code !== 'POST_OUTCOME_UNKNOWN'
