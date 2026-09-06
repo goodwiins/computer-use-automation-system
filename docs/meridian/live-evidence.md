@@ -21,7 +21,26 @@ The summaries contain metadata and hashes only; signed journals and raw run evid
 
 Two genuine fault-only discoveries at source `d1124eb7548705364a0e58b6d70f5d1a279f137e` stopped before reaching the configured injected-notfound operation page. [Attempt 1](evidence/transfer-checkpoint-sep6/attempt-1.json), `a0e04247-7884-452b-90ae-be613a35d599`, escalated after the menu shortcut lacked member/frame binding; its handoff expired. [Attempt 2](evidence/transfer-checkpoint-sep6/attempt-2.json), `56915f92-1942-4e03-a7f3-f72d363362f2`, entered the member first but still lacked transfer eligibility; the handoff was explicitly aborted. Both journals are terminal `failure`, with `escalated` results, authenticated evaluator PASS/task failure, 11 and 12 attempts, and zero mutation intents. Neither accepted posting, produced an artifact, or observed the injected condition. Log hashes were checked against the retained private evidence.
 
-The second failure exposed missing eligibility initialization after member start/navigation. [PR #87](https://github.com/goodwiins/computer-use-automation-system/pull/87) reuses native member-table capture and clears stale eligibility on failed refresh. Its head `5f79ff8` passed independent review, 644 local tests/typecheck and hosted CI `34029116834`; hosted review subsequently found cross-origin redirect binding and startup business-outcome gaps, which remain under repair before merge. These source checks do not close EXC-03 or transfer acceptance.
+The second failure exposed missing eligibility initialization after member start/navigation. [PR #87](https://github.com/goodwiins/computer-use-automation-system/pull/87) reuses native member-table capture and clears stale eligibility on failed refresh. Hosted review found cross-origin redirect binding and startup business-outcome gaps in its first head. Repaired head `f33ca72` passed 652 tests/typecheck, independent end-to-end review and hosted code review/CI `34029912538`. It merged to `dev` as `1a97742` with the same tree and passing merge CI `34030213795`. Hosted security review was at earlier head `5f79ff8`; the repaired head also had independent review of the two safety findings. Source gates alone do not close transfer acceptance.
+
+## Injected discovery checks after the checkpoint repair
+
+Four genuine CLI discoveries at source `eedc4ea1104c7bb52e7ad5199be960de782fe37a` (core merge `1a97742`) reached their configured injected condition on the observed transfer-entry GET. Each used a fresh key/journal, stopped before transfer form submission, and recorded zero actions after detection. Signed evaluation passed with zero mutation intents. Discovery reports these detector stops as `stopped` with a terminal `failure` journal/result; the detector classification and reason remain explicit.
+
+| Injected condition | Run | Detector / stop code | Actions |
+| --- | --- | --- | --- |
+| [Not found](evidence/injected-prepost-sep6/notfound.json) | `c5c454f6-af63-448c-89c1-cf117dc21ccd` | business outcome / `NO_SUCH_MEMBER` | 10 |
+| [Validation](evidence/injected-prepost-sep6/validation.json) | `d7dfe433-f786-40bf-bdbe-5e3a2af5a622` | business outcome / `VALIDATION_REJECTED` | 11 |
+| [Session expiry](evidence/injected-prepost-sep6/timeout.json) | `d51331f2-fd9b-42ea-897a-88c4ea974f10` | fatal / `SESSION_EXPIRED` | 12 |
+| [Application error](evidence/injected-prepost-sep6/server.json) | `66e81477-74d1-4f91-a7d0-83e0678d883d` | fatal / `APPLICATION_ERROR` | 13 |
+
+These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain missing; no complete transfer artifact or write acceptance is created. Permission, natural teller denial, natural idle expiry and same-browser maintenance completion remain separate open gates. All four CLI sessions are terminal, and no approval was granted.
+
+## Integrated chat read rehearsal
+
+At PR #84 source `603b8398d5a5a5a85963a2294c37613ab74f010d`, [read run `00eddac9-7056-4ef6-9855-24847a70bce5`](evidence/ui-read-sep6/summary.json) returned 35 typed share rows through the real assistant-ui chat, caller API and deterministic member-record replay. Values and state matched in the chat card and dashboard; signed evaluation passed with 10 actions and zero mutation intents. Refresh, reload and reconnect produced no second run; reload cleared authentication and browser storage stayed empty. No approval endpoint was called. The UI browser closed and the API server exited normally.
+
+This is a source-specific read rehearsal. Hosted review subsequently found that explicit fresh requests could reuse old results and separate evidence roots could rebuild shared UI assets. PR #84 remains unmerged while those issues are repaired; the rehearsal does not establish final UI or write acceptance.
 
 ## Reviewed artifacts
 
