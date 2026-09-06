@@ -50,7 +50,7 @@ it('releases the API slot and finalizes the journal when runtime construction fa
   try {
     expect(() => service.invoke('caller', 'meridian-sign-on', {}, 'first')).toThrow('Injected runtime startup failure');
     const first = [...journal.records.values()][0]!;
-    expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId });
+    expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId, reused: true });
     expect(service.get('caller', first.runId).state).toBe('failure');
     let nextError = '';
     try { service.invoke('caller', 'meridian-sign-on', {}, 'second'); } catch (e) { nextError = (e as Error).message; }
@@ -132,7 +132,7 @@ it('closes a constructed runtime before releasing the slot after setup fails', a
     expect(close).toHaveBeenCalledOnce();
     expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('One run is active');
     release();
-    await service.close();
+    await vi.waitFor(() => expect([...service.live.values()][0]?.finished).toBeDefined());
     construct.mockImplementation(() => { throw new Error('Next setup attempted'); });
     expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('Next setup attempted');
     expect([...journal.records.values()].map(r => r.state)).toEqual(['failure', 'failure']);
