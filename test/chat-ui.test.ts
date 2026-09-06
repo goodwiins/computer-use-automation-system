@@ -626,7 +626,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(invokes.map((r) => r.key)).toEqual([firstKey, firstKey]);
   expect(state.invocations.size).toBe(1);
   expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, operator: 'SUPERVISOR' });
-  expect(await page.locator('#fields input').inputValue()).toBe('');
+  expect(await page.locator('#fields input').inputValue()).toBe('offline-member');
   state.runs[0]!.state = 'success';
   state.runs[0]!.evidence.push('../private.json');
   await page.locator('#refresh').click();
@@ -670,9 +670,7 @@ it('offline refresh requested during an older history read still observes an acc
   await page.locator('#fields input').fill('offline-member');
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
   await vi.waitFor(() => expect(state.invocations.size).toBe(1));
-  await page.waitForFunction(
-    () => !(document.querySelector('#invoke fieldset') as HTMLFieldSetElement)?.disabled,
-  );
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
   release();
   await visible(page, '#runs', runId);
 }, 15000);
@@ -865,3 +863,101 @@ it('disables credential entry and dispatch in a UI-only deployment', async () =>
   await page.locator('#login').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(state.requests.filter(request => request.path === '/capabilities' || request.method === 'POST')).toEqual([]);
 });
+
+it('retains an accepted direct run through a history outage without a second invocation', async () => {
+  const { page, state, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  state.offline = true;
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  await page.getByText('Disconnected from run updates.', { exact: false }).waitFor();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  expect(await page.locator('#fields input').inputValue()).toBe('offline-member');
+  expect(state.invocations.size).toBe(1);
+  state.runs[0]!.state = 'success';
+  state.offline = false;
+  await page.locator('#refresh').click();
+  await visible(page, '#runs', runId);
+  await page.getByRole('button', { name: 'Start another invocation', exact: true }).waitFor();
+  expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(1);
+}, 15000);
+
+it('unlocks a failed decision only after fresh authoritative confirmation and never resends it automatically', async () => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention: {
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'locator_failed', reason: 'Repair fixture' },
+  } });
+  await connect(operatorToken);
+  const retry = page.getByRole('button', { name: 'Retry after repair' });
+  await retry.waitFor();
+  let posts = 0;
+  await page.route('**/decision', async route => { posts++; state.offline = true; await route.abort(); });
+  await retry.click();
+  await page.getByText('Refresh to inspect authoritative state.', { exact: false }).waitFor();
+  expect(await retry.isDisabled()).toBe(true);
+  await page.locator('#refresh').click();
+  expect(await retry.isDisabled()).toBe(true);
+  let releaseProbe!: () => void;
+  const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
+  let probes = 0;
+  await page.route(`**/runs/${runId}`, async route => { probes++; await heldProbe; await route.continue(); });
+  state.offline = false;
+  await page.locator('#refresh').click();
+  await vi.waitFor(() => expect(probes).toBe(1));
+  const reads = state.requests.filter(r => r.path === '/runs').length;
+  await page.locator('#refresh').click();
+  await vi.waitFor(() => expect(state.requests.filter(r => r.path === '/runs').length).toBeGreaterThan(reads));
+  expect(await retry.isDisabled()).toBe(true);
+  releaseProbe();
+  await page.getByText('The server confirms this intervention is still pending.', { exact: false }).waitFor();
+  expect(probes).toBe(1);
+  await vi.waitFor(async () => expect(await retry.isDisabled()).toBe(false));
+  expect(posts).toBe(1);
+  expect(state.decisions).toEqual([]);
+  await page.unroute('**/decision');
+  await retry.click();
+  await vi.waitFor(() => expect(state.decisions).toEqual(['retry']));
+}, 15000);
+
+it('renders strict and legacy business outcome codes while dropping arbitrary values', async () => {
+  const { page, state, connect, evidenceDir } = await fixture();
+  writeFileSync(join(evidenceDir, runId, 'log.jsonl'), [
+    { event: 'replay.business_outcome', code: 'NO_SUCH_MEMBER' },
+    { event: 'replay.business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' },
+    { event: 'replay.business_outcome', outcomeCode: hostile },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  state.runs.push({ ...initialRun(), state: 'success' });
+  await connect();
+  await page.getByText('Run details and evidence', { exact: true }).click();
+  const timeline = page.getByRole('list', { name: 'Recorded step timeline' });
+  await timeline.getByText('Code: NO_SUCH_MEMBER', { exact: true }).waitFor();
+  await timeline.getByText('Code: INSUFFICIENT_FUNDS', { exact: true }).waitFor();
+  expect(await timeline.innerText()).not.toContain(hostile);
+}, 15000);
+
+it('allows a separate direct inquiry after unknown posting without replaying the unknown capability', async () => {
+  const { page, state, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [capability, inquiry];
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  state.runs[0]!.state = 'POST_OUTCOME_UNKNOWN';
+  await page.locator('#refresh').click();
+  await page.getByRole('button', { name: 'Choose a separate inquiry', exact: true }).click();
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText('This capability has an unknown posting outcome.', { exact: false }).waitFor();
+  expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(1);
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await vi.waitFor(() => expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(2));
+  expect(state.requests.filter(r => r.path.endsWith('/invoke')).map(r => r.path)).toEqual([
+    `/capabilities/${capability.id}/invoke`, `/capabilities/${inquiry.id}/invoke`,
+  ]);
+}, 15000);

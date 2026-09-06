@@ -60,6 +60,9 @@ export function createApp(service: InvocationService, config: { callerToken: str
 }
 
 export async function serve(profileName = 'meridian') {
+  // Direct CLI entry points must work without a pre-existing dashboard bundle.
+  const { build } = await import('vite');
+  await build({ configFile: resolve('vite.config.ts') });
   const profile = loadProfile(profileName);
   const policy = profilePolicy(profile);
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';

@@ -171,7 +171,12 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
           return toolResult.toolName !== 'run_status' && output.kind === 'run';
         });
         const invalid = result.dynamicToolCalls.find(call => call.invalid);
-        if (!accepted && invalid) throw new RequestError(403, NoSuchToolError.isInstance(invalid.error) ? 'Capability or operator context is not authorized' : 'Request does not match the contract');
+        if (!accepted && invalid) {
+          const failure = NoSuchToolError.isInstance(invalid.error)
+            ? { status: 403, error: 'Capability or operator context is not authorized' }
+            : safeError(invalid.error);
+          throw new RequestError(failure.status, failure.error);
+        }
         const selected = accepted ?? localResults.find(toolResult => (toolResult.output as ToolOutput).kind === 'error') ?? localResults[0];
         const output = selected?.output as ToolOutput | undefined;
         if (!output) return void res.json({ message: result.text || 'Please supply the required capability inputs.' });

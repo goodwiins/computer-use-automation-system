@@ -168,6 +168,13 @@ describe('AI SDK chat boundary', () => {
     expect(unknownService.invoke).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for malformed arguments to an authorized tool without invocation', async () => {
+    const chatService = service();
+    const malformed = await start(mockModel(toolContent('run_status', { runId: 'not-a-uuid' })), chatService);
+    expect(await malformed.request('/chat', legacyBody())).toMatchObject({ status: 400, json: { error: 'Request does not match the contract' } });
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
   it('returns an accepted capability when status and unknown calls share the model response', async () => {
     const model = mockModel();
     model.doGenerate = vi.fn(async () => generateResult([

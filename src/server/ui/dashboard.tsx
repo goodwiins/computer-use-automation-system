@@ -25,16 +25,23 @@ export function OperatorSessionControls() {
   ) : null;
 }
 export function CapabilityCatalog() {
-  const { session, request, refresh } = useRuns();
+  const { session, request, runs, watch } = useRuns();
   const [selected, setSelected] = useState(session.capabilities[0]?.id ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [acceptedId, setAcceptedId] = useState('');
+  const unknownCapabilities = useRef(new Set<string>());
+  const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
   const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const capability = session.capabilities.find((c) => c.id === selected);
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current) return;
+    if (!capability || active.current || acceptedId) return;
+    if (unknownCapabilities.current.has(capability.id)) {
+      setError('This capability has an unknown posting outcome. Choose a separate read-only inquiry; do not retry it.');
+      return;
+    }
     const form = event.currentTarget;
     const data = new FormData(form);
     const args = Object.fromEntries(
@@ -56,14 +63,15 @@ export function CapabilityCatalog() {
     setBusy(true);
     setError('');
     try {
-      await request(`/capabilities/${segment(capability.id)}/invoke`, {
+      const response = await request(`/capabilities/${segment(capability.id)}/invoke`, {
         method: 'POST',
         body,
         headers: { 'Idempotency-Key': attempt.current.key },
       });
-      form.reset();
-      attempt.current = undefined;
-      await refresh();
+      const accepted: { runId: string } = await response.json();
+      segment(accepted.runId);
+      setAcceptedId(accepted.runId);
+      watch(accepted.runId);
     } catch (e) {
       setError(
         `${e instanceof Error ? e.message : 'Request interrupted.'} If the outcome is uncertain, refresh history. Resubmitting unchanged inputs uses the same request key.`,
@@ -94,7 +102,7 @@ export function CapabilityCatalog() {
           <p className="empty">No approved capabilities are available to this principal.</p>
         ) : (
           <form id="invoke" onSubmit={invoke} autoComplete="off">
-            <fieldset disabled={busy}>
+            <fieldset disabled={busy || Boolean(acceptedId)}>
               <label htmlFor="capability">Capability</label>
               <select
                 id="capability"
@@ -140,6 +148,14 @@ export function CapabilityCatalog() {
           </form>
         )}
         {error && <p role="alert">{error}</p>}
+        {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
+        {acceptedRun && !pending(acceptedRun) && (
+          <button onClick={() => {
+            if (acceptedRun.state === 'POST_OUTCOME_UNKNOWN') unknownCapabilities.current.add(acceptedRun.capability);
+            setAcceptedId('');
+            attempt.current = undefined;
+          }}>{acceptedRun.state === 'POST_OUTCOME_UNKNOWN' ? 'Choose a separate inquiry' : 'Start another invocation'}</button>
+        )}
       </details>
     </section>
   );
@@ -225,9 +241,30 @@ export function ApprovalPanel({ run }: { run: Run }) {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
   const locked = useRef(false);
+  const uncertain = useRef(false);
+  const probing = useRef(false);
+  const mounted = useRef(true);
   useEffect(() => {
+    if (!uncertain.current || probing.current) return;
+    probing.current = true;
+    // A failed POST is not retry permission. Probe the current intervention after a fresh history update.
+    void request(`/runs/${segment(run.runId)}`).then((response) => response.json()).then((current: Run) => {
+      if (mounted.current && current.runId === run.runId && current.state === 'awaiting-human'
+        && current.intervention && 'id' in current.intervention
+        && run.intervention && 'id' in run.intervention
+        && current.intervention.id === run.intervention.id && Date.now() < current.intervention.expiresAt) {
+        uncertain.current = false;
+        locked.current = false;
+        setSent(false);
+        setError('The server confirms this intervention is still pending. You may choose a decision again.');
+      }
+    }).catch(() => { /* Keep locked until a later authoritative refresh succeeds. */ })
+      .finally(() => { probing.current = false; });
+  }, [run, request]);
+  useEffect(() => {
+    mounted.current = true;
     const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    return () => { mounted.current = false; clearInterval(timer); };
   }, []);
   const intervention = run.intervention;
   if (!intervention || !('id' in intervention)) return null;
@@ -250,6 +287,7 @@ export function ApprovalPanel({ run }: { run: Run }) {
         body: JSON.stringify({ approvalId: intervention.id, decision }),
       });
     } catch (e) {
+      uncertain.current = true;
       setError(
         `${e instanceof Error ? e.message : 'Decision response unavailable.'} Refresh to inspect authoritative state.`,
       );

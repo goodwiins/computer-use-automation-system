@@ -195,6 +195,10 @@ function parseTimeline(text: string): TimelineResult {
     }
     const parsedDate = typeof raw.ts === 'string' ? new Date(raw.ts) : undefined;
     const timestamp = parsedDate && Number.isFinite(parsedDate.getTime()) ? parsedDate.toISOString() : undefined;
+    if (raw.event === 'replay.business_outcome' && !('code' in raw) && fieldValue('code', raw.outcomeCode)) {
+      raw.code = raw.outcomeCode;
+      delete raw.outcomeCode;
+    }
     const allowed = new Set<string>(['event', 'seq', 'ts', ...spec.fields]);
     let omitted = Object.keys(raw).some((key) => !allowed.has(key));
     if ('seq' in raw && sequence === undefined) omitted = true;

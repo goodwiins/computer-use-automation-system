@@ -960,6 +960,8 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
     : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
   expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toMatchObject(
     afterIntent ? { status: 'failure' } : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+  const outcomeEvents = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(event => event.event === 'replay.business_outcome');
+  expect(outcomeEvents).toEqual(afterIntent ? [] : [expect.objectContaining({ code: 'INSUFFICIENT_FUNDS' })]);
   expect(surface.click).toHaveBeenCalledOnce();
   expect(escalate).not.toHaveBeenCalled();
 
