@@ -7,6 +7,7 @@ const ids = [
   'meridian-sign-on',
   'meridian-member-inquiry',
   'meridian-member-record',
+  'meridian-open-share',
 ];
 it.each(ids)('%s is reviewed and satisfies the recorded contract', id => {
   const artifact = CapabilityArtifact.parse(JSON.parse(
