@@ -408,11 +408,75 @@ it.each(['business', 'abort', 'unknown'] as const)('retains typed discovery term
   expect(f.create).toHaveBeenCalledOnce(); expect(f.escalate).not.toHaveBeenCalled();
 });
 
+it.each(['escalate', 'completion'] as const)('distinguishes post-intent discovery %s in strict metadata without retry', async mode => {
+  const f = discoveryConditionFixture();
+  const call = (name: string) => ({ choices: [{ message: { content: 'PRIVATE model text', tool_calls: [{
+    id: 'PRIVATE tool id', type: 'function', function: { name, arguments: JSON.stringify({ text: 'Post', reason: 'PRIVATE reason', summary: 'PRIVATE summary' }) },
+  }] } }] });
+  f.create.mockResolvedValueOnce(call('click')).mockResolvedValueOnce(call(mode === 'escalate' ? 'escalate' : 'done'));
+  const click = vi.spyOn(f.inner, 'click').mockImplementation(async () => { f.surface.mutationDispatched = true; return report; });
+  const validateCompletion = vi.fn(async () => { throw new Error('PRIVATE completion values'); });
+  f.deps.validateCompletion = validateCompletion;
+  const result = await f.run();
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' });
+  expect(f.create).toHaveBeenCalledTimes(2); expect(click).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'completion' ? 1 : 0);
+  expect(f.escalate).not.toHaveBeenCalled();
+  const log = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  const events = log.trim().split('\n').map(line => JSON.parse(line));
+  const diagnostic = events.filter(event => ['discovery.escalate', 'discovery.completion'].includes(event.event));
+  expect(diagnostic.map(({ ts, seq, ...metadata }) => metadata)).toEqual(mode === 'escalate'
+    ? [{ event: 'discovery.escalate' }] : [{ event: 'discovery.completion', status: 'failure' }]);
+  expect(diagnostic[0].seq).toBeLessThan(events.find(event => event.event === 'discovery.finish').seq);
+  f.logger.writeResult(result);
+  const saved = readFileSync(join(f.logger.dir, 'result.json'), 'utf8');
+  expect(log + saved).not.toContain('PRIVATE');
+  expect(JSON.parse(saved)).not.toHaveProperty('trace');
+  expect(log).not.toContain('detector.recovering');
+});
+
+it.each(['business', 'abort'] as const)('retains the original typed completion error before intent: %s', async mode => {
+  const f = discoveryConditionFixture();
+  f.deps.validateCompletion = vi.fn(async () => { throw mode === 'business' ? new InsufficientFundsError() : new RunAbortedError('PRIVATE completion'); });
+  expect(await f.run()).toMatchObject(mode === 'business'
+    ? { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' }
+    : { status: 'stopped', stopReason: 'RUN_ABORTED' });
+  expect(f.create).toHaveBeenCalledOnce(); expect(f.escalate).not.toHaveBeenCalled();
+  const log = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  expect(log).toContain('discovery.completion'); expect(log).not.toContain('PRIVATE');
+});
+
+it.each(['business', 'abort', 'escalate'].flatMap(mode => [false, true].map(dispatched => ({ mode, dispatched }))))('preserves discovery terminal handling when diagnostic logging fails: $mode dispatched=$dispatched', async ({ mode, dispatched }) => {
+  const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
+  f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: {
+    name: mode === 'escalate' ? 'escalate' : 'done', arguments: '{}',
+  } }] } }] });
+  const validateCompletion = vi.fn(async () => { throw mode === 'business' ? new InsufficientFundsError() : new RunAbortedError('PRIVATE completion'); });
+  const escalate = vi.fn(async () => 'abort' as const);
+  f.deps.validateCompletion = validateCompletion; f.deps.escalate = escalate;
+  const log = f.logger.log.bind(f.logger);
+  vi.spyOn(f.logger, 'log').mockImplementation((event, data) => {
+    if (event === (mode === 'escalate' ? 'discovery.escalate' : 'discovery.completion')) throw new Error('PRIVATE diagnostic write failure');
+    log(event, data);
+  });
+  expect(await f.run()).toMatchObject(dispatched ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
+    : mode === 'business' ? { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' }
+    : mode === 'abort' ? { status: 'stopped', stopReason: 'RUN_ABORTED' } : { status: 'escalated' });
+  expect(f.create).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'escalate' ? 0 : 1);
+  expect(escalate).toHaveBeenCalledTimes(mode === 'escalate' && !dispatched ? 1 : 0);
+  const persisted = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  expect(persisted).not.toContain('PRIVATE');
+  expect(persisted).not.toContain('discovery.action_error');
+  expect(persisted).not.toContain('detector.recovering');
+});
+
 it.each([false, true])('keeps condition-free verified discovery success: dispatched=%s', async dispatched => {
   const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
   const validateCompletion = vi.fn(); f.deps.validateCompletion = validateCompletion;
   expect(await f.run()).toMatchObject({ status: 'success' });
   expect(validateCompletion).toHaveBeenCalledOnce(); expect(f.create).toHaveBeenCalledOnce();
+  expect(readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8')).not.toContain('discovery.completion');
 });
 
 it('keeps discovery without strict profile integration generic', async () => {

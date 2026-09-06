@@ -167,12 +167,18 @@ export async function runDiscovery(
           case 'done': {
             if (repaired) return finish('escalated', 'Human repair requires a fresh complete recording');
             const finalUrl = surface.currentUrl();
-            await deps.validateCompletion?.(outputs);
+            try { await deps.validateCompletion?.(outputs); }
+            catch (err) {
+              try { logger.log('discovery.completion', { status: 'failure' }); }
+              catch { /* Diagnostics must not replace the original completion error. */ }
+              throw err;
+            }
             return finish('success', undefined, String(args.summary ?? ''), finalUrl);
           }
           case 'escalate': {
+            try { logger.log('discovery.escalate'); }
+            catch { /* Diagnostics must not replace the model's terminal decision. */ }
             if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
-            logger.log('discovery.escalate', { reason });
             if (deps.escalate) {
               const decision = await deps.escalate({
                 kind: 'discovery_stuck',

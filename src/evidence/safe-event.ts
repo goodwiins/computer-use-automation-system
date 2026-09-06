@@ -69,7 +69,7 @@ const names = new Set([
   'policy.decision', 'step.start', 'step.ok', 'step.resolution', 'step.extracted',
   'replay.start', 'replay.success', 'replay.failure', 'replay.business_outcome',
   'discovery.start', 'discovery.observe', 'discovery.decision', 'discovery.finish',
-  'discovery.action_error', 'discovery.escalate', 'llm.start', 'llm.end',
+  'discovery.action_error', 'discovery.escalate', 'discovery.completion', 'llm.start', 'llm.end',
   'detector.hit', 'detector.recovering', 'escalation.raised', 'escalation.decision',
   'intervention.pending', 'intervention.decided', 'handoff.to_human', 'handoff.to_automation',
   'control.transfer', 'dialog.unexpected', 'evidence.warning', 'human.action', 'human.action.capped',
