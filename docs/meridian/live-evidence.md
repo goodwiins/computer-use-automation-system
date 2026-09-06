@@ -36,6 +36,10 @@ Four genuine CLI discoveries at source `eedc4ea1104c7bb52e7ad5199be960de782fe37a
 
 These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain missing; no complete transfer artifact or write acceptance is created. Permission, natural teller denial, natural idle expiry and same-browser maintenance completion remain separate open gates. All four CLI sessions are terminal, and no approval was granted.
 
+## Permission-entry attempts on merged UI baseline
+
+Two bounded discoveries at `dfa6f5a` configured permission injection for the observed transfer-entry GET, but neither established that entry. [Run `a0fd7eb4-c633-444f-a3d6-fe8c7385f117`](evidence/permission-attempts-sep6/a0fd7eb4-c633-444f-a3d6-fe8c7385f117.json) stopped with `PERMISSION_DENIED` after six actions and no recorded member lookup/selection. [Run `69315fe0-e7ab-474e-b90f-8c8aee6d813a`](evidence/permission-attempts-sep6/69315fe0-e7ab-474e-b90f-8c8aee6d813a.json) stopped with `VALIDATION_REJECTED` after sign-on (five actions). Both signed evaluations passed with zero mutation intents and no action after detection; both CLI sessions are terminal. The cause of these early target responses is unverified. These are failed attempts at the intended permission-entry check, not permission D/R acceptance, and no automatic continuation was attempted after either terminal result.
+
 ## Natural underfunding discovery
 
 [Run `8af1753c-86e4-4193-af55-6aa1322f8425`](evidence/natural-underfunded-sep6/summary.json), source `2d539b5089a4db0a73933649fd89787c54ecddcb`, used an intentionally excessive test amount and no URL fault injection. Native member-share eligibility checks returned `business_outcome / INSUFFICIENT_FUNDS`; the signed journal and result agree, and evaluation passed with nine actions and zero mutation intents. This is a guard-derived preflight outcome, not a submitted target rejection or complete transfer recording. API/replay and independent native network-counter evidence remain open for EXC-08. The CLI session exited normally; no posting approval was requested or granted.
