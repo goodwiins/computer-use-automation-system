@@ -36,6 +36,10 @@ Four genuine CLI discoveries at source `eedc4ea1104c7bb52e7ad5199be960de782fe37a
 
 These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain missing; no complete transfer artifact or write acceptance is created. Permission, natural teller denial, natural idle expiry and same-browser maintenance completion remain separate open gates. All four CLI sessions are terminal, and no approval was granted.
 
+## Selected transfer recording: personal approval expired
+
+After the user selected new transfer inputs, [run `14d62781-c672-4dde-9fc9-2aa2ca2a2c53`](evidence/transfer-approval-expiry-sep6/summary.json) at source `a80ac4e` reached the native review and personal approval gate. The runtime presented the bound member/share/amount/memo facts and a present token. No approval was entered; the five-minute wait ended in `abort` and terminal `RUN_ABORTED`. Signed evaluation passed with 17 actions and zero mutation intents. This verifies the exercised review-to-expiry boundary, not a posted transfer or complete capability recording. The expired run remains terminal and will not be resumed; a new intentional recording requires a fresh review and personal approval.
+
 ## Permission-entry attempts on merged UI baseline
 
 Two bounded discoveries at `dfa6f5a` configured permission injection for the observed transfer-entry GET, but neither established that entry. [Run `a0fd7eb4-c633-444f-a3d6-fe8c7385f117`](evidence/permission-attempts-sep6/a0fd7eb4-c633-444f-a3d6-fe8c7385f117.json) stopped with `PERMISSION_DENIED` after six actions and no recorded member lookup/selection. [Run `69315fe0-e7ab-474e-b90f-8c8aee6d813a`](evidence/permission-attempts-sep6/69315fe0-e7ab-474e-b90f-8c8aee6d813a.json) stopped with `VALIDATION_REJECTED` after sign-on (five actions). Both signed evaluations passed with zero mutation intents and no action after detection; both CLI sessions are terminal. The cause of these early target responses is unverified. These are failed attempts at the intended permission-entry check, not permission D/R acceptance, and no automatic continuation was attempted after either terminal result.
