@@ -36,6 +36,10 @@ Four genuine CLI discoveries at source `eedc4ea1104c7bb52e7ad5199be960de782fe37a
 
 These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain missing; no complete transfer artifact or write acceptance is created. Permission, natural teller denial, natural idle expiry and same-browser maintenance completion remain separate open gates. All four CLI sessions are terminal, and no approval was granted.
 
+## Natural underfunding discovery
+
+[Run `8af1753c-86e4-4193-af55-6aa1322f8425`](evidence/natural-underfunded-sep6/summary.json), source `2d539b5089a4db0a73933649fd89787c54ecddcb`, used an intentionally excessive test amount and no URL fault injection. Native member-share eligibility checks returned `business_outcome / INSUFFICIENT_FUNDS`; the signed journal and result agree, and evaluation passed with nine actions and zero mutation intents. This is a guard-derived preflight outcome, not a submitted target rejection or complete transfer recording. API/replay and independent native network-counter evidence remain open for EXC-08. The CLI session exited normally; no posting approval was requested or granted.
+
 ## Integrated chat read rehearsal
 
 At PR #84 source `603b8398d5a5a5a85963a2294c37613ab74f010d`, [read run `00eddac9-7056-4ef6-9855-24847a70bce5`](evidence/ui-read-sep6/summary.json) returned 35 typed share rows through the real assistant-ui chat, caller API and deterministic member-record replay. Values and state matched in the chat card and dashboard; signed evaluation passed with 10 actions and zero mutation intents. Refresh, reload and reconnect produced no second run; reload cleared authentication and browser storage stayed empty. No approval endpoint was called. The UI browser closed and the API server exited normally.
