@@ -667,13 +667,13 @@ export class GuardedSurface implements Surface {
     state.stage = route.stage;
   }
 
-  private async captureTransferEligibility(memberPath: string, timeoutMs: number): Promise<void> {
+  private async captureTransferEligibility(memberUrl: string, timeoutMs: number): Promise<void> {
     const binding = this.runtime?.transfer;
-    const member = MEMBER_ROUTE.exec(this.path(memberPath));
+    const member = MEMBER_ROUTE.exec(this.path(memberUrl));
     if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Transfer member selection is not eligible');
     if (!this.inner.readTable) throw new Error('Member eligibility table is unavailable');
     const before = this.currentTransferFrame();
-    if (this.path(before.url) !== this.path(memberPath)) return this.transferFrameFailed();
+    if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.transferFrameFailed();
     const target = { ...binding.memberTable.target, frame: before.name };
     // Eligibility is part of the member-selection action. Keep the extract
     // policy and bounds checks, but avoid readTable()'s public action wrapper:
@@ -687,7 +687,7 @@ export class GuardedSurface implements Surface {
     this.preserveTransferState(this.inner.currentUrl());
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.currentTransferFrame();
-    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.transferFrameFailed();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.origin(resolved.url) !== this.origin(memberUrl) || this.path(resolved.url) !== this.path(memberUrl)) return this.transferFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw new Error('Member eligibility table is incomplete');
       return { share: row.shareId, status: row.status, balance: row.balance };
@@ -1096,7 +1096,7 @@ export class GuardedSurface implements Surface {
         const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
         if (this.mutationDispatched) this.transferEligibility = undefined;
-        else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
+        else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(live.destination, remaining());
         else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl(), live.frame);
         if (!this.mutationDispatched && this.runtime.openShare && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureOpenShareState(this.inner.currentUrl(), remaining());
         else if (!this.mutationDispatched && this.runtime.openShare && this.openShareStage(this.inner.currentUrl())) this.advanceOpenShareState(this.inner.currentUrl(), live.frame);
