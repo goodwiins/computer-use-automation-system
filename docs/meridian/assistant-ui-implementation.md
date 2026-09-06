@@ -1,5 +1,28 @@
 # MERIDIAN assistant-ui implementation and evidence
 
+## Current integration checkpoint — September 6
+
+The reviewed UI/AI SDK branch is integrated with dev
+`cfccec5f64c7174e363e495428ecf27e70002d03` (PR67 approval safety) on
+`codex/meridian-assistant-ui-integration`. Source `cdee438` passes the combined
+644 tests across 20 files, both typechecks, production build, artifact validation,
+and dependency audit (zero vulnerabilities). The only merge conflict was adjacent
+test imports; both were retained.
+
+The current dev versions of `src/server/service.ts`, `src/runtime/approval.ts`
+and the escalation implementation are unchanged. The bundled approval regression
+now consumes the actual `publicIntervention` projection: visible transaction facts
+remain reviewable, hidden body/token and short URL credentials stay absent, and
+the UI sends only the current approval ID and decision. No client approval model
+or alternate execution authority was introduced.
+
+This is a separate PR integration, not an AWS update or new live acceptance run.
+The source-specific live read evidence below remains produced by `681ab82`.
+Overall accepted capability pairs remain 3/7, and remote human handoff and four
+write acceptance pairs remain separate gates. Older local-only status and test
+counts below are historical checkpoints, not the current integration result.
+
+
 User goal: `/Users/goodwiinz/.codex/attachments/b731edfd-a473-4f29-a6a5-f61b68124803/pasted-text-1.txt`.
 Started 2026-09-05 06:30 UTC; overnight deadline 2026-09-05 14:30 UTC.
 Base: `8e625cc0db83ebc37ad62f2bc60f1d8feeec1d8c`; branch `codex/meridian-assistant-ui`.
