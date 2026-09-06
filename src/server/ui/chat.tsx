@@ -67,23 +67,25 @@ function Message() {
 export function Chat() {
   const { session, refresh, request } = useRuns();
   const [error, setError] = useState('');
+  const [intent, setIntent] = useState<'invoke' | 'status'>('status');
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: '/api/chat',
         prepareSendMessagesRequest: ({ messages, id }) => {
-          const prepared = chatRequest(messages, id);
+          const prepared = chatRequest(messages, id, intent);
           setError('');
           return prepared;
         },
         fetch: (input, init) => request(String(input), init),
       }),
-    [request],
+    [request, intent],
   );
   const runtime = useChatRuntime({
     transport,
     generateId: () => crypto.randomUUID(),
     onError: (error) => {
+      setIntent('status');
       setError(
         error instanceof ChatRequestError
           ? error.message
@@ -91,7 +93,8 @@ export function Chat() {
       );
       void refresh();
     },
-    onFinish: () => {
+    onFinish: ({ message, isAbort, isDisconnect, isError }) => {
+      if (isAbort || isDisconnect || isError || message.parts.some(part => 'output' in part && part.output && typeof part.output === 'object' && 'kind' in part.output && (part.output.kind === 'run' || part.output.kind === 'error'))) setIntent('status');
       void refresh();
     },
   });
@@ -116,16 +119,22 @@ export function Chat() {
         <ThreadPrimitive.Root>
           <ThreadPrimitive.Viewport id="messages" className="messages">
             <ThreadPrimitive.Empty>
-              <p className="empty">Describe the inquiry or operation and supply its exact inputs.</p>
+              <p className="empty">Check an existing run, or select New operation and supply its exact inputs.</p>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={{ Message }} />
           </ThreadPrimitive.Viewport>
           {error && <p role="alert">{error}</p>}
           <ComposerPrimitive.Root>
+            <label htmlFor="chat-intent">Request type</label>
+            <select id="chat-intent" value={intent} onChange={event => setIntent(event.target.value as 'invoke' | 'status')}>
+              <option value="invoke">New operation</option>
+              <option value="status">Check run status</option>
+            </select>
+            <p className="muted">Check run status cannot start an operation. New operation can repeat earlier inputs.</p>
             <label htmlFor="message">Your request</label>
             <ComposerPrimitive.Input
               id="message"
-              placeholder="Ask for an available capability…"
+              placeholder={intent === 'status' ? 'Ask about an existing run…' : 'Ask for an available capability…'}
               maxLength={4000}
             />
             <div className="actions">

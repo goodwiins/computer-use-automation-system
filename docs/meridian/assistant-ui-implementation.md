@@ -456,3 +456,9 @@ Both typechecks, the Vite build and the focused browser regression pass. The liv
 alias returned HTTP 200, rendered the preview notice and disabled controls, and
 produced zero page errors and POST requests. Live capability acceptance remains
 3/7; this frontend publication does not advance backend or write acceptance.
+
+### Explicit chat intent and isolated server assets
+
+The composer starts in **Check run status** and returns there after run acceptance or an interrupted response. That mode exposes only `run_status`; it cannot start a capability. Select **New operation** to invoke, including a fresh operation with identical inputs. Both chat endpoints accept `intent: "status" | "invoke"`; omitted intent retains the legacy invoke contract. Message keys remain idempotent: retries retain the original run, and a bound status key cannot become an invocation key. Prior run context comes from the caller-scoped journal, not client tool payloads.
+
+Each `serve` instance builds into its own temporary Vite output directory and serves that immutable directory. Shutdown and startup failure remove only that instance's assets. Different evidence journals therefore cannot cause one server to rebuild another server's dashboard.

@@ -119,7 +119,7 @@ export class Journal {
     if (!target || target.caller !== caller) throw new RequestError(403, 'Run belongs to another principal');
     const existing = this.findRequest(caller, key);
     if (existing) {
-      if (existing.runId !== runId) throw new RequestError(409, 'Idempotency key already identifies another request');
+      if (existing.runId !== runId || existing.identity === this.mac({ caller, key })) throw new RequestError(409, 'Idempotency key already identifies another request');
       return;
     }
     const identity = this.mac({ caller, key });

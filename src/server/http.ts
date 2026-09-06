@@ -1,6 +1,8 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { LanguageModel } from 'ai';
 import { z } from 'zod';
 import { RequestError, Journal } from '../runtime/journal.js';
@@ -12,7 +14,7 @@ const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional() }).strict();
 const hash = (value: string) => createHash('sha256').update(value).digest();
 
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number; chatModel?: LanguageModel }) {
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number; chatModel?: LanguageModel; uiDir?: string }) {
   if (config.callerToken.length < 32 || config.operatorToken.length < 32 || config.callerToken === config.operatorToken) throw new Error('Configure two distinct API credentials of at least 32 characters');
   const app = express();
   app.disable('x-powered-by');
@@ -23,8 +25,9 @@ export function createApp(service: InvocationService, config: { callerToken: str
     next();
   });
   app.use(express.json({ limit: '32kb' }));
-  app.get('/', (_req, res) => res.sendFile(resolve('dist/ui/index.html')));
-  app.use('/assets', express.static(resolve('dist/ui/assets'), { index: false, dotfiles: 'deny' }));
+  const uiDir = config.uiDir ?? resolve('dist/ui');
+  app.get('/', (_req, res) => res.sendFile(join(uiDir, 'index.html')));
+  app.use('/assets', express.static(join(uiDir, 'assets'), { index: false, dotfiles: 'deny' }));
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
@@ -64,18 +67,34 @@ export async function serve(profileName = 'meridian') {
   const policy = profilePolicy(profile);
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';
   const journal = new Journal(join(evidenceDir, 'journal'), process.env.JOURNAL_HMAC_KEY ?? '');
+  let uiDir: string | undefined;
+  const cleanup = () => {
+    journal.close();
+    if (uiDir) rmSync(uiDir, { recursive: true, force: true });
+  };
   try {
-    // Build only after owning the journal; a rejected second server must not empty live assets.
+    // Each instance serves its own immutable build, even with different journals.
     const { build } = await import('vite');
-    await build({ configFile: resolve('vite.config.ts') });
+    uiDir = mkdtempSync(join(tmpdir(), 'meridian-ui-'));
+    await build({ configFile: resolve('vite.config.ts'), build: { outDir: uiDir } });
     const service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
-    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', port });
+    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', port, uiDir });
     const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
-    server.on('error', () => { journal.close(); process.exitCode = 1; });
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-      server.close(); void service.close().finally(() => { journal.close(); });
-    });
-  } catch (error) { journal.close(); throw error; }
+    let closing = false;
+    const shutdown = () => {
+      if (closing) return;
+      closing = true;
+      for (const signal of ['SIGINT', 'SIGTERM'] as const) process.removeListener(signal, shutdown);
+      // Reject late model invocations before draining HTTP or awaiting runtime cleanup.
+      void service.close().finally(cleanup).catch(() => { process.exitCode = 1; });
+      server.close();
+      server.closeAllConnections();
+    };
+    server.once('close', shutdown);
+    server.on('error', () => { shutdown(); process.exitCode = 1; });
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, shutdown);
+    return server;
+  } catch (error) { cleanup(); throw error; }
 }

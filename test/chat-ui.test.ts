@@ -217,6 +217,7 @@ async function fixture() {
     await page.locator('#credential').fill(token);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor();
+    await page.locator('#chat-intent').selectOption('invoke');
   }
   return { state, service, model, browser, page, connect, errors, url, evidenceDir };
 }
@@ -249,7 +250,7 @@ it('normalizes transport authority and preserves the user message key across ret
   expect(chatRequest(messages, 'thread')).toEqual(first);
   expect(first).toEqual({
     headers: { 'Idempotency-Key': 'user-stable' },
-    body: { id: 'thread', trigger: 'submit-message', messages: [messages[1]] },
+    body: { id: 'thread', intent: 'invoke', trigger: 'submit-message', messages: [messages[1]] },
   });
 });
 it('offline bundled UI streams a real SDK tool, shares authoritative run state, renders inert evidence and clears sessions', async () => {
@@ -270,7 +271,7 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   const chat = state.requests.find((r) => r.path === '/api/chat')!;
   expect(chat.authorization).toBe(`Bearer ${callerToken}`);
   expect(chat.key).toBe(chat.body.messages[0].id);
-  expect(Object.keys(chat.body).sort()).toEqual(['id', 'messages', 'trigger']);
+  expect(Object.keys(chat.body).sort()).toEqual(['id', 'intent', 'messages', 'trigger']);
   expect(await page.locator('#messages img').count()).toBe(0);
   expect(await page.locator('#messages').innerText()).toContain(hostile);
   const repeat = await page.evaluate(
@@ -716,6 +717,7 @@ it('offline stopping the response preserves its accepted run and exposes no muta
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await vi.waitFor(() => expect(state.invocations.size).toBe(1), { interval: 20, timeout: 5000 });
     await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+    await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
     await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
     await page.locator('#refresh').click();
     await visible(page, '#runs', runId);
@@ -800,6 +802,7 @@ it('offline oversized request sends no POST and a subsequent valid send clears t
   await page.getByRole('alert').filter({ hasText: 'at most 4000 characters' }).waitFor();
   expect(state.requests.filter((request) => request.path === '/api/chat')).toHaveLength(0);
   expect(state.invocations.size).toBe(0);
+  await page.locator('#chat-intent').selectOption('invoke');
   await page.locator('#message').fill('Read offline-member shares');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('#messages [data-run-id]').waitFor();
@@ -1036,4 +1039,51 @@ it('labels history reuse as an existing run rather than a new operation', async 
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.getByText('Using a previously accepted run. No new operation was started.', { exact: true }).waitFor();
   expect(state.invocations.size).toBe(0);
+}, 15000);
+
+it('defaults to status after acceptance and requires explicit new-operation selection for identical inputs', async () => {
+  const { page, state } = await fixture();
+  await page.locator('#credential').fill(callerToken);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('#workspace').waitFor();
+  expect(await page.getByLabel('Request type', { exact: true }).inputValue()).toBe('status');
+  // The fixture model always tries invocation, even when only status is authorized.
+  await page.locator('#message').fill('Did that finish?');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
+  expect(state.invocations.size).toBe(0);
+  await page.getByLabel('Request type', { exact: true }).selectOption('invoke');
+  await page.locator('#message').fill('Read offline-member.');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
+  expect(state.invocations.size).toBe(1);
+  await page.locator('#message').fill('Did that finish?');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
+  expect(state.invocations.size).toBe(1);
+  await page.getByLabel('Request type', { exact: true }).selectOption('invoke');
+  await page.locator('#message').fill('Read offline-member again.');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await vi.waitFor(() => expect(state.invocations.size).toBe(2));
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.locator('#credential').fill(callerToken);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('#workspace').waitFor();
+  expect(await page.locator('#chat-intent').inputValue()).toBe('status');
+}, 15000);
+
+
+it('resets to status when stopped before any run output arrives', async () => {
+  const { page, model, connect } = await fixture();
+  const original = model.doStream;
+  let release!: () => void;
+  const held = new Promise<void>(done => { release = done; });
+  model.doStream = async options => { await held; return original(options); };
+  try {
+    await connect();
+    await page.locator('#message').fill('Read offline-member.');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+    await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
+  } finally { release(); }
 }, 15000);

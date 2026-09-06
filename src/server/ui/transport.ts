@@ -4,7 +4,7 @@ export class ChatRequestError extends Error {}
 
 // Keep user IDs: the server reconstructs prior run context from caller-scoped journal keys.
 // Client tool payloads are display-only. The latest stable ID is also its request key.
-export function chatRequest(messages: UIMessage[], id: string) {
+export function chatRequest(messages: UIMessage[], id: string, intent: 'invoke' | 'status' = 'invoke') {
   const latestUser = [...messages].reverse().find((message) => message.role === 'user');
   const text = (message: UIMessage) =>
     message.parts
@@ -35,7 +35,7 @@ export function chatRequest(messages: UIMessage[], id: string) {
     if (message === latestUser) current = entry;
     return [entry];
   });
-  const body = { id, messages: history, trigger: 'submit-message' as const };
+  const body = { id, intent, messages: history, trigger: 'submit-message' as const };
   const bytes = () => new TextEncoder().encode(JSON.stringify(body)).byteLength;
   while (history.length > 20 || bytes() > 32 * 1024) {
     const oldest = history.findIndex((message) => message !== current);

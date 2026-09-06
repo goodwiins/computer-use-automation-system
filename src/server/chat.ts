@@ -20,7 +20,9 @@ import { RequestError, validateIdempotencyKey } from '../runtime/journal.js';
 import type { InvocationService } from './service.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
+const Intent = z.enum(['invoke', 'status']).default('invoke');
 const LegacyBody = z.object({
+  intent: Intent,
   messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().min(1).max(4000) }).strict()).min(1).max(20),
 }).strict();
 const TextPart = z.object({ type: z.literal('text'), text: z.string().min(1).max(4000), state: z.enum(['streaming', 'done']).optional() }).passthrough();
@@ -35,6 +37,7 @@ const UIMessage = z.object({
   metadata: z.unknown().optional(),
 }).strict();
 const StreamBody = z.object({
+  intent: Intent,
   id: z.string().max(200).optional(),
   messages: z.array(UIMessage).min(1).max(20),
   trigger: z.enum(['submit-message', 'regenerate-message']).optional(),
@@ -91,10 +94,10 @@ function canonicalCall(name: string, args: Record<string, string | number>) {
   return JSON.stringify([name, Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)))]);
 }
 
-function buildTools(service: InvocationService, key: string, previousKeys: string[] = []): ToolSet {
+function buildTools(service: InvocationService, key: string, intent: 'invoke' | 'status' = 'invoke'): ToolSet {
   let invocation: { identity: string; output: ToolOutput } | undefined;
   const catalog = service.catalog('caller');
-  const tools: ToolSet = Object.fromEntries(catalog.map(capability => [capability.id, tool({
+  const tools: ToolSet = Object.fromEntries((intent === 'invoke' ? catalog : []).map(capability => [capability.id, tool({
     description: capability.description,
     inputSchema: jsonSchema<Record<string, string | number>>(capability.tools.openai.function.parameters),
     execute: async input => {
@@ -104,9 +107,7 @@ function buildTools(service: InvocationService, key: string, previousKeys: strin
         ? invocation.output
         : { kind: 'error', status: 409, error: 'This request already attempted another capability invocation' } satisfies ToolOutput;
       try {
-        const acceptedRun = previousKeys.length
-          ? service.invoke('caller', capability.id, args, key, 'TELLER', previousKeys)
-          : service.invoke('caller', capability.id, args, key);
+        const acceptedRun = service.invoke('caller', capability.id, args, key);
         const { runId } = acceptedRun;
         const reused = acceptedRun.reused ? { reused: true as const } : {};
         invocation = { identity, output: { kind: 'run', runId, capability: capability.id, state: 'accepted', ...reused } };
@@ -124,7 +125,7 @@ function buildTools(service: InvocationService, key: string, previousKeys: strin
       try {
         const output = projectRun(service, runId);
         service.journal.bindReference('caller', key, runId);
-        return output;
+        return { ...output, reused: true as const };
       }
       catch (error) { return safeError(error); }
     },
@@ -146,8 +147,7 @@ const modelOptions = (model: LanguageModel, messages: ModelMessage[], tools: Too
   },
 });
 
-function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationService, currentKey: string): { messages: ModelMessage[]; previousKeys: string[] } {
-  const previousKeys: string[] = [];
+function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationService, currentKey: string): ModelMessage[] {
   const current = [...messages].reverse().find(message => message.role === 'user');
   const history: ModelMessage[] = messages.map(message => {
     const content = message.parts
@@ -159,15 +159,14 @@ function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationS
     if (message.role === 'user' && message !== current && message.id !== currentKey) {
       const previous = service.journal.findRequest('caller', message.id);
       if (previous) {
-        previousKeys.push(message.id);
         const run = service.get('caller', previous.runId);
-        return { role: 'assistant' as const, content: `Previously accepted operation. Authoritative run context: ${JSON.stringify({ runId: run.runId, capability: run.capability, state: run.state })}. Use run_status for follow-ups; do not invoke the operation again.` };
+        return { role: 'assistant' as const, content: `Previously accepted operation. Authoritative run context: ${JSON.stringify({ runId: run.runId, capability: run.capability, state: run.state })}. Use run_status for status questions. A new explicit operation may repeat the same facts.` };
       }
       return { role: 'assistant' as const, content: 'Earlier request context is unavailable. Ask the user to restate any new operation and its required facts.' };
     }
     return { role: message.role, content: message.role === 'assistant' ? content.slice(0, 4000) : content };
   }).filter(message => message.content.length > 0);
-  return { messages: history, previousKeys };
+  return history;
 }
 
 function requireConversation(messages: ModelMessage[]) {
@@ -181,8 +180,8 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const body = LegacyBody.parse(req.body);
         const key = req.get('Idempotency-Key') ?? '';
         validateIdempotencyKey(key);
-        const tools = buildTools(service, key);
-        if (Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
+        const tools = buildTools(service, key, body.intent);
+        if (body.intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
         // Legacy messages have no request identities; do not replay older user requests as fresh intent.
         const latest = [...body.messages].reverse().find(message => message.role === 'user');
         if (!latest) throw new RequestError(400, 'A user text message is required');
@@ -221,10 +220,10 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const body = StreamBody.parse(req.body);
         const key = req.get('Idempotency-Key') ?? '';
         validateIdempotencyKey(key);
-        const { messages, previousKeys } = textHistory(body.messages, service, key);
+        const messages = textHistory(body.messages, service, key);
         requireConversation(messages);
-        const tools = buildTools(service, key, previousKeys);
-        if (Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
+        const tools = buildTools(service, key, body.intent);
+        if (body.intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
         const result = streamText({ ...modelOptions(model ?? makeChatModel(), messages, tools), streamRetries: 0, onError: () => {} });
         await pipeUIMessageStreamToResponse({
           response: res,

@@ -18,6 +18,7 @@ export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private active?: string;
+  private closing = false;
   private completion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
@@ -34,7 +35,7 @@ export class InvocationService {
     return [...this.artifacts.values()].filter(a => principal === 'operator' || this.allowlist.includes(a.id))
       .map(a => ({ id: a.id, version: a.version, description: a.description, parameters: a.parameters.filter(p => p.source !== 'server'), outputs: a.outputs, tools: toToolSchema(a) }));
   }
-  invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', previousKeys: string[] = []) {
+  invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
     if (principal !== 'operator' && (role !== 'TELLER' || !this.allowlist.includes(id))) throw new RequestError(403, 'Capability or operator context is not authorized');
     const artifact = this.artifacts.get(id);
     if (!artifact) throw new RequestError(404, 'Unknown approved capability');
@@ -52,19 +53,11 @@ export class InvocationService {
     // Secrets are excluded from identity. The configured operator/branch/role are included.
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
     const { existing, identity } = this.journal.lookup(principal, key, request);
-    if (existing) return { runId: existing.runId, ...(existing.identity !== identity ? { reused: true as const } : {}) };
-    for (const previousKey of previousKeys) {
-      let match;
-      try { match = this.journal.lookup(principal, previousKey, request).existing; }
-      catch (error) {
-        if (error instanceof RequestError && error.status === 409) continue;
-        throw error;
-      }
-      if (match) {
-        this.journal.bindReference(principal, key, match.runId);
-        return { runId: match.runId, reused: true as const };
-      }
+    if (existing) {
+      if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
+      return { runId: existing.runId, reused: true as const };
     }
+    if (this.closing) throw new RequestError(503, 'Server is shutting down');
     // ponytail: capability-wide unknown block; narrower scope needs an explicit reconciliation contract.
     // Terminal same-key lookups above remain readable across all entry points.
     if ([...this.journal.records.values()].some(run => run.capability === id && run.state === 'POST_OUTCOME_UNKNOWN'))
@@ -155,6 +148,7 @@ export class InvocationService {
     live.approval.decide(id, decision);
   }
   async close() {
+    this.closing = true;
     for (const live of this.live.values()) { live.approval.cancel(); await live.close?.(); }
     await this.completion;
   }
