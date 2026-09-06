@@ -2968,9 +2968,12 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     const context = browser.page.context();
     const originalUrl = browser.currentUrl();
     const nativeNewPage = context.newPage.bind(context);
+    let priorPopup: Page | undefined;
     const pendingPopup = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      const popup = browser.page.waitForEvent('popup');
       const auxiliary = nativeNewPage();
       await browser.page.evaluate(() => { window.open('/members/9999'); });
+      priorPopup = await popup;
       return auxiliary;
     });
     try {
@@ -2980,23 +2983,25 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
     expect(browser.currentUrl()).toBe(originalUrl);
 
-    let triggerPopupOnClose = true;
     let cleanupPopup: Page | undefined;
-    const popupDuringClose = (opened: Page) => {
-      if (opened === browser.page || !triggerPopupOnClose) return;
-      triggerPopupOnClose = false;
+    const popupDuringClose = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      if (!priorPopup?.isClosed()) throw new Error('Prior popup cleanup did not finish');
+      // A delayed event from a closed popup must not steal the auxiliary
+      // page's close hook. Bind it to newPage's result, not the next event.
+      (context as unknown as { emit(event: string, page: Page): boolean }).emit('page', priorPopup);
+      const opened = await nativeNewPage();
       const nativeClose = opened.close.bind(opened);
       vi.spyOn(opened, 'close').mockImplementationOnce(async () => {
         const popup = browser.page.waitForEvent('popup');
-        await browser.page.evaluate(() => { window.open('about:blank'); });
+        await browser.page.evaluate(() => { window.open('/members/9999'); });
         cleanupPopup = await popup;
         await nativeClose();
       });
-    };
-    context.on('page', popupDuringClose);
+      return opened;
+    });
     try {
       await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
-    } finally { context.off('page', popupDuringClose); }
+    } finally { popupDuringClose.mockRestore(); }
     expect(cleanupPopup?.isClosed()).toBe(true);
     expect(wrongMemberGets).toBe(0);
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
