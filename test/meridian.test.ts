@@ -194,6 +194,26 @@ it('blocks a profile mutation intent and dispatch after revalidation crosses the
 });
 
 describe('durable request identity', () => {
+  it('isolates caller keys and returns current records through updates and restart', () => {
+    const dir = temp(); let journal = new Journal(dir, key);
+    try {
+      const request = { member: 'fixture' };
+      const caller = journal.reserve('caller', 'shared', 'inquiry', '1.0.0', request);
+      const operator = journal.reserve('operator', 'shared', 'inquiry', '1.0.0', request);
+      expect(operator.runId).not.toBe(caller.runId);
+      expect(journal.lookup('caller', 'missing', request).existing).toBeUndefined();
+      journal.update(caller.runId, 'running');
+      expect(journal.lookup('caller', 'shared', request).existing?.state).toBe('running');
+      journal.update(caller.runId, 'success');
+      expect(journal.lookup('caller', 'shared', request).existing?.state).toBe('success');
+      journal.close(); journal = new Journal(dir, key);
+      expect(journal.reserve('caller', 'shared', 'inquiry', '1.0.0', request)).toMatchObject({ runId: caller.runId, state: 'success' });
+      expect(journal.lookup('operator', 'shared', request).existing).toMatchObject({ runId: operator.runId, state: 'interrupted' });
+      expect(() => journal.lookup('caller', 'shared', { member: 'changed' })).toThrow(/another request/);
+      expect(journal.records.size).toBe(2);
+    } finally { journal.close(); }
+  });
+
   it('deduplicates after restart, detects changed context, and never resumes dispatch', () => {
     const dir = temp(); let journal = new Journal(dir, key);
     const request = { args: { member: 'PRIVATE-MEMBER' }, role: 'TELLER' };

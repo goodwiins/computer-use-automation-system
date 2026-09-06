@@ -49,6 +49,7 @@ export function readJournalRecord(dir: string, runId: string, key: string): Jour
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
 export class Journal {
   readonly records = new Map<string, JournalRecord>();
+  private readonly runIdsByIdentity = new Map<string, string>();
   private readonly aliases = new Map<string, RequestAlias>();
   private readonly lock: string;
   private closed = false;
@@ -77,6 +78,7 @@ export class Journal {
       for (const file of readdirSync(dir).filter(f => f.endsWith('.json'))) {
         const record = readJournalRecord(dir, file.slice(0, -5), this.key);
         this.records.set(record.runId, record);
+        if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
         if (['reserved', 'running', 'dispatching'].includes(record.state)) {
           this.update(record.runId, record.state === 'dispatching' ? 'POST_OUTCOME_UNKNOWN' : 'interrupted');
         }
@@ -86,7 +88,7 @@ export class Journal {
         const alias = AliasSchema.parse(readEnvelope(join(aliasesDir, file), key));
         const target = this.records.get(alias.runId);
         if (file !== `${alias.identity}.json` || !target || target.caller !== alias.caller || target.request !== alias.request
-          || [...this.records.values()].some(record => record.identity === alias.identity))
+          || this.runIdsByIdentity.has(alias.identity))
           throw new Error('Invalid journal request alias');
         this.aliases.set(alias.identity, alias);
       }
@@ -112,6 +114,7 @@ export class Journal {
   private persist(record: JournalRecord) {
     this.persistEnvelope(join(this.dir, `${record.runId}.json`), record);
     this.records.set(record.runId, record);
+    if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
   bindReference(caller: string, key: string, runId: string) {
     validateIdempotencyKey(key);
@@ -133,7 +136,8 @@ export class Journal {
   findRequest(caller: string, key: string) {
     if (this.writeFailure) throw this.writeFailure;
     const identity = this.mac({ caller, key });
-    const direct = [...this.records.values()].find(record => record.identity === identity);
+    const runId = this.runIdsByIdentity.get(identity);
+    const direct = runId === undefined ? undefined : this.records.get(runId);
     const alias = this.aliases.get(identity);
     return direct ?? (alias ? this.records.get(alias.runId) : undefined);
   }
