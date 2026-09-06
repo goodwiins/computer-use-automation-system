@@ -37,7 +37,6 @@ beforeEach(async () => {
   await once(allowed, 'listening');
   origin = `http://127.0.0.1:${(allowed.address() as { port: number }).port}`;
   browser = new BrowserSurface({ allowedOrigins: [origin], profile: loadProfile('meridian') });
-  await browser.start(`${origin}/signon`);
 });
 
 afterEach(async () => {
@@ -48,7 +47,9 @@ afterEach(async () => {
   }
 });
 
-it.each(['window.open', 'target=_blank', 'POST'] as const)('blocks the first %s popup request before it reaches another origin', async kind => {
+it.each([true, false].flatMap(profileBound => ['window.open', 'target=_blank', 'POST'].map(kind => ({ profileBound, kind }))))('blocks the first $kind popup request before it reaches another origin (profile=$profileBound)', async ({ profileBound, kind }) => {
+  if (!profileBound) browser = new BrowserSurface({ allowedOrigins: [origin] });
+  await browser.start(`${origin}/signon`);
   const popup = browser.page.waitForEvent('popup');
   await browser.page.evaluate(({ kind, destination }) => {
     if (kind === 'window.open') window.open(destination);
@@ -67,6 +68,7 @@ it.each(['window.open', 'target=_blank', 'POST'] as const)('blocks the first %s 
 });
 
 it.each(['_blank', 'sibling'])('a %s form cannot consume the primary frame native POST allowance', async target => {
+  await browser.start(`${origin}/signon`);
   const context = browser.page.context();
   // Resolve when the competing native request has actually settled, before
   // sending the primary form. This makes gate ownership deterministic.
@@ -105,5 +107,16 @@ it.each(['_blank', 'sibling'])('a %s form cannot consume the primary frame nativ
     body: 'operator=fixture&password=secret',
   }).catch(() => {}));
   expect(posted).toHaveLength(1);
+  expect(collected).toEqual([]);
+});
+
+it('allows ordinary same-origin native forms without an app profile', async () => {
+  browser = new BrowserSurface({ allowedOrigins: [origin] });
+  await browser.start(`${origin}/signon`);
+  await Promise.all([
+    browser.page.waitForNavigation(),
+    browser.page.getByRole('button', { name: 'Sign On' }).click(),
+  ]);
+  expect(posted).toEqual(['operator=fixture&password=secret']);
   expect(collected).toEqual([]);
 });

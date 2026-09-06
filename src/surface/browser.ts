@@ -51,9 +51,8 @@ export class BrowserSurface implements Surface {
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
 
-  // When allowedOrigins is set, frames outside it are invisible to observation
-  // and untouchable by locator resolution — a foreign iframe embedded in a
-  // legacy page can neither be read nor clicked.
+  // Configured allowedOrigins bounds intercepted requests and makes foreign
+  // frames invisible to observation and untouchable by locator resolution.
   constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[], credentials?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
@@ -124,13 +123,14 @@ export class BrowserSurface implements Surface {
     // Context interception precedes page creation: page routes and popup events
     // miss a popup's first request. The newer read-only route handles its own
     // bound auxiliary page and falls back here only for the primary page.
-    if (this.opts.profile) await this.context.route('**/*', async route => {
+    if (this.opts.profile || this.opts.allowedOrigins) await this.context.route('**/*', async route => {
       const request = route.request();
       let frame: Frame;
       try { frame = request.frame(); } catch { return route.abort(); }
       if (!this.page || frame.page() !== this.page) return route.abort();
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!this.opts.profile) return route.continue();
       if (!['GET', 'HEAD'].includes(request.method())) {
         // An unrelated frame must neither use nor clear the inspected form's
         // one-shot allowance while its native submission is pending.
