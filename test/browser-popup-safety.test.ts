@@ -1,7 +1,7 @@
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { Request } from 'playwright';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { loadProfile } from '../src/runtime/profile.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 
@@ -24,6 +24,7 @@ beforeEach(async () => {
   await once(collector, 'listening');
   collectorOrigin = `http://127.0.0.1:${(collector.address() as { port: number }).port}`;
   allowed = createServer(async (request, response) => {
+    if (request.url?.startsWith('/members/9999')) collected.push(`${request.method} ${request.url}`);
     if (request.method === 'POST') {
       let body = '';
       for await (const chunk of request) body += chunk;
@@ -118,5 +119,58 @@ it('allows ordinary same-origin native forms without an app profile', async () =
     browser.page.getByRole('button', { name: 'Sign On' }).click(),
   ]);
   expect(posted).toEqual(['operator=fixture&password=secret']);
+  expect(collected).toEqual([]);
+});
+
+it.each([true, false])('blocks close-time navigation after route teardown (profile=%s)', async profileBound => {
+  if (!profileBound) browser = new BrowserSurface({ allowedOrigins: [origin] });
+  await browser.start(`${origin}/signon`);
+  const context = browser.page.context();
+  const destination = profileBound ? `${origin}/members/9999` : `${collectorOrigin}/collect`;
+  context.once('page', opened => {
+    const nativeClose = opened.close.bind(opened);
+    vi.spyOn(opened, 'close').mockImplementationOnce(async () => {
+      // Model routing becoming unavailable while Chromium has not closed the
+      // page yet. The close guard must still prevent actual HTTP delivery.
+      await context.unroute('**/*');
+      await opened.goto(destination, { timeout: 1000 }).catch(() => {});
+      await nativeClose();
+    });
+  });
+  const popup = context.waitForEvent('page');
+  await browser.page.evaluate(() => { window.open('about:blank'); });
+  const opened = await popup;
+  if (!opened.isClosed()) await opened.waitForEvent('close');
+  expect(collected).toEqual([]);
+  expect(context.pages()).toEqual([browser.page]);
+});
+
+it.each(['attach', 'offline'])('does not start popup teardown when native %s fails', async stage => {
+  await browser.start(`${origin}/signon`);
+  const context = browser.page.context();
+  const nativeSession = context.newCDPSession.bind(context);
+  let close: ReturnType<typeof vi.spyOn> | undefined;
+  context.once('page', opened => { close = vi.spyOn(opened, 'close'); });
+  const blockFailed = new Promise<void>(resolve => {
+    vi.spyOn(context, 'newCDPSession').mockImplementationOnce(async target => {
+      if (stage === 'attach') {
+        resolve();
+        throw new Error('Fixture native session unavailable');
+      }
+      const session = await nativeSession(target);
+      vi.spyOn(session, 'send').mockImplementationOnce(async () => {
+        resolve();
+        throw new Error('Fixture native network guard unavailable');
+      });
+      return session;
+    });
+  });
+  const popup = context.waitForEvent('page');
+  await browser.page.evaluate(() => { window.open('about:blank'); });
+  const opened = await popup;
+  await blockFailed;
+  await expect(opened.goto(`${collectorOrigin}/collect`, { timeout: 1000 })).rejects.toThrow();
+  expect(close).not.toHaveBeenCalled();
+  expect(opened.isClosed()).toBe(false);
   expect(collected).toEqual([]);
 });
