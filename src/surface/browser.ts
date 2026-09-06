@@ -50,6 +50,7 @@ export class BrowserSurface implements Surface {
   private readonly frameNavigations = new WeakMap<Frame, number>();
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
+  private readonly pageClosures = new WeakMap<Page, Promise<void>>();
 
   // Configured allowedOrigins bounds intercepted requests and makes foreign
   // frames invisible to observation and untouchable by locator resolution.
@@ -154,7 +155,7 @@ export class BrowserSurface implements Surface {
     this.page.on('framenavigated', frame => this.bumpFrame(frame));
     this.page.on('framedetached', frame => this.bumpFrame(frame));
     this.page.on('close', () => this.opts.onClose?.());
-    this.page.on('popup', popup => popup.close().catch(() => {}));
+    this.page.on('popup', popup => this.closeAuxiliaryPage(popup).catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -168,6 +169,24 @@ export class BrowserSurface implements Surface {
 
   drainDialogs(): Array<{ type: string; message: string }> {
     return this.dialogs.splice(0);
+  }
+
+  private closeAuxiliaryPage(page: Page): Promise<void> {
+    if (page.isClosed()) return Promise.resolve();
+    let closing = this.pageClosures.get(page);
+    if (!closing) {
+      closing = (async () => {
+        // Playwright routing can disappear during close. Block in Chromium
+        // before starting teardown, and retain the block if close fails.
+        const guard = await this.context.newCDPSession(page);
+        await guard.send('Network.emulateNetworkConditions', {
+          offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0,
+        });
+        await page.close();
+      })();
+      this.pageClosures.set(page, closing);
+    }
+    return closing;
   }
 
   currentUrl(): string {
@@ -553,7 +572,7 @@ export class BrowserSurface implements Surface {
           const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
           pagesToClose.delete(this.page!);
           for (const opened of pagesToClose) {
-            try { if (!opened.isClosed()) await opened.close(); }
+            try { if (!opened.isClosed()) await this.closeAuxiliaryPage(opened); }
             catch { closeError = true; }
             if (!opened.isClosed()) closeError = true;
           }
