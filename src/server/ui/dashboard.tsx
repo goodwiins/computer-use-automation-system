@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
+import type { RecordedStructure } from '../../evidence/safe-event';
 
 const requested = [
   ['meridian-sign-on', 'Sign on'],
@@ -159,6 +160,13 @@ export function CapabilityCatalog() {
     </section>
   );
 }
+function WithheldFields({ fields }: { fields: NonNullable<RecordedStructure['outputs']> }) {
+  return <ul>{fields.map(field => <li key={field.name}>
+    {field.name}: {field.type} — value withheld
+    {field.columns && (field.columns.length ? <ul>{field.columns.map(column => <li key={column.name}>{column.name}: {column.type} — value withheld</li>)}</ul> : <p>No table columns were recorded.</p>)}
+  </li>)}</ul>;
+}
+
 export function ResultCard({ run }: { run: Run }) {
   if (run.state === 'POST_OUTCOME_UNKNOWN')
     return (
@@ -190,6 +198,10 @@ export function ResultCard({ run }: { run: Run }) {
         <p>{result.failure?.detail ?? 'Run stopped. Inspect recorded evidence.'}</p>
       </div>
     );
+  if (run.sensitiveValuesUnavailable && !result.outputs) return <div>
+    <p>Recorded output structure; values withheld.</p>
+    {run.structure?.outputs ? <WithheldFields fields={run.structure.outputs} /> : <p>Output structure was not recorded or is unavailable.</p>}
+  </div>;
   return (
     <div className="result">
       {Object.entries(result.outputs ?? {}).map(([name, value]) => (
@@ -330,7 +342,10 @@ export function RunDetail({ run }: { run: Run }) {
       <summary>Run details and evidence</summary>
       {open && (
         <>
-          {run.inputs && <pre>{JSON.stringify({ inputs: run.inputs }, null, 2)}</pre>}
+          {run.inputs ? <pre>{JSON.stringify({ inputs: run.inputs }, null, 2)}</pre> : <div>
+            <p>Recorded input structure; values withheld.</p>
+            {run.structure?.inputs ? run.structure.inputs.length ? <WithheldFields fields={run.structure.inputs} /> : <p>No public inputs were recorded for this run.</p> : <p>Input structure was not recorded or is unavailable.</p>}
+          </div>}
           <RecordedTimeline key={run.runId} run={run} />
           <EvidenceViewer run={run} />
         </>
