@@ -47,6 +47,12 @@ describe('CapabilityArtifact schema', () => {
     expect(() => CapabilityArtifact.parse({ ...minimalArtifact, steps: [] })).toThrow();
   });
 
+  it('R3-A1: rejects duplicate step ids', () => {
+    const bad = JSON.parse(JSON.stringify(minimalArtifact));
+    bad.steps.push({ ...bad.steps[0] });
+    expect(() => CapabilityArtifact.parse(bad)).toThrow(/unique/);
+  });
+
   it('rejects an unknown risk class', () => {
     const bad = JSON.parse(JSON.stringify(minimalArtifact));
     bad.steps[0].risk = 'catastrophic';
