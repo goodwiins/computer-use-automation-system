@@ -224,3 +224,11 @@ Evidence-metadata [PR #47](https://github.com/goodwiins/computer-use-automation-
 [Sanitized summary](evidence/maintenance-observation/summary.json) for run `b7fefa1a-450d-4502-b827-747764cd8d0c` records a guarded headless observation on September 5, 2026. Continue navigated from the open-share maintenance page to the selected member path in the same frame, then Open New Share returned to the clean operation path. Gate and pre-dispatch counts were zero; no mutation was dispatched. This later observation refines the earlier profile probe's menu-return assumption.
 
 The original report hash is included for correlation. The producing Git SHA was not captured, and the former `recoverClick` inspection does not verify the current `recoverOperation` implementation. The static checkpoint counts do not prove member-value binding, and its query-free frame URL does not validate the visible injection-query case. No approved artifact, genuine discovery/replay repair pair, or increase beyond **3/7** live capabilities is claimed.
+
+## September 6 write attempts after the service checkpoint
+
+At producer `476f8ca`, transfer discovery [1dd93dd5](evidence/write-attempts-sep6/transfer-unknown.json) received personal approval, logged one mutation intent and a successful native click, then stopped with `POST_OUTCOME_UNKNOWN`. A scalar/table extraction action completed, but the recording did not establish the required outputs. The retained five-row, two-cell table structure does not establish receipt labels or confirmation binding. Preserve this terminal unknown alongside the earlier open-share unknown; neither may be retried or counted as accepted.
+
+Open-share discovery [592430d3](evidence/write-attempts-sep6/open-share-validation.json) returned `business_outcome / VALIDATION_REJECTED` after native review submission, with signed evaluation PASS, thirteen actions and zero mutation intents. A separate guarded inspection with final posting disabled established the target's minimum opening deposit as `5.00`; the user delegated demo input selection. This rejected request and inspection do not create an artifact or write acceptance.
+
+The diagnostic follow-up adds fixed markers for model escalation and completion-validator failure. It does not recover omitted details from these historical runs or alter their outcomes. Live acceptance remains **3/7**.
