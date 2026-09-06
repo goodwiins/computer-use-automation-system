@@ -83,6 +83,10 @@ export async function runDiscovery(
   catch (err) {
     if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN', undefined, entryUrl);
     if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED', undefined, entryUrl);
+    if (err instanceof InsufficientFundsError) {
+      return finish('business_outcome', err.outcomeCode, undefined, entryUrl,
+        { outcomeCode: err.outcomeCode, detail: err.message });
+    }
     throw err;
   }
 

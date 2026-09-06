@@ -90,6 +90,7 @@ export async function runReplay(
   try {
     await surface.start(resolveTemplate(artifact.app.entryUrl, params));
   } catch (err) {
+    if (!surface.mutationDispatched && err instanceof InsufficientFundsError) return insufficientFunds(err, '(pre-flight)');
     if (err instanceof RunAbortedError) return aborted('(pre-flight)');
     return fail({
       stepId: '(pre-flight)',
@@ -103,6 +104,15 @@ export async function runReplay(
     if (surface.mutationDispatched) failure = { ...failure, code: 'POST_OUTCOME_UNKNOWN', observed: 'Dispatch began but completion was not verified. Do not repeat this operation.' };
     logger.log('replay.failure', { ...failure, escalated });
     const result: ReplayResult = { status: 'failure', failure, escalated, ...base };
+    logger.writeResult(result);
+    return result;
+  }
+
+  function insufficientFunds(err: InsufficientFundsError, stepId: string): ReplayResult {
+    const result: ReplayResult = {
+      status: 'business_outcome', outcomeCode: err.outcomeCode, detail: err.message, ...base,
+    };
+    logger.log('replay.business_outcome', { stepId, outcomeCode: err.outcomeCode });
     logger.writeResult(result);
     return result;
   }
@@ -326,12 +336,7 @@ export async function runReplay(
     } catch (err) {
       if (surface.mutationDispatched) return fail({ stepId: step.id, intent: step.intent, expected: 'verified posting completion', observed: 'POST_OUTCOME_UNKNOWN' });
       if (err instanceof InsufficientFundsError) {
-        const result: ReplayResult = {
-          status: 'business_outcome', outcomeCode: err.outcomeCode, detail: err.message, ...base,
-        };
-        logger.log('replay.business_outcome', { stepId: step.id, outcomeCode: err.outcomeCode });
-        logger.writeResult(result);
-        return result;
+        return insufficientFunds(err, step.id);
       }
       if (err instanceof RunAbortedError) return aborted(step.id);
       noteDialogs(step.id);
