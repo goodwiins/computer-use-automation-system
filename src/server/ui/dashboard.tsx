@@ -25,20 +25,20 @@ export function OperatorSessionControls() {
   ) : null;
 }
 export function CapabilityCatalog() {
-  const { session, request, runs, watch } = useRuns();
+  const { session, request, runs, watch, loading, error: historyError } = useRuns();
   const [selected, setSelected] = useState(session.capabilities[0]?.id ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [acceptedId, setAcceptedId] = useState('');
-  const unknownCapabilities = useRef(new Set<string>());
+  const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
   const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
   const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const capability = session.capabilities.find((c) => c.id === selected);
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current || acceptedId) return;
-    if (unknownCapabilities.current.has(capability.id)) {
+    if (!capability || active.current || acceptedId || loading || historyError) return;
+    if (unknownCapabilities.has(capability.id)) {
       setError('This capability has an unknown posting outcome. Choose a separate read-only inquiry; do not retry it.');
       return;
     }
@@ -102,7 +102,7 @@ export function CapabilityCatalog() {
           <p className="empty">No approved capabilities are available to this principal.</p>
         ) : (
           <form id="invoke" onSubmit={invoke} autoComplete="off">
-            <fieldset disabled={busy || Boolean(acceptedId)}>
+            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}>
               <label htmlFor="capability">Capability</label>
               <select
                 id="capability"
@@ -151,7 +151,6 @@ export function CapabilityCatalog() {
         {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
         {acceptedRun && !pending(acceptedRun) && (
           <button onClick={() => {
-            if (acceptedRun.state === 'POST_OUTCOME_UNKNOWN') unknownCapabilities.current.add(acceptedRun.capability);
             setAcceptedId('');
             attempt.current = undefined;
           }}>{acceptedRun.state === 'POST_OUTCOME_UNKNOWN' ? 'Choose a separate inquiry' : 'Start another invocation'}</button>
@@ -356,12 +355,17 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
     <article data-run-id={run.runId}>
       <div className="run-title">
         <h3>{run.capability}</h3>
-        <span className="badge">{run.state}</span>
+        <span className="badge" role="status" aria-live="polite" aria-atomic="true">
+          <span className="sr-only">{run.capability}, run {run.runId}: </span>
+          {run.state}
+          {run.result?.status === 'business_outcome' && <span className="sr-only">: {run.result.outcomeCode}</span>}
+        </span>
       </div>
       <p className="muted">
         {run.kind}
         {run.version ? ` · v${run.version}` : ''} · {run.runId}
       </p>
+      {run.step && <p>Current step: {run.step}</p>}
       {Number.isFinite(run.elapsedMs) && run.elapsedMs! >= 0 && (
         <p>
           Elapsed: {run.elapsedMs! < 1000 ? `${run.elapsedMs} ms` : `${(run.elapsedMs! / 1000).toFixed(1)} s`}

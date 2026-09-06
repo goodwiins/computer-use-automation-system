@@ -545,6 +545,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.route('**/runs', async route => { await historyReady; await route.continue(); });
   await connect();
   await page.getByText('Loading authenticated history…', { exact: true }).waitFor();
+  expect(await page.locator('#invoke button').isDisabled()).toBe(true);
   releaseHistory();
   await page.getByText('Waiting for an operator.', { exact: true }).waitFor();
   expect(await page.getByRole('button', { name: 'Approve submission' }).count()).toBe(0);
@@ -653,6 +654,8 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
 }, 20000);
 it('offline refresh requested during an older history read still observes an accepted direct run', async () => {
   const { page, state, connect } = await fixture();
+  await connect();
+  await page.getByText('No visible runs.', { exact: false }).waitFor();
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -664,8 +667,8 @@ it('offline refresh requested during an older history read still observes an acc
     await held;
     await route.fulfill({ contentType: 'application/json', body: '[]' });
   });
-  await connect();
-  await page.getByText('Loading authenticated history…', { exact: true }).waitFor();
+  await page.locator('#refresh').click();
+  await vi.waitFor(() => expect(intercepted).toBe(true));
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
   await page.locator('#fields input').fill('offline-member');
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
@@ -867,6 +870,7 @@ it('disables credential entry and dispatch in a UI-only deployment', async () =>
 it('retains an accepted direct run through a history outage without a second invocation', async () => {
   const { page, state, connect } = await fixture();
   await connect();
+  await page.getByText('No visible runs.', { exact: false }).waitFor();
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
   await page.locator('#fields input').fill('offline-member');
   state.offline = true;
@@ -960,4 +964,64 @@ it('allows a separate direct inquiry after unknown posting without replaying the
   expect(state.requests.filter(r => r.path.endsWith('/invoke')).map(r => r.path)).toEqual([
     `/capabilities/${capability.id}/invoke`, `/capabilities/${inquiry.id}/invoke`,
   ]);
+}, 15000);
+
+it.each(['restored', 'chat'] as const)('blocks an unknown %s run after reload and reconnect while allowing a distinct inquiry', async (origin) => {
+  const { page, state, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [capability, inquiry];
+  if (origin === 'restored') state.runs.push({ ...initialRun(), state: 'POST_OUTCOME_UNKNOWN' });
+  await connect();
+  if (origin === 'chat') {
+    await page.locator('#message').fill('Read offline-member shares');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.locator('#messages [data-run-id]').waitFor();
+    state.runs[0]!.state = 'POST_OUTCOME_UNKNOWN';
+    await page.locator('#refresh').click();
+  }
+  await visible(page, '#runs', 'POST_OUTCOME_UNKNOWN');
+  const before = state.requests.filter(r => r.path.endsWith('/invoke')).length;
+  for (const transition of ['current', 'reload', 'reconnect']) {
+    if (transition === 'reload') { await page.reload(); await connect(); }
+    if (transition === 'reconnect') { await page.getByRole('button', { name: 'Disconnect', exact: true }).click(); await connect(); }
+    await visible(page, '#runs', 'POST_OUTCOME_UNKNOWN');
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+    await page.getByText('This capability has an unknown posting outcome.', { exact: false }).waitFor();
+    expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(before);
+  }
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await vi.waitFor(() => expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(before + 1));
+  expect(state.requests.filter(r => r.path.endsWith('/invoke')).at(-1)?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
+}, 20000);
+
+it('shows the authoritative step and announces meaningful state changes without elapsed-time chatter', async () => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({ ...initialRun(), step: hostile });
+  await connect();
+  const card = page.locator('#runs article');
+  const status = card.locator('.badge[role="status"]');
+  await status.waitFor();
+  expect(await status.getAttribute('aria-live')).toBe('polite');
+  expect(await status.getAttribute('aria-atomic')).toBe('true');
+  expect(await status.innerText()).toContain(runId);
+  await card.getByText(`Current step: ${hostile}`, { exact: true }).waitFor();
+  expect(await card.locator('img').count()).toBe(0);
+  const before = await status.textContent();
+  state.runs[0]!.elapsedMs = 10000;
+  await page.locator('#refresh').click();
+  await card.getByText('Elapsed: 10.0 s', { exact: true }).waitFor();
+  expect(await status.textContent()).toBe(before);
+  for (const next of ['awaiting-human', 'success', 'business_outcome', 'POST_OUTCOME_UNKNOWN']) {
+    state.runs[0]!.state = next;
+    state.runs[0]!.step = 'safe-current-step';
+    state.runs[0]!.result = next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
+    await page.locator('#refresh').click();
+    await vi.waitFor(async () => expect(await status.textContent()).toContain(next));
+    if (next === 'business_outcome') expect(await status.textContent()).toContain('NO_SUCH_MEMBER');
+  }
+  await card.getByText('Current step: safe-current-step', { exact: true }).waitFor();
 }, 15000);
