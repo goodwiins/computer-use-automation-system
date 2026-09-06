@@ -43,7 +43,7 @@ export class BrowserSurface implements Surface {
   private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
-  private submission?: { url: string; method: string; body: string };
+  private submission?: { url: string; method: string; body: string; frame: Frame };
   private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
   private readonly frameIds = new WeakMap<Frame, string>();
@@ -121,20 +121,20 @@ export class BrowserSurface implements Surface {
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
-    this.page = await this.context.newPage();
-    this.trackFrame(this.page.mainFrame());
-    this.page.on('frameattached', frame => this.trackFrame(frame));
-    this.page.on('framenavigated', frame => this.bumpFrame(frame));
-    this.page.on('framedetached', frame => this.bumpFrame(frame));
-    this.page.on('close', () => this.opts.onClose?.());
-    // A popup is a second page the allowlist route never sees. Nothing here acts
-    // on one, so close it rather than let page content reach other origins.
-    this.page.on('popup', popup => popup.close().catch(() => {}));
-    if (this.opts.profile) await this.page.route('**/*', async route => {
+    // Context interception precedes page creation: page routes and popup events
+    // miss a popup's first request. The newer read-only route handles its own
+    // bound auxiliary page and falls back here only for the primary page.
+    if (this.opts.profile) await this.context.route('**/*', async route => {
       const request = route.request();
+      let frame: Frame;
+      try { frame = request.frame(); } catch { return route.abort(); }
+      if (!this.page || frame.page() !== this.page) return route.abort();
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
       if (!['GET', 'HEAD'].includes(request.method())) {
+        // An unrelated frame must neither use nor clear the inspected form's
+        // one-shot allowance while its native submission is pending.
+        if (this.submission?.frame !== frame) return route.abort();
         const allowed = this.submission?.url === url.href && this.submission.method === request.method()
           && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
           && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
@@ -148,6 +148,13 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.page = await this.context.newPage();
+    this.trackFrame(this.page.mainFrame());
+    this.page.on('frameattached', frame => this.trackFrame(frame));
+    this.page.on('framenavigated', frame => this.bumpFrame(frame));
+    this.page.on('framedetached', frame => this.bumpFrame(frame));
+    this.page.on('close', () => this.opts.onClose?.());
+    this.page.on('popup', popup => popup.close().catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -620,7 +627,7 @@ export class BrowserSurface implements Surface {
         if (!inspectedFrame || !sameFrameContext(currentFrame, inspectedFrame) || !sameFrameContext(currentFrame, expected.frame)) throw new Error('Control frame changed');
         const expectedState = { ...expected };
         delete expectedState.frame;
-        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody, frame };
         try {
           await Promise.all([
             frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
