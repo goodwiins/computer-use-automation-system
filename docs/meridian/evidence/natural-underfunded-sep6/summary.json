@@ -1,0 +1,23 @@
+{
+  "runId": "8af1753c-86e4-4193-af55-6aa1322f8425",
+  "producerSha": "2d539b5089a4db0a73933649fd89787c54ecddcb",
+  "coreMergeSha": "1a97742a23f17663d16d93028e2090153669a6e7",
+  "scope": "Genuine discovery stops at native member-share eligibility for an intentionally excessive test amount, without URL fault injection. Guard-derived preflight outcome, not a submitted server rejection or complete transfer recording.",
+  "journalState": "business_outcome",
+  "resultStatus": "business_outcome",
+  "outcomeCode": "INSUFFICIENT_FUNDS",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "business_outcome",
+    "attempts": 9,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "cliExitCode": 0,
+  "logSha256": "170dae6b674bc083fd5792b3584c829ef85bee75582392d79aa6345f2fa84af8",
+  "resultSha256": "5c3da2a8fe36b720e45142b27e81d030f8ccef6c27e4f9b88cfff525d8606ad6",
+  "journalSha256": "4518c55637793c413ad5938a6822742d72ad27c827c5f4c907456da03f57860d",
+  "acceptance": "Discovery-side underfunding verified; API/replay and native network-counter evidence remain separate open gates. Live capabilities remain3/7."
+}
