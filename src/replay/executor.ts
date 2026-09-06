@@ -112,7 +112,7 @@ export async function runReplay(
     const result: ReplayResult = {
       status: 'business_outcome', outcomeCode: err.outcomeCode, detail: err.message, ...base,
     };
-    logger.log('replay.business_outcome', { stepId, outcomeCode: err.outcomeCode });
+    logger.log('replay.business_outcome', { stepId, code: err.outcomeCode });
     logger.writeResult(result);
     return result;
   }
@@ -131,7 +131,7 @@ export async function runReplay(
         logger.log('detector.hit', { stepId, detector: d.id, classification: d.classification });
         if (d.classification === 'business_outcome') {
           const shot = await logger.screenshot(surface, `outcome-${d.id}`);
-          logger.log('replay.business_outcome', { outcomeCode: d.outcomeCode, screenshot: shot });
+          logger.log('replay.business_outcome', { code: d.outcomeCode, screenshot: shot });
           const result: ReplayResult = {
             status: 'business_outcome',
             outcomeCode: d.outcomeCode ?? d.id,

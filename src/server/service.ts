@@ -18,6 +18,7 @@ export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private active?: string;
+  private closing = false;
   private completion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
@@ -51,8 +52,16 @@ export class InvocationService {
     }
     // Secrets are excluded from identity. The configured operator/branch/role are included.
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
-    const { existing } = this.journal.lookup(principal, key, request);
-    if (existing) return { runId: existing.runId };
+    const { existing, identity } = this.journal.lookup(principal, key, request);
+    if (existing) {
+      if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
+      return { runId: existing.runId, reused: true as const };
+    }
+    if (this.closing) throw new RequestError(503, 'Server is shutting down');
+    // ponytail: capability-wide unknown block; narrower scope needs an explicit reconciliation contract.
+    // Terminal same-key lookups above remain readable across all entry points.
+    if ([...this.journal.records.values()].some(run => run.capability === id && run.state === 'POST_OUTCOME_UNKNOWN'))
+      throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
     const record = this.journal.reserve(principal, key, id, artifact.version, request);
     this.active = record.runId;
@@ -139,6 +148,7 @@ export class InvocationService {
     live.approval.decide(id, decision);
   }
   async close() {
+    this.closing = true;
     for (const live of this.live.values()) { live.approval.cancel(); await live.close?.(); }
     await this.completion;
   }
