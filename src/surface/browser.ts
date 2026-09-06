@@ -293,8 +293,17 @@ export class BrowserSurface implements Surface {
       if (!requiredMask || await this.page.locator(requiredMask).count() !== 1) throw new Error('Unknown page structure: metadata-only evidence');
       // Whole content cells include dynamically observed financial/contact data.
       const masks = this.page.frames().flatMap(frame => (profile.maskSelectors ?? ['body']).map(selector => frame.locator(selector)));
-      for (const frame of this.page.frames()) for (const value of opts.maskValues ?? []) masks.push(frame.getByText(value, { exact: false }));
-      await this.page.screenshot({ path, fullPage: true, mask: masks });
+      // PF-H2: one getByText locator per value per frame was O(values x DOM)
+      // inside page.screenshot (1.75 s at 500 values, past the 30 s screenshot
+      // timeout at 5000). Tag the matching text nodes' elements in a single
+      // evaluate per frame instead and mask the tag — same coverage, one trip.
+      const untag = await this.tagTextMatches(opts.maskValues ?? []);
+      try {
+        if (opts.maskValues?.length) for (const frame of this.page.frames()) masks.push(frame.locator('[data-cu-mask]'));
+        await this.page.screenshot({ path, fullPage: true, mask: masks });
+      } finally {
+        await untag();
+      }
       return;
     }
     const restore = await this.maskSensitiveInputs(opts.maskValues ?? []);
@@ -303,6 +312,31 @@ export class BrowserSurface implements Surface {
     } finally {
       await restore();
     }
+  }
+
+  /**
+   * Mark every element that directly contains one of `values` in a text node
+   * with `data-cu-mask`, mirroring what getByText(value, { exact: false })
+   * would match. Returns a function that removes the marks.
+   */
+  private async tagTextMatches(values: string[]): Promise<() => Promise<void>> {
+    if (values.length === 0) return async () => {};
+    for (const frame of this.page.frames()) {
+      await frame
+        .evaluate((needles: string[]) => {
+          const pattern = new RegExp(needles.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+          const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (pattern.test(node.nodeValue ?? '')) node.parentElement?.setAttribute('data-cu-mask', '');
+          }
+        }, values)
+        .catch(() => {}); // frame may be navigating — nothing to mask there
+    }
+    return async () => {
+      for (const frame of this.page.frames()) {
+        await frame.evaluate(() => { for (const el of document.querySelectorAll('[data-cu-mask]')) el.removeAttribute('data-cu-mask'); }).catch(() => {});
+      }
+    };
   }
 
   /**
@@ -341,10 +375,17 @@ export class BrowserSurface implements Surface {
     };
   }
 
+  // PF-M4: collectSensitive runs on every inspect/observe/screenshot and used
+  // to re-send every cell text each time (2,400 values per call on a 500-row
+  // page); the redactor then deduped with an O(n^2) scan. Remember what was
+  // already forwarded so only new values cross. Values are never dropped —
+  // only repeats — so the redactor ends with the same set.
+  private readonly forwardedSensitive = { values: new Set<string>(), secrets: new Set<string>(), credentials: new Set<string>() };
+
   async collectSensitive(): Promise<void> {
     if (!this.opts.profile || !this.page) return;
-    for (const frame of this.page.frames()) {
-      const observed = await frame.evaluate(() => {
+    const observations = await Promise.all(this.page.frames().map(frame =>
+      frame.evaluate(() => {
         const result: string[] = [];
         const secrets: string[] = [];
         const credentials: string[] = [];
@@ -360,8 +401,14 @@ export class BrowserSurface implements Surface {
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
         if (sid) { result.push(sid); secrets.push(sid); credentials.push(sid); }
         return { values: result, secrets, credentials };
-      });
-      this.opts.sensitive?.(observed.values, observed.secrets, observed.credentials);
+      }).catch(() => ({ values: [], secrets: [], credentials: [] })), // frame navigated mid-collect: nothing to forward
+    ));
+    const fresh = (seen: Set<string>, found: string[]) => found.filter(v => !seen.has(v) && (seen.add(v), true));
+    for (const observed of observations) {
+      const values = fresh(this.forwardedSensitive.values, observed.values);
+      const secrets = fresh(this.forwardedSensitive.secrets, observed.secrets);
+      const credentials = fresh(this.forwardedSensitive.credentials, observed.credentials);
+      if (values.length || secrets.length || credentials.length) this.opts.sensitive?.(values, secrets, credentials);
     }
   }
 

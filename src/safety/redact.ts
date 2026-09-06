@@ -15,20 +15,22 @@ const escapeRegexChars = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export class Redactor {
   private sensitiveValues: string[] = [];
+  private readonly known = new Set<string>(); // PF-M4: O(1) membership instead of Array.includes
   private protectedValues = new Set<string>();
 
   /** Register concrete runtime values that must never be logged. */
   addSensitiveValues(values: Array<string | number>, allowVisible = false): void {
+    let added = false;
     for (const v of values) {
       const s = String(v);
       if (s.length === 0) continue;
-      if (!this.sensitiveValues.includes(s)) this.sensitiveValues.push(s);
+      if (!this.known.has(s)) { this.known.add(s); this.sensitiveValues.push(s); added = true; }
       // Values surface URL-encoded in query strings and form bodies too.
       const enc = encodeURIComponent(s);
       if (!allowVisible) { this.protectedValues.add(s); this.protectedValues.add(enc); }
-      if (enc !== s && !this.sensitiveValues.includes(enc)) this.sensitiveValues.push(enc);
+      if (enc !== s && !this.known.has(enc)) { this.known.add(enc); this.sensitiveValues.push(enc); added = true; }
     }
-    this.sensitiveValues.sort((a, b) => b.length - a.length);
+    if (added) this.sensitiveValues.sort((a, b) => b.length - a.length);
   }
 
   /** Exempt only corroborated business values registered as hidden, never credentials. */
