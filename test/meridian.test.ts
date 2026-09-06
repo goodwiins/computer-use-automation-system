@@ -1005,6 +1005,89 @@ describe('MERIDIAN guarded transfer path', () => {
     { shareId: '9001-C', type: 'S0001', balance: '9.00', status: 'OPEN' },
   ];
 
+  it.each([
+    { entry: 'start', failure: '' },
+    { entry: 'navigate', failure: '' },
+    { entry: 'start', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'changed-frame' },
+    { entry: 'navigate', failure: 'closed-share' },
+    { entry: 'navigate', failure: 'duplicate-share' },
+    { entry: 'navigate', failure: 'insufficient' },
+    { entry: 'navigate', failure: 'stale-checkpoint' },
+  ])('captures the real transfer member checkpoint after $entry (failure=$failure)', async ({ entry, failure }) => {
+    let transferVisits = 0;
+    let wrongMemberVisits = 0;
+    let posts = 0;
+    const rows = eligibleRows.map(row => ({ ...row }));
+    if (failure === 'closed-share') rows[0]!.status = 'CLOSED';
+    if (failure === 'insufficient') rows[0]!.balance = '0.99';
+    if (failure === 'duplicate-share') rows.push({ ...rows[0]! });
+    const shares = `<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr>${rows.map(row => `<tr><td>${row.shareId}</td><td>${row.type}</td><td>$${row.balance}</td><td>${row.status}</td></tr>`).join('')}</table>`;
+    let member = `<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p><table><tbody><tr></tr><tr></tr><tr><td><table><tr><td>Member No.:</td><td>9001</td></tr></table>${shares}<a href="/members/9001/transfer">Transfer</a></td></tr></tbody></table>`;
+    const app = express();
+    app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
+    app.get('/members/9001', (_req, res) => res.send(member));
+    app.get('/members/9999', (_req, res) => { wrongMemberVisits++; res.send(member); });
+    app.get('/members/9001/transfer', (_req, res) => { transferVisits++; res.send('<p>Transfer form</p>'); });
+    app.post('*', (_req, res) => { posts++; res.send('unexpected post'); });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+    const readTable = browser.readTable.bind(browser);
+    const extracted = vi.spyOn(browser, 'readTable').mockImplementation(async (...args) => {
+      const result = await readTable(...args);
+      if (failure === 'changed-frame') await browser.page.reload();
+      return result;
+    });
+    const beforeDispatch = vi.fn();
+    const events: Array<{ event: string; attempt: unknown }> = [];
+    const surface = new GuardedSurface(browser, Policy.parse({ ...policy, allowedOrigins: [localOrigin] }), async () => true, undefined, {
+      profile, session: new ControlSession(), deadline: Date.now() + 10000,
+      runId: randomUUID(), artifact: 'meridian-funds-transfer', version: '1.0.0',
+      operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+      transfer: { expected: request, memberTable: meridianTransferMemberTable },
+    }, (event, data) => events.push({ event, attempt: data.attempt }));
+    try {
+      if (entry === 'navigate') await surface.start(`${localOrigin}/members`);
+      const memberUrl = `${localOrigin}/members/${failure === 'wrong-member' ? '9999' : '9001'}`;
+      const visit = entry === 'start' ? surface.start(memberUrl) : surface.navigate(memberUrl);
+      if (failure === 'stale-checkpoint') {
+        await visit;
+        member = member.replace('<td>OPEN</td>', '<td>CLOSED</td>');
+        await expect(surface.navigate(memberUrl)).rejects.toThrow(/transfer/i);
+        await expect(surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] })).rejects.toThrow(/frame|eligibility/i);
+        expect(transferVisits).toBe(0);
+      } else if (failure) {
+        await expect(visit).rejects.toThrow(failure === 'insufficient' ? InsufficientFundsError : /member|bound|frame|transfer/i);
+        await expect(surface.navigate(`${localOrigin}/members/9001/transfer`)).rejects.toThrow(/eligibility|frame/i);
+        expect(transferVisits).toBe(0);
+      } else {
+        await visit;
+        expect(extracted).toHaveBeenCalledOnce();
+        await surface.navigate(memberUrl);
+        expect(extracted).toHaveBeenCalledTimes(2);
+        for (const suffix of ['', '/review', '/post']) {
+          await expect(surface.navigate(`${localOrigin}/members/9001/transfer${suffix}`)).rejects.toThrow(/eligibility|route/i);
+        }
+        await surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] });
+        expect(transferVisits).toBe(1);
+        expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001/transfer`);
+      }
+      expect(wrongMemberVisits).toBe(0);
+      expect(posts).toBe(0);
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(events.some(event => event.event === 'mutation.intent')).toBe(false);
+      expect(events.filter(event => event.event === 'action.end').map(event => event.attempt))
+        .toEqual(events.filter(event => event.event === 'action.start').map(event => event.attempt));
+    } finally {
+      await browser.close();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void, expected = request) {
     let currentRows: Array<Record<string, string>> = rows;
     let url = `${origin}/members`;

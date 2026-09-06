@@ -675,10 +675,11 @@ export class GuardedSurface implements Surface {
     const before = this.currentTransferFrame();
     if (this.path(before.url) !== this.path(memberPath)) return this.transferFrameFailed();
     const target = { ...binding.memberTable.target, frame: before.name };
-    // Eligibility is part of the member-selection click. Keep the extract
+    // Eligibility is part of the member-selection action. Keep the extract
     // policy and bounds checks, but avoid readTable()'s public action wrapper:
-    // nesting it here would reuse this.attempt and corrupt click evidence.
+    // nesting it here would reuse this.attempt and corrupt action evidence.
     this.preserveTransferState(this.inner.currentUrl());
+    this.transferEligibility = undefined; // Failed refreshes cannot reuse an older checkpoint.
     await this.gate('extract', 'read');
     this.assertStillInBounds('extract');
     const rows = await this.inner.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
@@ -771,11 +772,13 @@ export class GuardedSurface implements Surface {
       this.assertBoundOperationNavigation(entryUrl);
       this.started = true;
       this.assertRoute(entryUrl);
-      this.requireTransferRoute(entryUrl);
+      if (!(this.runtime?.transfer && MEMBER_ROUTE.test(this.path(entryUrl)))) this.requireTransferRoute(entryUrl);
       await this.gate('navigate', 'read', entryUrl);
       await this.inner.start(entryUrl);
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
-      if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
+      if (!this.mutationDispatched && this.runtime?.transfer && MEMBER_ROUTE.test(this.path(entryUrl))) {
+        await this.captureTransferEligibility(entryUrl, DEFAULT_TIMEOUT);
+      } else if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
         await this.captureOpenShareState(entryUrl, DEFAULT_TIMEOUT);
       } else if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(entryUrl))) {
         await this.captureHoldState(entryUrl, DEFAULT_TIMEOUT);
@@ -822,6 +825,7 @@ export class GuardedSurface implements Surface {
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
       if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.transfer && MEMBER_ROUTE.test(this.path(url))) await this.captureTransferEligibility(url, DEFAULT_TIMEOUT);
       if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(url))) await this.captureOpenShareState(url, DEFAULT_TIMEOUT);
       else if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
       if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(url))) await this.captureHoldState(url, DEFAULT_TIMEOUT);
