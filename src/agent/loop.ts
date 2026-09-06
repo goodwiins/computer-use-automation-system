@@ -101,7 +101,7 @@ export async function runDiscovery(
       if (condition === RECOVERED) { turn--; continue; }
       if (condition) return condition;
       const obs = await surface.observe();
-      const shot = await logger.screenshot(surface, `turn${turn}`);
+      const shot = await logger.screenshot(surface, `turn${turn}`, obs);
       const obsText =
         `URL: ${obs.url}\nTITLE: ${obs.title}\n` +
         obs.frames

@@ -286,9 +286,9 @@ it('discards a stale observation after bound operation recovery before asking th
   });
   expect(result).toMatchObject({ status: 'success', trace: [] });
   expect(surface.recoverOperation).toHaveBeenCalledExactlyOnceWith('maintenance');
-  expect(surface.observe).toHaveBeenCalledTimes(4); // one live observation and one masked screenshot observation per pass
+  expect(surface.observe).toHaveBeenCalledTimes(2); // one live observation per pass; the screenshot reuses it (PF-M1)
   expect(create).toHaveBeenCalledOnce();
-  expect(JSON.stringify(create.mock.calls[0]![0])).toContain('observation-3');
+  expect(JSON.stringify(create.mock.calls[0]![0])).toContain('observation-2');
   expect(JSON.stringify(create.mock.calls[0]![0])).not.toContain('observation-1');
 });
 

@@ -8,6 +8,8 @@
 //      no re-recording, base file untouched.
 
 import type { Server } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
@@ -20,7 +22,10 @@ import { RunLogger } from '../src/evidence/logger.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface } from '../src/surface/guarded.js';
 
-const PORT = 4198;
+// PF-M8: an ephemeral port — a fixed one collides with leaked workers and parallel checkouts.
+const server: Server = createApp().listen(0);
+await once(server, 'listening');
+const PORT = (server.address() as AddressInfo).port;
 const ORIGIN = `http://localhost:${PORT}`;
 
 const policy = Policy.parse({
@@ -63,16 +68,13 @@ async function replay(artifact: Artifact, params: Record<string, string | number
 }
 
 describe('cross-tenant replay via overlay', () => {
-  let server: Server;
-  beforeAll(async () => {
-    server = createApp().listen(PORT);
-  });
   afterAll(() => new Promise((r) => server.close(r)));
 
   it(
     'base artifact alone fails loudly at the renamed control',
     async () => {
-      const result = await replay(base, { memberId: '23456' });
+      // PF-M10: the assertion is the failure shape, not the budget — don't wait out 10 s per tier.
+      const result = await replay({ ...base, steps: base.steps.map(step => ({ ...step, timeoutMs: 1000 })) }, { memberId: '23456' });
       expect(result.status).toBe('failure');
       if (result.status === 'failure') {
         expect(result.failure.stepId).toBe('s1');

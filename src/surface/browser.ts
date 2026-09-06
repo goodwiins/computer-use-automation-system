@@ -186,30 +186,36 @@ export class BrowserSurface implements Surface {
     for (const frame of this.page.frames()) {
       if (frame.url() === 'about:blank' || !this.frameInBounds(frame)) continue;
       try {
-        const snapshot = await frame.locator('body').ariaSnapshot({ timeout: 3000 });
-        const fields = await frame.evaluate(() =>
-          Array.from(document.querySelectorAll('input, select, textarea'))
+        // One round trip for structure. A frameset shell has no <body>, and
+        // locator('body').ariaSnapshot() would wait out its whole timeout on
+        // it (PF-H1: 3 s per discovery turn), so ask the document first.
+        const structure = await frame.evaluate(() => {
+          if (!document.body || document.body.tagName !== 'BODY') return null;
+          const fields = Array.from(document.querySelectorAll('input, select, textarea'))
             .map((e) => ({
               name: e.getAttribute('name') ?? '',
               type: e instanceof HTMLInputElement ? e.type : e.tagName.toLowerCase(),
             }))
-            .filter((f) => f.name),
-        );
-        const tables = await frame.evaluate(() => Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
-          const parts: string[] = [];
-          let node: Element | null = table;
-          while (node && node.tagName !== 'BODY') {
-            const parent: Element | null = node.parentElement;
-            const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
-            parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
-            node = parent;
-          }
-          const rowCells = Array.from(table.rows, row => Array.from(row.cells, cell => cell.tagName.toLowerCase() as 'td' | 'th'));
-          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: rowCells[0] ?? [], rows: table.rows.length, rowCells };
-        }));
-        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields, tables });
+            .filter((f) => f.name);
+          const tables = Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
+            const parts: string[] = [];
+            let node: Element | null = table;
+            while (node && node.tagName !== 'BODY') {
+              const parent: Element | null = node.parentElement;
+              const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
+              parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+              node = parent;
+            }
+            const rowCells = Array.from(table.rows, row => Array.from(row.cells, cell => cell.tagName.toLowerCase() as 'td' | 'th'));
+            return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: rowCells[0] ?? [], rows: table.rows.length, rowCells };
+          });
+          return { fields, tables };
+        });
+        if (!structure) continue;
+        const snapshot = await frame.locator('body').ariaSnapshot({ timeout: 3000 });
+        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, ...structure });
       } catch {
-        // Frameset parent pages have no body; skip silently.
+        // Frame detached or navigated mid-observe; skip silently.
       }
     }
     return { url: this.currentUrl(), title: await this.page.title(), frames };

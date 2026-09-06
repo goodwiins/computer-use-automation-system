@@ -4,6 +4,8 @@
 // The real-model run lives in /evidence/; this test pins the machinery.
 
 import type { Server } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import type OpenAI from 'openai';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
@@ -16,7 +18,10 @@ import { RunLogger } from '../src/evidence/logger.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface } from '../src/surface/guarded.js';
 
-const PORT = 4199;
+// PF-M8: an ephemeral port — a fixed one collides with leaked workers and parallel checkouts.
+const server: Server = createApp().listen(0);
+await once(server, 'listening');
+const PORT = (server.address() as AddressInfo).port;
 const ORIGIN = `http://localhost:${PORT}`;
 
 const policy = Policy.parse({
@@ -74,10 +79,6 @@ const SCRIPT = [
 ];
 
 describe('discovery → artifact → replay (scripted LLM)', () => {
-  let server: Server;
-  beforeAll(async () => {
-    server = createApp().listen(PORT);
-  });
   afterAll(() => new Promise((r) => server.close(r)));
 
   it(

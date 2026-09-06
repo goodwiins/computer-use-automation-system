@@ -3,23 +3,25 @@
 // matching inputs for the duration of the shot.
 
 import type { Server } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 
-const PORT = 4201;
+// PF-M8: an ephemeral port — a fixed one collides with leaked workers and parallel checkouts.
+const server: Server = createApp().listen(0);
+await once(server, 'listening');
+const PORT = (server.address() as AddressInfo).port;
 const ORIGIN = `http://localhost:${PORT}`;
 const maskShotPath = join(tmpdir(), `cu-mask-test-${process.pid}.png`);
 
 describe('BrowserSurface screenshot masking', () => {
-  let server: Server;
   let surface: BrowserSurface;
 
   beforeAll(async () => {
-    server = createApp().listen(PORT);
-    await new Promise<void>((r) => server.on('listening', () => r()));
     surface = new BrowserSurface({ allowedOrigins: [ORIGIN] });
     await surface.start(`${ORIGIN}/members/search`);
   });

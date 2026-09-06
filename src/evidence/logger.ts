@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Redactor } from '../safety/redact.js';
-import type { Surface } from '../surface/types.js';
+import type { Observation, Surface } from '../surface/types.js';
 import { safeEvent, safeResult } from './safe-event.js';
 
 const STRUCTURAL_SELECTOR = /^body > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\)(?: > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\))*$/;
@@ -54,7 +54,8 @@ export class RunLogger {
     try { void Promise.resolve(this.onEvent?.(safe.event, Object.freeze({ ...safe.data }))).catch(() => {}); } catch { /* optional observer */ }
   }
 
-  async screenshot(surface: Surface, label: string): Promise<string> {
+  /** `observation` lets a caller that just observed the page skip a second observe() (PF-M1). */
+  async screenshot(surface: Surface, label: string, observation?: Observation): Promise<string> {
     const safeLabel = label.replace(/[^a-zA-Z0-9._-]/g, '_');
     const file = join(this.dir, `${String(this.seq).padStart(3, '0')}-${safeLabel}.png`);
     // Screenshots bypass text redaction by nature — hand the surface the
@@ -64,8 +65,8 @@ export class RunLogger {
       await surface.screenshot(file, values.length ? { maskValues: values } : {});
       if (existsSync(file)) chmodSync(file, 0o600);
       if (this.strict) {
-        const observation = await surface.observe();
-        writeFileSync(file.replace(/\.png$/, '.json'), JSON.stringify({ frames: observation.frames.map(f => ({
+        const observed = observation ?? await surface.observe();
+        writeFileSync(file.replace(/\.png$/, '.json'), JSON.stringify({ frames: observed.frames.map(f => ({
           frame: f.frame,
           fields: f.fields,
           tables: (f.tables ?? []).map(strictTableStructure).filter(table => table !== undefined),
