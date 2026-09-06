@@ -8,7 +8,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { extractText, Assertion, RiskClass, TableColumn, type TargetDescriptor, type OutputValue, type Detector } from '../artifact/schema.js';
 import type { InterventionDecision, InterventionRequest } from '../escalation/session.js';
 import { checkDetectors, matchDetector } from '../replay/detectors.js';
-import { safeEvent } from '../evidence/safe-event.js';
+import { safeEvent, safeResult } from '../evidence/safe-event.js';
 import type { RunLogger } from '../evidence/logger.js';
 import type { Surface } from '../surface/types.js';
 import { RunAbortedError } from '../surface/guarded.js';
@@ -83,6 +83,10 @@ export async function runDiscovery(
   catch (err) {
     if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN', undefined, entryUrl);
     if (err instanceof RunAbortedError) return finish('stopped', 'RUN_ABORTED', undefined, entryUrl);
+    if (err instanceof InsufficientFundsError) {
+      return finish('business_outcome', err.outcomeCode, undefined, entryUrl,
+        { outcomeCode: err.outcomeCode, detail: err.message });
+    }
     throw err;
   }
 
@@ -163,12 +167,18 @@ export async function runDiscovery(
           case 'done': {
             if (repaired) return finish('escalated', 'Human repair requires a fresh complete recording');
             const finalUrl = surface.currentUrl();
-            await deps.validateCompletion?.(outputs);
+            try { await deps.validateCompletion?.(outputs); }
+            catch (err) {
+              try { logger.log('discovery.completion', { status: 'failure' }); }
+              catch { /* Diagnostics must not replace the original completion error. */ }
+              throw err;
+            }
             return finish('success', undefined, String(args.summary ?? ''), finalUrl);
           }
           case 'escalate': {
+            try { logger.log('discovery.escalate'); }
+            catch { /* Diagnostics must not replace the model's terminal decision. */ }
             if (surface.mutationDispatched) return finish('stopped', 'POST_OUTCOME_UNKNOWN');
-            logger.log('discovery.escalate', { reason });
             if (deps.escalate) {
               const decision = await deps.escalate({
                 kind: 'discovery_stuck',
@@ -303,6 +313,11 @@ export async function runDiscovery(
 
   function stopForDetector(detector: Detector): DiscoveryResult {
     // Persist only known static codes, never profile identifiers or page text.
+    const outcome = safeResult({ status: detector.classification, outcomeCode: detector.outcomeCode });
+    if (outcome.status === 'business_outcome') {
+      return finish('business_outcome', outcome.outcomeCode, undefined, undefined,
+        { outcomeCode: outcome.outcomeCode, detail: outcome.outcomeCode });
+    }
     const code = safeEvent('detector.hit', { code: detector.outcomeCode }).data.code;
     return finish('stopped', typeof code === 'string' ? code : 'DISCOVERY_FAILED');
   }

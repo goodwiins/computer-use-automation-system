@@ -1,10 +1,66 @@
-# MERIDIAN live evidence — September 5, 2026
+# MERIDIAN live evidence — September 6, 2026
 
 Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The earlier read/dashboard acceptance baseline remains source-specific at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`. Offline fixtures, API routing, read rehearsals and later runtime repairs do not increase the capability count or establish a write.
 
-The current integrated runtime baseline is `dev` at `601e2660cc7f23572a4f65f4677e6ec84af174b4`. Repairs through PR #53 remain integrated with their recorded gates. PR #54 then merged evaluator event-type validation from reviewed head `5d71070`; local pre-push passed 395 tests/17 files and typecheck, head workflow `33958769455` / producer `101286792115`, merge workflow `33960952350` / producer `101292625264`, and exact-head hosted code/security reviews passed without findings. Head and merge share tree `8ff8d528ddc11bd2a7d1a2e75a4cea73c66c2d43`. These are shared source gates. They do not promote the transfer draft, create an accepted write replay or change any historical producing source SHA.
+The historical runtime baseline was `dev` at `601e2660cc7f23572a4f65f4677e6ec84af174b4`. Repairs through PR #53 remain integrated with their recorded gates. PR #54 then merged evaluator event-type validation from reviewed head `5d71070`; local pre-push passed 395 tests/17 files and typecheck, head workflow `33958769455` / producer `101286792115`, merge workflow `33960952350` / producer `101292625264`, and exact-head hosted code/security reviews passed without findings. Head and merge share tree `8ff8d528ddc11bd2a7d1a2e75a4cea73c66c2d43`. These are shared source gates. They do not promote the transfer draft, create an accepted write replay or change any historical producing source SHA.
 
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
+
+## September 6 caller API acceptance checkpoint
+
+Two fresh runs at producing source `5d31afd1ae36aea7878497233967805a455be858` exercised the standard authenticated caller API against the hosted target. The source includes the reviewed PR #68 MERIDIAN popup guard, before its later generic-session and cleanup-fixture repair; it is not a claim about the final integrated build.
+
+| Scope | Run | Structured result | Authenticated evaluator |
+| --- | --- | --- | --- |
+| [Member record](evidence/api-read-sep6/balance-api-summary.json) | `f69afdb6-1644-4571-9617-f0dd6d53ad92` | Success; 35 typed share rows. Repeating the same body/key returned HTTP 202 with the same run, one history entry and unchanged journal. | PASS; 10 attempts, zero mutation intents |
+| [Natural absent member](evidence/api-read-sep6/notfound-api-summary.json) | `80b3c180-4f26-411d-b1e5-e63cb3f11f03` | `business_outcome / NO_SUCH_MEMBER`; no alternate selection. | PASS; 9 attempts, zero mutation intents |
+
+The summaries contain metadata and hashes only; signed journals and raw run evidence remain private. Both runs are terminal and their local API process was stopped cleanly. These add fresh read and natural-outcome evidence, not discovery, injected-fault, chatbot or write acceptance. Coverage remains **3/7**. The old transfer pair is no longer eligible; a new pair must be selected and observed again before its separate final approval.
+
+## September 6 pre-post transfer checkpoint failures
+
+Two genuine fault-only discoveries at source `d1124eb7548705364a0e58b6d70f5d1a279f137e` stopped before reaching the configured injected-notfound operation page. [Attempt 1](evidence/transfer-checkpoint-sep6/attempt-1.json), `a0e04247-7884-452b-90ae-be613a35d599`, escalated after the menu shortcut lacked member/frame binding; its handoff expired. [Attempt 2](evidence/transfer-checkpoint-sep6/attempt-2.json), `56915f92-1942-4e03-a7f3-f72d363362f2`, entered the member first but still lacked transfer eligibility; the handoff was explicitly aborted. Both journals are terminal `failure`, with `escalated` results, authenticated evaluator PASS/task failure, 11 and 12 attempts, and zero mutation intents. Neither accepted posting, produced an artifact, or observed the injected condition. Log hashes were checked against the retained private evidence.
+
+The second failure exposed missing eligibility initialization after member start/navigation. [PR #87](https://github.com/goodwiins/computer-use-automation-system/pull/87) reuses native member-table capture and clears stale eligibility on failed refresh. Hosted review found cross-origin redirect binding and startup business-outcome gaps in its first head. Repaired head `f33ca72` passed 652 tests/typecheck, independent end-to-end review and hosted code review/CI `34029912538`. It merged to `dev` as `1a97742` with the same tree and passing merge CI `34030213795`. Hosted security review was at earlier head `5f79ff8`; the repaired head also had independent review of the two safety findings. Source gates alone do not close transfer acceptance.
+
+## Injected discovery checks after the checkpoint repair
+
+Four genuine CLI discoveries at source `eedc4ea1104c7bb52e7ad5199be960de782fe37a` (core merge `1a97742`) reached their configured injected condition on the observed transfer-entry GET. Each used a fresh key/journal, stopped before transfer form submission, and recorded zero actions after detection. Signed evaluation passed with zero mutation intents. Discovery reports these detector stops as `stopped` with a terminal `failure` journal/result; the detector classification and reason remain explicit.
+
+| Injected condition | Run | Detector / stop code | Actions |
+| --- | --- | --- | --- |
+| [Not found](evidence/injected-prepost-sep6/notfound.json) | `c5c454f6-af63-448c-89c1-cf117dc21ccd` | business outcome / `NO_SUCH_MEMBER` | 10 |
+| [Validation](evidence/injected-prepost-sep6/validation.json) | `d7dfe433-f786-40bf-bdbe-5e3a2af5a622` | business outcome / `VALIDATION_REJECTED` | 11 |
+| [Session expiry](evidence/injected-prepost-sep6/timeout.json) | `d51331f2-fd9b-42ea-897a-88c4ea974f10` | fatal / `SESSION_EXPIRED` | 12 |
+| [Application error](evidence/injected-prepost-sep6/server.json) | `66e81477-74d1-4f91-a7d0-83e0678d883d` | fatal / `APPLICATION_ERROR` | 13 |
+
+These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain missing; no complete transfer artifact or write acceptance is created. Permission, natural teller denial, natural idle expiry and same-browser maintenance completion remain separate open gates. All four CLI sessions are terminal, and no approval was granted.
+
+## Service classification and historical structure
+
+PR #88 merged as `84fdd6c`, preserving allowlisted discovery business outcomes through CLI persistence and restored service history. [Native absent-member discovery `3be5d6ca-18b4-414b-bfa1-e8b29b0be510`](evidence/service-completion-sep6/discovery-outcome.json) at producer `691cdf0` reached Search and returned `business_outcome / NO_SUCH_MEMBER`; signed evaluation passed with nine actions and zero mutation intents. The authenticated restarted service retained the classification and unchanged journal. Earlier detector runs retain their original producer-specific failure states; none was rewritten.
+
+PR #89 merged as `27767cf`, tree-identical to reviewed producer `e9ab9d5`. Strict evidence now records allowed input names and observed output types with withheld-value markers. Unknown fields/values and mismatched metadata are rejected; older files are not reconstructed. [Real read/restart run `a2789c68-a957-429f-b9a9-0c70394fb5c6`](evidence/service-completion-sep6/historical-structure.json) returned 36 typed share rows, then restarted the authenticated service and verified historical fields in the headless UI. The raw saved result exactly matched the permitted metadata shape; signed evaluation passed (ten actions, zero intents), the journal stayed unchanged, no UI invocation/decision POST occurred, and cleanup completed.
+
+Both fixes passed independent review. PR #88 head CI `34050454006` and merge CI `34050641113` passed. PR #89 head CI `34051201722` and merge CI `34051428174` passed with 710 tests and both typechecks/build. Its first local prepush run overlapped a recorded 104-second macOS maintenance sleep and six timing checks failed; the unchanged commit passed on rerun with a command-scoped keep-awake assertion. These source/read-only checks complete neither a write recording/replay pair nor the transfer demo; live capability acceptance remains 3/7.
+
+## Selected transfer recording: personal approval expired
+
+After the user selected new transfer inputs, [run `14d62781-c672-4dde-9fc9-2aa2ca2a2c53`](evidence/transfer-approval-expiry-sep6/summary.json) at source `a80ac4e` reached the native review and personal approval gate. The runtime presented the bound member/share/amount/memo facts and a present token. No approval was entered; the five-minute wait ended in `abort` and terminal `RUN_ABORTED`. Signed evaluation passed with 17 actions and zero mutation intents. This verifies the exercised review-to-expiry boundary, not a posted transfer or complete capability recording. The expired run remains terminal and will not be resumed; a new intentional recording requires a fresh review and personal approval.
+
+## Permission-entry attempts on merged UI baseline
+
+Two bounded discoveries at `dfa6f5a` configured permission injection for the observed transfer-entry GET, but neither established that entry. [Run `a0fd7eb4-c633-444f-a3d6-fe8c7385f117`](evidence/permission-attempts-sep6/a0fd7eb4-c633-444f-a3d6-fe8c7385f117.json) stopped with `PERMISSION_DENIED` after six actions and no recorded member lookup/selection. [Run `69315fe0-e7ab-474e-b90f-8c8aee6d813a`](evidence/permission-attempts-sep6/69315fe0-e7ab-474e-b90f-8c8aee6d813a.json) stopped with `VALIDATION_REJECTED` after sign-on (five actions). Both signed evaluations passed with zero mutation intents and no action after detection; both CLI sessions are terminal. The cause of these early target responses is unverified. These are failed attempts at the intended permission-entry check, not permission D/R acceptance, and no automatic continuation was attempted after either terminal result.
+
+## Natural underfunding discovery
+
+[Run `8af1753c-86e4-4193-af55-6aa1322f8425`](evidence/natural-underfunded-sep6/summary.json), source `2d539b5089a4db0a73933649fd89787c54ecddcb`, used an intentionally excessive test amount and no URL fault injection. Native member-share eligibility checks returned `business_outcome / INSUFFICIENT_FUNDS`; the signed journal and result agree, and evaluation passed with nine actions and zero mutation intents. This is a guard-derived preflight outcome, not a submitted target rejection or complete transfer recording. API/replay and independent native network-counter evidence remain open for EXC-08. The CLI session exited normally; no posting approval was requested or granted.
+
+## Integrated chat read rehearsal
+
+At PR #84 source `603b8398d5a5a5a85963a2294c37613ab74f010d`, [read run `00eddac9-7056-4ef6-9855-24847a70bce5`](evidence/ui-read-sep6/summary.json) returned 35 typed share rows through the real assistant-ui chat, caller API and deterministic member-record replay. Values and state matched in the chat card and dashboard; signed evaluation passed with 10 actions and zero mutation intents. Refresh, reload and reconnect produced no second run; reload cleared authentication and browser storage stayed empty. No approval endpoint was called. The UI browser closed and the API server exited normally.
+
+This is a source-specific read rehearsal. Hosted review subsequently found that explicit fresh requests could reuse old results and separate evidence roots could rebuild shared UI assets. Those issues were repaired in PR #84, merged at `a80ac4e` with the same tree as reviewed head `53a6f56`. Both typechecks/build, 699 tests, head CI `34031468183` and merge CI `34033072454` passed. The earlier rehearsal retains its original producer; current evidence follows below.
 
 ## Reviewed artifacts
 
@@ -44,7 +100,15 @@ The accepted round1 controller evidence observed Refresh focused and activated b
 
 The independent post-restart projection recorded historical sensitive values as unavailable, 26 run IDs before and after with no new run, and an unchanged signed `POST_OUTCOME_UNKNOWN` envelope. The controller stopped its owned service cleanly and left the journal locks absent. These checks preserve the historical unknown state; they do not establish a write, same-browser repair or approval/handoff keyboard operation.
 
-The separate assistant-ui work remains local-only. Tested integration `c89f3d4` passed 418 tests in 19 files, both typechecks, build, validation, audit with zero findings and diff checks. It has no remote PR, hosted checks or new live run. The prior genuine UI source remains `681ab82`; these local checks do not replace or extend that evidence.
+At that historical checkpoint the separate assistant-ui work was local-only. Tested integration `c89f3d4` passed 418 tests in 19 files, both typechecks, build, validation, audit with zero findings and diff checks. It then had no remote PR, hosted checks or new live run. The prior genuine UI source was `681ab82`; these local checks do not replace or extend that evidence.
+
+## Merged UI exception and status rehearsal
+
+At reviewed head `53a6f5686b680bcb34f9232adef46fd44ce3d6b0` (tree-identical to merge `a80ac4e`), [absent-member run `d3fbdd8c-21a5-46cc-9e1c-3cee890287c9`](evidence/ui-final-sep6/missing-member.json) reached the artifact's Search step and returned `business_outcome / NO_SUCH_MEMBER`. Signed evaluation passed with nine actions and zero mutation intents. The chat card and dashboard agreed; explicit status mode returned the original run without changing its journal. Refresh, reload and reconnect created no new run, cleared authentication on reload and left browser storage empty. No decision endpoint was called, and browser/server cleanup completed normally. This is a genuine integrated exception demo, without write acceptance.
+
+A subsequent fresh [balance run `56030b14-15c0-4d41-8e41-c593e228b934`](evidence/ui-final-sep6/balance.json) returned 35 typed share rows matching the API, chat card and dashboard. Signed evaluation passed with ten actions and zero mutation intents. Explicit status lookup preserved the original signed journal; refresh/reload/reconnect created no duplicate, storage remained empty, and cleanup completed normally. This followed the missing-member run that demonstrated working sign-on/search; both earlier failures remain terminal.
+
+Two earlier attempts remain preserved: the [initial harness failure](evidence/ui-final-sep6/initial-harness-failure.json) waited incorrectly for an empty composer Send button to become enabled after a target `NO_SUCH_MEMBER` response at sign-on; the corrected harness waits for the stopped-thread Send control to be visible. The [subsequent read attempt](evidence/ui-final-sep6/session-expired.json) returned `SESSION_EXPIRED` after sign-on. Its failure/status/reconnect checks passed, but the requested balance read did not. The cause is unverified; this does not establish natural idle expiry. Neither result is counted as a successful read or a completed absent-member search.
 
 ## Acceptance ledger
 
@@ -160,3 +224,11 @@ Evidence-metadata [PR #47](https://github.com/goodwiins/computer-use-automation-
 [Sanitized summary](evidence/maintenance-observation/summary.json) for run `b7fefa1a-450d-4502-b827-747764cd8d0c` records a guarded headless observation on September 5, 2026. Continue navigated from the open-share maintenance page to the selected member path in the same frame, then Open New Share returned to the clean operation path. Gate and pre-dispatch counts were zero; no mutation was dispatched. This later observation refines the earlier profile probe's menu-return assumption.
 
 The original report hash is included for correlation. The producing Git SHA was not captured, and the former `recoverClick` inspection does not verify the current `recoverOperation` implementation. The static checkpoint counts do not prove member-value binding, and its query-free frame URL does not validate the visible injection-query case. No approved artifact, genuine discovery/replay repair pair, or increase beyond **3/7** live capabilities is claimed.
+
+## September 6 write attempts after the service checkpoint
+
+At producer `476f8ca`, transfer discovery [1dd93dd5](evidence/write-attempts-sep6/transfer-unknown.json) received personal approval, logged one mutation intent and a successful native click, then stopped with `POST_OUTCOME_UNKNOWN`. A scalar/table extraction action completed, but the recording did not establish the required outputs. The retained five-row, two-cell table structure does not establish receipt labels or confirmation binding. Preserve this terminal unknown alongside the earlier open-share unknown; neither may be retried or counted as accepted.
+
+Open-share discovery [592430d3](evidence/write-attempts-sep6/open-share-validation.json) returned `business_outcome / VALIDATION_REJECTED` after native review submission, with signed evaluation PASS, thirteen actions and zero mutation intents. A separate guarded inspection with final posting disabled established the target's minimum opening deposit as `5.00`; the user delegated demo input selection. This rejected request and inspection do not create an artifact or write acceptance.
+
+The diagnostic follow-up adds fixed markers for model escalation and completion-validator failure. It does not recover omitted details from these historical runs or alter their outcomes. Live acceptance remains **3/7**.

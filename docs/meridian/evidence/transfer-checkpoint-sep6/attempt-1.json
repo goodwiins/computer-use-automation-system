@@ -1,0 +1,17 @@
+{
+  "runId": "a0e04247-7884-452b-90ae-be613a35d599",
+  "producerSha": "d1124eb7548705364a0e58b6d70f5d1a279f137e",
+  "scope": "Pre-post injected-notfound discovery attempt; did not reach the injected condition",
+  "journalState": "failure",
+  "resultStatus": "escalated",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 11,
+    "mutationIntents": 0
+  },
+  "injectedNotfoundObserved": false,
+  "reportedStopReason": "Member-first frame binding was missing; normal handoff expired without intervention.",
+  "logSha256": "aedcca97bb209666ff8b171f907082201e359aa6803e994f5319c18196211b28",
+  "liveAcceptedCapabilities": 3
+}

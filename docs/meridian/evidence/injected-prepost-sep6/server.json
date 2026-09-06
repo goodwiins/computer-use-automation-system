@@ -1,0 +1,27 @@
+{
+  "runId": "66e81477-74d1-4f91-a7d0-83e0678d883d",
+  "producerSha": "eedc4ea1104c7bb52e7ad5199be960de782fe37a",
+  "coreMergeSha": "1a97742a23f17663d16d93028e2090153669a6e7",
+  "scope": "Genuine pre-post discovery with runtime injection on observed transfer-entry GET",
+  "fault": "server",
+  "detectorClassification": "fatal",
+  "discoveryStatus": "stopped",
+  "code": "APPLICATION_ERROR",
+  "journalState": "failure",
+  "resultStatus": "failure",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 13,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "actionsAfterDetector": 0,
+  "cliExitCode": 1,
+  "logSha256": "f0c923587e8525c6a3733ec11ff84da834516829965f060fde2c29a608590401",
+  "resultSha256": "aa8bb01e0ed80c0f9c3ab60ff2a90e17b5ee9785f54db58f559d5ea66026de22",
+  "journalSha256": "f699ff9a8d036bcd799c16028555c1d23ff80dce4f195696c86651eeec20b32c",
+  "acceptance": "Discovery detector/stop verified. Replay half and complete approved transfer artifact remain missing; live capabilities remain3/7."
+}

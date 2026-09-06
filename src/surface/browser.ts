@@ -43,18 +43,18 @@ export class BrowserSurface implements Surface {
   private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
-  private submission?: { url: string; method: string; body: string };
+  private submission?: { url: string; method: string; body: string; frame: Frame };
   private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
   private readonly frameIds = new WeakMap<Frame, string>();
   private readonly frameNavigations = new WeakMap<Frame, number>();
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
+  private readonly pageClosures = new WeakMap<Page, Promise<void>>();
 
-  // When allowedOrigins is set, frames outside it are invisible to observation
-  // and untouchable by locator resolution — a foreign iframe embedded in a
-  // legacy page can neither be read nor clicked.
-  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[]) => void } = {}) {}
+  // Configured allowedOrigins bounds intercepted requests and makes foreign
+  // frames invisible to observation and untouchable by locator resolution.
+  constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[], credentials?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
     const url = frame.url();
@@ -121,17 +121,21 @@ export class BrowserSurface implements Surface {
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
-    this.page = await this.context.newPage();
-    this.trackFrame(this.page.mainFrame());
-    this.page.on('frameattached', frame => this.trackFrame(frame));
-    this.page.on('framenavigated', frame => this.bumpFrame(frame));
-    this.page.on('framedetached', frame => this.bumpFrame(frame));
-    this.page.on('close', () => this.opts.onClose?.());
-    if (this.opts.profile) await this.page.route('**/*', async route => {
+    // Context interception precedes page creation: page routes and popup events
+    // miss a popup's first request. The newer read-only route handles its own
+    // bound auxiliary page and falls back here only for the primary page.
+    if (this.opts.profile || this.opts.allowedOrigins) await this.context.route('**/*', async route => {
       const request = route.request();
+      let frame: Frame;
+      try { frame = request.frame(); } catch { return route.abort(); }
+      if (!this.page || frame.page() !== this.page) return route.abort();
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!this.opts.profile) return route.continue();
       if (!['GET', 'HEAD'].includes(request.method())) {
+        // An unrelated frame must neither use nor clear the inspected form's
+        // one-shot allowance while its native submission is pending.
+        if (this.submission?.frame !== frame) return route.abort();
         const allowed = this.submission?.url === url.href && this.submission.method === request.method()
           && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
           && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
@@ -145,6 +149,13 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.page = await this.context.newPage();
+    this.trackFrame(this.page.mainFrame());
+    this.page.on('frameattached', frame => this.trackFrame(frame));
+    this.page.on('framenavigated', frame => this.bumpFrame(frame));
+    this.page.on('framedetached', frame => this.bumpFrame(frame));
+    this.page.on('close', () => this.opts.onClose?.());
+    this.page.on('popup', popup => this.closeAuxiliaryPage(popup).catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -158,6 +169,24 @@ export class BrowserSurface implements Surface {
 
   drainDialogs(): Array<{ type: string; message: string }> {
     return this.dialogs.splice(0);
+  }
+
+  private closeAuxiliaryPage(page: Page): Promise<void> {
+    if (page.isClosed()) return Promise.resolve();
+    let closing = this.pageClosures.get(page);
+    if (!closing) {
+      closing = (async () => {
+        // Playwright routing can disappear during close. Block in Chromium
+        // before starting teardown, and retain the block if close fails.
+        const guard = await this.context.newCDPSession(page);
+        await guard.send('Network.emulateNetworkConditions', {
+          offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0,
+        });
+        await page.close();
+      })();
+      this.pageClosures.set(page, closing);
+    }
+    return closing;
   }
 
   currentUrl(): string {
@@ -347,19 +376,21 @@ export class BrowserSurface implements Surface {
       const observed = await frame.evaluate(() => {
         const result: string[] = [];
         const secrets: string[] = [];
+        const credentials: string[] = [];
         for (const e of document.querySelectorAll('input, textarea, select')) {
           const input = e as HTMLInputElement;
           if (input.type !== 'submit' && input.value) result.push(input.value);
           if (['password', 'hidden'].includes(input.type) && input.value) secrets.push(input.value);
+          if (input.type === 'password' && input.value) credentials.push(input.value);
         }
         for (const e of document.querySelectorAll('td.lbl + td, .box td, table[border="1"] td')) {
           if (e.textContent?.trim()) result.push(e.textContent.trim());
         }
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
-        if (sid) { result.push(sid); secrets.push(sid); }
-        return { values: result, secrets };
+        if (sid) { result.push(sid); secrets.push(sid); credentials.push(sid); }
+        return { values: result, secrets, credentials };
       });
-      this.opts.sensitive?.(observed.values, observed.secrets);
+      this.opts.sensitive?.(observed.values, observed.secrets, observed.credentials);
     }
   }
 
@@ -541,7 +572,7 @@ export class BrowserSurface implements Surface {
           const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
           pagesToClose.delete(this.page!);
           for (const opened of pagesToClose) {
-            try { if (!opened.isClosed()) await opened.close(); }
+            try { if (!opened.isClosed()) await this.closeAuxiliaryPage(opened); }
             catch { closeError = true; }
             if (!opened.isClosed()) closeError = true;
           }
@@ -601,6 +632,8 @@ export class BrowserSurface implements Surface {
           throw new Error('Control frame changed');
         }
         const snapshot = await handle.evaluate(inspectControl, args);
+        await this.collectSensitive();
+        this.opts.sensitive?.([], [], snapshot.credentials);
         if (approvedBody !== undefined && approvedBody !== snapshot.body) throw new Error('Approval invalidated by changed form data');
         approvedBody = snapshot.body;
         inspectedFrame = currentFrame;
@@ -613,7 +646,7 @@ export class BrowserSurface implements Surface {
         if (!inspectedFrame || !sameFrameContext(currentFrame, inspectedFrame) || !sameFrameContext(currentFrame, expected.frame)) throw new Error('Control frame changed');
         const expectedState = { ...expected };
         delete expectedState.frame;
-        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody, frame };
         try {
           await Promise.all([
             frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
@@ -780,7 +813,7 @@ interface TargetIdentity { operator: string; branch: string; role: string; sid: 
 function canonicalForm(entries: Iterable<[string, string]>) {
   return JSON.stringify(Array.from(entries, ([k, v]) => [k.replace(/\r?\n|\r/g, '\r\n'), v.replace(/\r?\n|\r/g, '\r\n')]).sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0));
 }
-function inspectControl(element: Element, args: { identity?: TargetIdentity; detectors: AppProfile['detectors']; expected?: LiveControl; body?: string }): { live: LiveControl; body: string } {
+function inspectControl(element: Element, args: { identity?: TargetIdentity; detectors: AppProfile['detectors']; expected?: LiveControl; body?: string }): { live: LiveControl; body: string; credentials: string[] } {
   if (!element.isConnected) throw new Error('Control is detached');
   const input = element as HTMLInputElement;
   const form = input.form;
@@ -791,6 +824,8 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   const method = submit ? (input.getAttribute('formmethod') ? input.formMethod : form!.method).toUpperCase() : 'GET';
   const body = document.body.innerText;
   const facts: Record<string, string> = {};
+  const visibleFacts: Record<string, string> = {};
+  const credentials: string[] = [];
   // Method shorthand keeps this serialized function independent of tsx's
   // module-scoped __name helper for assigned function expressions.
   const { addFact, isRendered, renderedText, ownLabels, siblingReviewTables } = {
@@ -825,15 +860,19 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
       if (field.name && field.name !== '_token' && field.type !== 'password') {
         addFact(field.name, field.value);
+        if (isRendered(field)) visibleFacts[field.name] = field.value;
       }
     }
     const destinationPath = new URL(destination).pathname;
     const canonicalReview = [
-      { name: 'Transfer', route: 'transfer', labels: new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']) },
-      { name: 'Open-share', route: 'open-share', labels: new Set(['Member:', 'Share Type:', 'Initial Deposit:']) },
-      { name: 'Hold', route: 'hold', labels: new Set(['Member:', 'Share:', 'Reason:', 'Notes:']) },
+      { name: 'Transfer', route: 'transfer', fields: ['from', 'to', 'amount', 'memo'], labels: new Set(['Member:', 'From:', 'To:', 'Amount:', 'Memo:']) },
+      { name: 'Open-share', route: 'open-share', fields: ['type', 'deposit'], labels: new Set(['Member:', 'Share Type:', 'Initial Deposit:']) },
+      { name: 'Hold', route: 'hold', fields: ['share', 'reason', 'notes'], labels: new Set(['Member:', 'Share:', 'Reason:', 'Notes:']) },
     ].find(review => new RegExp(`^/members/\\d+/${review.route}/review$`).test(location.pathname)
       || new RegExp(`^/members/\\d+/${review.route}/post$`).test(destinationPath));
+    for (const field of Array.from(form!.elements) as HTMLInputElement[]) {
+      if (field.type === 'hidden' && !canonicalReview?.fields.includes(field.name)) credentials.push(field.value);
+    }
     const tables = Array.from(new Set([
       ...Array.from(form!.querySelectorAll('table')),
       ...(form!.closest('table') ? [form!.closest('table')!] : []),
@@ -865,6 +904,9 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
     }
     for (const label of reviewLabels) {
       addFact(`review:${renderedText(label)}`, renderedText(label.nextElementSibling));
+      if (isRendered(label) && isRendered(label.nextElementSibling)) {
+        visibleFacts[`review:${renderedText(label)}`] = renderedText(label.nextElementSibling);
+      }
     }
     const member = new URL(destination).pathname.match(/^\/members\/(\d+)/)?.[1];
     if (member) addFact('member', member);
@@ -892,12 +934,12 @@ function inspectControl(element: Element, args: { identity?: TargetIdentity; det
   if (formBody !== JSON.stringify(fields.sort(([a, b], [c, d]) => a! < c! ? -1 : a! > c! ? 1 : b! < d! ? -1 : b! > d! ? 1 : 0))) throw new Error('Native form data differs from inspected fields');
   const state: LiveControl = {
     url: location.href, destination, method, submit, control: input.type === 'submit' ? input.value : element.textContent?.trim() ?? '',
-    operator, branch, role, conditions, facts, tokenPresent,
+    operator, branch, role, conditions, facts, visibleFacts, tokenPresent,
     error: !!document.querySelector('ul li') && !!document.querySelector('.err'),
   };
   if (args.expected) {
     if (args.body !== formBody || JSON.stringify(args.expected) !== JSON.stringify(state)) throw new Error('Approval invalidated by changed page state');
     (element as HTMLElement).click();
   }
-  return { live: state, body: formBody };
+  return { live: state, body: formBody, credentials };
 }

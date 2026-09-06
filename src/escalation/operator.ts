@@ -5,6 +5,7 @@
 // web UI over the same seam (see REPORT.md §5) — the control-transfer model
 // and human-action capture are the real thing.
 
+import { Redactor } from '../safety/redact.js';
 import { createInterface } from 'node:readline/promises';
 import type { Page } from 'playwright';
 import type { RunLogger } from '../evidence/logger.js';
@@ -19,6 +20,7 @@ export class OperatorConsole {
     private readonly page: Page,
     private readonly logger: RunLogger,
     private readonly session: ControlSession,
+    private readonly redactor = new Redactor(),
   ) {}
 
   async intervene(req: InterventionRequest, action?: ActionContext): Promise<InterventionDecision> {
@@ -87,99 +89,90 @@ export class OperatorConsole {
     const id = approval.pending!.id;
     this.logger.log('handoff.to_human', { request: { ...req } });
     this.logger.log('intervention.pending', { kind: 'risk_approval', approvalId: id, expiresAt: approval.pending!.expiresAt });
-    const detach = await this.recordHumanActions();
+    let detach: (() => Promise<void>) | undefined;
+    let transport: Awaited<ReturnType<typeof startApprovalServer>> | undefined;
+    let rl: ReturnType<typeof createInterface> | undefined;
     const controller = new AbortController();
     const onClose = () => approval.cancel();
-    this.page.on('close', onClose);
-    if (this.page.isClosed()) approval.cancel();
-
-    if (!approval.pending) {
-      await detach();
-      this.page.off('close', onClose);
-      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'browser_closed' });
-      return 'abort';
-    }
-
-    let transport: Awaited<ReturnType<typeof startApprovalServer>> | undefined;
+    let decision: 'approve' | 'retry' | 'abort' = 'abort';
     try {
-      transport = await startApprovalServer(action?.runId ?? this.logger.runId, approval);
-    } catch {
-      approval.cancel();
-      await detach();
-      this.page.off('close', onClose);
-      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'approval_endpoint_unavailable' });
-      return 'abort';
-    }
-    if (!approval.pending) {
-      try { await transport.close(); } finally { await detach(); this.page.off('close', onClose); }
-      this.logger.log('handoff.to_automation', { decision: 'abort', reason: 'browser_closed' });
-      return 'abort';
-    }
+      this.page.on('close', onClose);
+      detach = await this.recordHumanActions();
+      if (this.page.isClosed()) approval.cancel();
+      if (!approval.pending) return 'abort';
+      transport = await startApprovalServer(action?.runId ?? this.logger.runId, approval, this.redactor);
+      if (!approval.pending) return (await pending) === 'approve' ? 'retry' : 'abort';
 
-    const details = describePendingApproval(approval.pending);
-    console.log('\n┌──────────────── HUMAN APPROVAL REQUIRED ────────────────────');
-    console.log(`│ run        : ${action?.runId ?? this.logger.runId}`);
-    console.log(`│ endpoint   : ${terminalText(transport.endpoint)}`);
-    console.log(`│ capability : ${terminalText(details.capability)}`);
-    console.log(`│ goal       : ${terminalText(details.goal)}`);
-    console.log(`│ reason     : ${terminalText(details.reason)}`);
-    console.log(`│ url        : ${terminalText(details.url)}`);
-    if (details.action) {
-      console.log(`│ artifact   : ${terminalText(`${details.action.artifact}@${details.action.version}`)}`);
-      console.log(`│ step       : ${terminalText(details.action.stepId)}`);
-      console.log(`│ destination: ${terminalText(details.action.destination)}`);
-      console.log(`│ method     : ${terminalText(details.action.method)}`);
-      console.log(`│ operator   : ${terminalText(details.action.operator)}`);
-      console.log(`│ branch     : ${terminalText(details.action.branch)}`);
-      console.log(`│ role       : ${terminalText(details.action.role)}`);
-      console.log(`│ control    : ${terminalText(details.action.control)}`);
-      console.log(`│ token      : ${details.action.tokenPresent ? 'present' : 'missing'}`);
-      console.log(`│ facts      : ${JSON.stringify(details.action.facts)}`);
-    }
-    console.log(`│ expires    : ${new Date(details.expiresAt).toISOString()}`);
-    console.log(`│ approval   : ${details.approvalId}`);
-    console.log('│');
-    console.log('│ Review the facts above. Do not click the browser\'s final posting button.');
-    console.log('│ Decide here or from another Terminal:');
-    console.log('│   approve — allow the runner to proceed with the action');
-    console.log('│   refuse  — stop the run');
-    console.log(`│   npx tsx cli.ts approval --run ${action?.runId ?? this.logger.runId}`);
-    console.log(`│   npx tsx cli.ts approve --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
-    console.log(`│   npx tsx cli.ts refuse --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
-    console.log('│ No response aborts the run after five minutes.');
-    console.log('└──────────────────────────────────────────────────────────────');
-
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const readDecision = (async () => {
-      for (;;) {
-        const answer = (await rl.question('operator> ', { signal: controller.signal }).catch(() => {
-          if (approval.pending && !controller.signal.aborted) approval.decide(id, 'abort');
-          return '';
-        })).trim().toLowerCase();
-        if (!approval.pending) return;
-        if (answer === 'approve' || answer === 'refuse' || answer === 'abort') {
-          try { approval.decide(id, answer === 'approve' ? 'approve' : 'abort'); } catch { /* another input won */ }
-          return;
-        }
-        if (!controller.signal.aborted) console.log('Please type: approve | refuse');
+      const details = describePendingApproval(approval.pending, this.redactor);
+      console.log('\n┌──────────────── HUMAN APPROVAL REQUIRED ────────────────────');
+      console.log(`│ run        : ${action?.runId ?? this.logger.runId}`);
+      console.log(`│ endpoint   : ${terminalText(transport.endpoint)}`);
+      console.log(`│ capability : ${terminalText(details.capability)}`);
+      console.log(`│ goal       : ${terminalText(details.goal)}`);
+      console.log(`│ reason     : ${terminalText(details.reason)}`);
+      console.log(`│ url        : ${terminalText(details.url)}`);
+      if (details.action) {
+        console.log(`│ artifact   : ${terminalText(`${details.action.artifact}@${details.action.version}`)}`);
+        console.log(`│ step       : ${terminalText(details.action.stepId)}`);
+        console.log(`│ destination: ${terminalText(details.action.destination)}`);
+        console.log(`│ method     : ${terminalText(details.action.method)}`);
+        console.log(`│ operator   : ${terminalText(details.action.operator)}`);
+        console.log(`│ branch     : ${terminalText(details.action.branch)}`);
+        console.log(`│ role       : ${terminalText(details.action.role)}`);
+        console.log(`│ control    : ${terminalText(details.action.control)}`);
+        console.log(`│ token      : ${details.action.tokenPresent ? 'present' : 'missing'}`);
+        console.log(`│ facts      : ${JSON.stringify(details.action.facts)}`);
       }
-    })();
+      console.log(`│ expires    : ${new Date(details.expiresAt).toISOString()}`);
+      console.log(`│ approval   : ${details.approvalId}`);
+      console.log('│');
+      console.log('│ Review the facts above. Do not click the browser\'s final posting button.');
+      console.log('│ Decide here or from another Terminal:');
+      console.log('│   approve — allow the runner to proceed with the action');
+      console.log('│   refuse  — stop the run');
+      console.log(`│   npx tsx cli.ts approval --run ${action?.runId ?? this.logger.runId}`);
+      console.log(`│   npx tsx cli.ts approve --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
+      console.log(`│   npx tsx cli.ts refuse --run ${action?.runId ?? this.logger.runId} --approval ${id}`);
+      console.log('│ No response aborts the run after five minutes.');
+      console.log('└──────────────────────────────────────────────────────────────');
 
-    let decision: 'approve' | 'retry' | 'abort';
-    try {
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+      const readDecision = (async () => {
+        for (;;) {
+          const answer = (await rl!.question('operator> ', { signal: controller.signal }).catch(() => {
+            if (approval.pending && !controller.signal.aborted) approval.decide(id, 'abort');
+            return '';
+          })).trim().toLowerCase();
+          if (!approval.pending) return;
+          if (answer === 'approve' || answer === 'refuse' || answer === 'abort') {
+            try { approval.decide(id, answer === 'approve' ? 'approve' : 'abort'); } catch { /* another input won */ }
+            return;
+          }
+          if (!controller.signal.aborted) console.log('Please type: approve | refuse');
+        }
+      })();
+
       decision = await pending;
       controller.abort();
       await readDecision;
+      return decision === 'approve' ? 'retry' : 'abort';
+    } catch {
+      approval.cancel();
+      return (await pending) === 'approve' ? 'retry' : 'abort';
     } finally {
+      approval.cancel();
+      decision = await pending;
+      // One terminal record for every pending ID, including startup and close races.
+      this.logger.log('intervention.decided', { approvalId: id, decision });
+      this.logger.log('handoff.to_automation', { decision: decision === 'approve' ? 'retry' : 'abort' });
       controller.abort();
-      rl.close();
+      rl?.close();
       this.page.off('close', onClose);
-      try { await transport.close(); } finally { await detach(); }
+      for (const close of [transport?.close, detach]) {
+        try { await close?.(); }
+        catch { this.logger.log('evidence.warning', { code: 'RUNTIME_CLEANUP_FAILED' }); }
+      }
     }
-    const mapped = decision === 'approve' ? 'retry' : 'abort';
-    this.logger.log('intervention.decided', { decision });
-    this.logger.log('handoff.to_automation', { decision: mapped });
-    return mapped;
   }
 
   /**

@@ -667,18 +667,19 @@ export class GuardedSurface implements Surface {
     state.stage = route.stage;
   }
 
-  private async captureTransferEligibility(memberPath: string, timeoutMs: number): Promise<void> {
+  private async captureTransferEligibility(memberUrl: string, timeoutMs: number): Promise<void> {
     const binding = this.runtime?.transfer;
-    const member = MEMBER_ROUTE.exec(this.path(memberPath));
+    const member = MEMBER_ROUTE.exec(this.path(memberUrl));
     if (!binding || !member || member[1] !== binding.expected.member) throw new Error('Transfer member selection is not eligible');
     if (!this.inner.readTable) throw new Error('Member eligibility table is unavailable');
     const before = this.currentTransferFrame();
-    if (this.path(before.url) !== this.path(memberPath)) return this.transferFrameFailed();
+    if (this.origin(before.url) !== this.origin(memberUrl) || this.path(before.url) !== this.path(memberUrl)) return this.transferFrameFailed();
     const target = { ...binding.memberTable.target, frame: before.name };
-    // Eligibility is part of the member-selection click. Keep the extract
+    // Eligibility is part of the member-selection action. Keep the extract
     // policy and bounds checks, but avoid readTable()'s public action wrapper:
-    // nesting it here would reuse this.attempt and corrupt click evidence.
+    // nesting it here would reuse this.attempt and corrupt action evidence.
     this.preserveTransferState(this.inner.currentUrl());
+    this.transferEligibility = undefined; // Failed refreshes cannot reuse an older checkpoint.
     await this.gate('extract', 'read');
     this.assertStillInBounds('extract');
     const rows = await this.inner.readTable(target, binding.memberTable.columns, timeoutMs, binding.memberTable.rowSelector);
@@ -686,7 +687,7 @@ export class GuardedSurface implements Surface {
     this.preserveTransferState(this.inner.currentUrl());
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.currentTransferFrame();
-    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberPath)) return this.transferFrameFailed();
+    if (!resolved || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.origin(resolved.url) !== this.origin(memberUrl) || this.path(resolved.url) !== this.path(memberUrl)) return this.transferFrameFailed();
     const shares = rows.map(row => {
       if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw new Error('Member eligibility table is incomplete');
       return { share: row.shareId, status: row.status, balance: row.balance };
@@ -771,11 +772,13 @@ export class GuardedSurface implements Surface {
       this.assertBoundOperationNavigation(entryUrl);
       this.started = true;
       this.assertRoute(entryUrl);
-      this.requireTransferRoute(entryUrl);
+      if (!(this.runtime?.transfer && MEMBER_ROUTE.test(this.path(entryUrl)))) this.requireTransferRoute(entryUrl);
       await this.gate('navigate', 'read', entryUrl);
       await this.inner.start(entryUrl);
       this.assertStillInBounds('start'); // a redirect could land outside the allowlist
-      if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
+      if (!this.mutationDispatched && this.runtime?.transfer && MEMBER_ROUTE.test(this.path(entryUrl))) {
+        await this.captureTransferEligibility(entryUrl, DEFAULT_TIMEOUT);
+      } else if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(entryUrl))) {
         await this.captureOpenShareState(entryUrl, DEFAULT_TIMEOUT);
       } else if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(entryUrl))) {
         await this.captureHoldState(entryUrl, DEFAULT_TIMEOUT);
@@ -822,6 +825,7 @@ export class GuardedSurface implements Surface {
       await this.inner.navigate(url);
       this.assertStillInBounds('navigate');
       if (!this.mutationDispatched && this.runtime?.transfer && this.transferEligibility) this.advanceTransferState(this.inner.currentUrl());
+      if (!this.mutationDispatched && this.runtime?.transfer && MEMBER_ROUTE.test(this.path(url))) await this.captureTransferEligibility(url, DEFAULT_TIMEOUT);
       if (!this.mutationDispatched && this.runtime?.openShare && MEMBER_ROUTE.test(this.path(url))) await this.captureOpenShareState(url, DEFAULT_TIMEOUT);
       else if (!this.mutationDispatched && this.runtime?.openShare && this.openShareState) this.advanceOpenShareState(this.inner.currentUrl());
       if (!this.mutationDispatched && this.runtime?.hold && MEMBER_ROUTE.test(this.path(url))) await this.captureHoldState(url, DEFAULT_TIMEOUT);
@@ -1039,7 +1043,7 @@ export class GuardedSurface implements Surface {
           if (live.error || live.conditions.length || !live.role || live.role !== this.runtime.role || live.operator !== this.runtime.operator.toUpperCase() || live.branch !== this.runtime.branch || (rule.role && rule.role !== live.role)) throw new Error('Target authority or review state invalid');
           const context: ActionContext = { runId: this.runtime.runId, artifact: this.runtime.artifact, version: this.runtime.version, stepId: this.stepId,
             destination: live.destination, method: live.method, operator: live.operator, branch: live.branch, role: live.role,
-            facts: live.facts, tokenPresent: live.tokenPresent, control: live.control };
+            facts: live.facts, visibleFacts: live.visibleFacts, businessValues: Object.values(transferPost ? this.runtime.transfer!.expected : openSharePost ? this.runtime.openShare!.expected : holdPost ? this.runtime.hold!.expected : {}), tokenPresent: live.tokenPresent, control: live.control };
           // Profile mutation rules require approval even when policy/model says allow.
           const verdict = checkAction(this.policy, 'click', live.destination, 'irreversible');
           if (verdict.verdict === 'deny') throw new PolicyViolationError(verdict, 'click');
@@ -1092,7 +1096,7 @@ export class GuardedSurface implements Surface {
         const report = await prepared.dispatch(live, remaining());
         this.assertStillInBounds('click');
         if (this.mutationDispatched) this.transferEligibility = undefined;
-        else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(this.inner.currentUrl(), remaining());
+        else if (this.runtime.transfer && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureTransferEligibility(live.destination, remaining());
         else if (this.runtime.transfer && this.transferStage(this.inner.currentUrl())) this.advanceTransferState(this.inner.currentUrl(), live.frame);
         if (!this.mutationDispatched && this.runtime.openShare && MEMBER_ROUTE.test(this.path(this.inner.currentUrl()))) await this.captureOpenShareState(this.inner.currentUrl(), remaining());
         else if (!this.mutationDispatched && this.runtime.openShare && this.openShareStage(this.inner.currentUrl())) this.advanceOpenShareState(this.inner.currentUrl(), live.frame);
