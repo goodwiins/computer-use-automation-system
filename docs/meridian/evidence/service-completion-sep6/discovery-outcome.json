@@ -1,0 +1,25 @@
+{
+  "runId": "3be5d6ca-18b4-414b-bfa1-e8b29b0be510",
+  "producerSha": "691cdf0bb83abba9af8d8f7a20b930b581b1bc6f",
+  "kind": "discovery",
+  "state": "business_outcome",
+  "resultStatus": "business_outcome",
+  "outcomeCode": "NO_SUCH_MEMBER",
+  "restoredServiceAgrees": true,
+  "noLiveRuntime": true,
+  "cliExitCode": 0,
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "business_outcome",
+    "attempts": 9,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "logSha256": "b9a3ace9efd8e78036b0d7fa83e9fa1c427ddcfb057383dc8dcb6ab5d1649b47",
+  "resultSha256": "6747944d4cbf1f04571573c86a5db8c3134e642dd423baf8558579f2f76e3367",
+  "journalSha256": "2af1ba254252283e384271af00b671363bbd8af415e3ffa43befa6ff78c0e549",
+  "journalUnchanged": true,
+  "scope": "Genuine native absent-member discovery reached Search and returned business_outcome. Authenticated restored service retained the same result; no write acceptance."
+}
