@@ -1,10 +1,21 @@
-# MERIDIAN live evidence — September 5, 2026
+# MERIDIAN live evidence — September 6, 2026
 
 Acceptance remains **3 of 7 capabilities**: sign-on, member inquiry and member record each have genuine model discovery, an approved artifact and a deterministic replay. The earlier read/dashboard acceptance baseline remains source-specific at `480b252ab60edc77aff1bc37f6cd08ba9645f8d1`. Offline fixtures, API routing, read rehearsals and later runtime repairs do not increase the capability count or establish a write.
 
-The current integrated runtime baseline is `dev` at `601e2660cc7f23572a4f65f4677e6ec84af174b4`. Repairs through PR #53 remain integrated with their recorded gates. PR #54 then merged evaluator event-type validation from reviewed head `5d71070`; local pre-push passed 395 tests/17 files and typecheck, head workflow `33958769455` / producer `101286792115`, merge workflow `33960952350` / producer `101292625264`, and exact-head hosted code/security reviews passed without findings. Head and merge share tree `8ff8d528ddc11bd2a7d1a2e75a4cea73c66c2d43`. These are shared source gates. They do not promote the transfer draft, create an accepted write replay or change any historical producing source SHA.
+The historical runtime baseline was `dev` at `601e2660cc7f23572a4f65f4677e6ec84af174b4`. Repairs through PR #53 remain integrated with their recorded gates. PR #54 then merged evaluator event-type validation from reviewed head `5d71070`; local pre-push passed 395 tests/17 files and typecheck, head workflow `33958769455` / producer `101286792115`, merge workflow `33960952350` / producer `101292625264`, and exact-head hosted code/security reviews passed without findings. Head and merge share tree `8ff8d528ddc11bd2a7d1a2e75a4cea73c66c2d43`. These are shared source gates. They do not promote the transfer draft, create an accepted write replay or change any historical producing source SHA.
 
 The recorded discoveries used the configured Azure `gpt-5.6-luna` model against the hosted synthetic MERIDIAN application. Current read source SHAs are listed separately below.
+
+## September 6 caller API acceptance checkpoint
+
+Two fresh runs at producing source `5d31afd1ae36aea7878497233967805a455be858` exercised the standard authenticated caller API against the hosted target. The source includes the reviewed PR #68 MERIDIAN popup guard, before its later generic-session and cleanup-fixture repair; it is not a claim about the final integrated build.
+
+| Scope | Run | Structured result | Authenticated evaluator |
+| --- | --- | --- | --- |
+| [Member record](evidence/api-read-sep6/balance-api-summary.json) | `f69afdb6-1644-4571-9617-f0dd6d53ad92` | Success; 35 typed share rows. Repeating the same body/key returned HTTP 202 with the same run, one history entry and unchanged journal. | PASS; 10 attempts, zero mutation intents |
+| [Natural absent member](evidence/api-read-sep6/notfound-api-summary.json) | `80b3c180-4f26-411d-b1e5-e63cb3f11f03` | `business_outcome / NO_SUCH_MEMBER`; no alternate selection. | PASS; 9 attempts, zero mutation intents |
+
+The summaries contain metadata and hashes only; signed journals and raw run evidence remain private. Both runs are terminal and their local API process was stopped cleanly. These add fresh read and natural-outcome evidence, not discovery, injected-fault, chatbot or write acceptance. Coverage remains **3/7**. The old transfer pair is no longer eligible; a new pair must be selected and observed again before its separate final approval.
 
 ## Reviewed artifacts
 
