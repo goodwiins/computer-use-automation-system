@@ -540,7 +540,13 @@ it('offline operator controls require live authority, disable expired/duplicate 
     },
   });
   state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention });
+  let releaseHistory!: () => void;
+  const historyReady = new Promise<void>(resolve => { releaseHistory = resolve; });
+  await page.route('**/runs', async route => { await historyReady; await route.continue(); });
   await connect();
+  await page.getByText('Loading authenticated history…', { exact: true }).waitFor();
+  releaseHistory();
+  await page.getByText('Waiting for an operator.', { exact: true }).waitFor();
   expect(await page.getByRole('button', { name: 'Approve submission' }).count()).toBe(0);
   expect(await page.getByText('Waiting for an operator.', { exact: true }).count()).toBe(1);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
