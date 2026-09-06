@@ -1,0 +1,17 @@
+{
+  "runId": "56915f92-1942-4e03-a7f3-f72d363362f2",
+  "producerSha": "d1124eb7548705364a0e58b6d70f5d1a279f137e",
+  "scope": "Pre-post member-first injected-notfound discovery attempt; did not reach injected condition",
+  "journalState": "failure",
+  "resultStatus": "escalated",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 12,
+    "mutationIntents": 0
+  },
+  "injectedNotfoundObserved": false,
+  "stopReason": "Direct member navigation did not initialize transfer eligibility; check explicitly aborted before posting.",
+  "logSha256": "27e61dc2d95436c56a5ad83684c901c90eca0274acd2c1d75999a5636bcf0be3",
+  "liveAcceptedCapabilities": 3
+}

@@ -1,0 +1,41 @@
+{
+  "runId": "f69afdb6-1644-4571-9617-f0dd6d53ad92",
+  "producerSha": "5d31afd1ae36aea7878497233967805a455be858",
+  "scope": "Actual hosted-target deterministic member-record replay through standard caller API; no write acceptance",
+  "status": "success",
+  "outputs": {
+    "shares": {
+      "rowCount": 35,
+      "columns": [
+        "shareId",
+        "type",
+        "balance",
+        "status"
+      ],
+      "typedRowsValid": true
+    }
+  },
+  "sameKeyReplay": {
+    "httpStatus": 202,
+    "sameRunId": true,
+    "historyCount": 1,
+    "journalUnchanged": true
+  },
+  "journalSha256": "e54fb6dcaeeee43bfb707eb69ec6c739269a97dcd27d800cc6577a9957c3d20e",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 10,
+    "mutationIntents": 0
+  },
+  "liveAcceptedCapabilities": 3,
+  "evidenceHashes": {
+    "log.jsonl": "59fbf976c1fed6f50bd93ef01ad08b80dc8c2b9731cd2e7e28954a36b9d8d895",
+    "result.json": "25b909ea470c4c3bb6e7ec00e29a31270baf4dc3b00380fbad736c2471714e33"
+  },
+  "terminalJournalSha256": "e54fb6dcaeeee43bfb707eb69ec6c739269a97dcd27d800cc6577a9957c3d20e",
+  "limitations": [
+    "Sanitized metadata summary; raw evidence and authenticated journal retained privately.",
+    "Does not establish new discovery provenance, accepted writes, current chatbot integration, or injected-fault acceptance."
+  ]
+}
