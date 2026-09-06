@@ -2,7 +2,8 @@ import type { UIMessage } from 'ai';
 
 export class ChatRequestError extends Error {}
 
-// The SDK can retry the same message. Its stable ID is also the server request key.
+// Keep user IDs: the server reconstructs prior run context from caller-scoped journal keys.
+// Client tool payloads are display-only. The latest stable ID is also its request key.
 export function chatRequest(messages: UIMessage[], id: string) {
   const latestUser = [...messages].reverse().find((message) => message.role === 'user');
   const text = (message: UIMessage) =>

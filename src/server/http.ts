@@ -60,14 +60,14 @@ export function createApp(service: InvocationService, config: { callerToken: str
 }
 
 export async function serve(profileName = 'meridian') {
-  // Direct CLI entry points must work without a pre-existing dashboard bundle.
-  const { build } = await import('vite');
-  await build({ configFile: resolve('vite.config.ts') });
   const profile = loadProfile(profileName);
   const policy = profilePolicy(profile);
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';
   const journal = new Journal(join(evidenceDir, 'journal'), process.env.JOURNAL_HMAC_KEY ?? '');
   try {
+    // Build only after owning the journal; a rejected second server must not empty live assets.
+    const { build } = await import('vite');
+    await build({ configFile: resolve('vite.config.ts') });
     const service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');

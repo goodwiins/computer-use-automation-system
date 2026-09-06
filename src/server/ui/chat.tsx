@@ -22,7 +22,10 @@ function RunTool({ result, status }: { result?: unknown; status?: { type: string
   useEffect(() => {
     if (runId) watch(runId);
   }, [runId, watch]);
-  if (runId) return <CapabilityRunCard runId={runId} />;
+  if (runId) return <>
+    {output?.reused === true && <p role="status">Using a previously accepted run. No new operation was started.</p>}
+    <CapabilityRunCard runId={runId} />
+  </>;
   if (output?.kind === 'error')
     return (
       <p role="alert">{typeof output.error === 'string' ? output.error : 'Capability request failed.'}</p>

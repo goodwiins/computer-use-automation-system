@@ -80,6 +80,7 @@ async function fixture() {
     offline: false,
   };
   const service = {
+    journal: { findRequest: () => undefined, bindReference: () => {} },
     evidenceDir,
     catalog: () => [capability],
     history: (principal: string) => {
@@ -1024,4 +1025,15 @@ it('shows the authoritative step and announces meaningful state changes without 
     if (next === 'business_outcome') expect(await status.textContent()).toContain('NO_SUCH_MEMBER');
   }
   await card.getByText('Current step: safe-current-step', { exact: true }).waitFor();
+}, 15000);
+
+it('labels history reuse as an existing run rather than a new operation', async () => {
+  const { page, state, service, connect } = await fixture();
+  state.runs.push({ ...initialRun(), state: 'success' });
+  service.invoke.mockReturnValue({ runId, reused: true } as ReturnType<typeof service.invoke>);
+  await connect();
+  await page.locator('#message').fill('Did that finish?');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByText('Using a previously accepted run. No new operation was started.', { exact: true }).waitFor();
+  expect(state.invocations.size).toBe(0);
 }, 15000);
