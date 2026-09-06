@@ -930,7 +930,10 @@ describe('MERIDIAN funds-transfer semantic checks', () => {
   });
 });
 
-it.each([false, true])('keeps funds outcome phase correct: intent=%s', async afterIntent => {
+it.each([
+  { afterIntent: false, startup: false }, { afterIntent: true, startup: false },
+  { afterIntent: false, startup: true }, { afterIntent: true, startup: true },
+])('keeps funds outcome phase correct: intent=$afterIntent startup=$startup', async ({ afterIntent, startup }) => {
   const artifact = applyMeridianContract(transferArtifact());
   artifact.status = 'approved';
   artifact.steps = artifact.steps.filter(step => step.id === 'post');
@@ -939,7 +942,7 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
   const surface: Surface = {
     mutationDispatched: false,
-    start: async () => {}, navigate: async () => {},
+    start: async () => { if (startup) { surface.mutationDispatched = afterIntent; throw new InsufficientFundsError(); } }, navigate: async () => {},
     currentUrl: () => `${origin}/members/9001`,
     frameUrls: () => [`${origin}/members/9001`],
     observe: async () => ({ url: `${origin}/members/9001`, title: '', frames: [] }),
@@ -962,7 +965,7 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
     afterIntent ? { status: 'failure' } : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
   const outcomeEvents = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(event => event.event === 'replay.business_outcome');
   expect(outcomeEvents).toEqual(afterIntent ? [] : [expect.objectContaining({ code: 'INSUFFICIENT_FUNDS' })]);
-  expect(surface.click).toHaveBeenCalledOnce();
+  expect(surface.click).toHaveBeenCalledTimes(startup ? 0 : 1);
   expect(escalate).not.toHaveBeenCalled();
 
   surface.mutationDispatched = false;
@@ -979,8 +982,8 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
   expect(discovery).toMatchObject(afterIntent
     ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
     : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
-  expect(create).toHaveBeenCalledOnce();
-  expect(surface.click).toHaveBeenCalledOnce();
+  expect(create).toHaveBeenCalledTimes(startup ? 0 : 1);
+  expect(surface.click).toHaveBeenCalledTimes(startup ? 0 : 1);
   expect(escalate).not.toHaveBeenCalled();
 });
 
@@ -1006,6 +1009,135 @@ describe('MERIDIAN guarded transfer path', () => {
     { shareId: '9001-B', type: 'S0001', balance: '0.00', status: 'OPEN' },
     { shareId: '9001-C', type: 'S0001', balance: '9.00', status: 'OPEN' },
   ];
+
+  it.each([
+    { entry: 'start', failure: '' },
+    { entry: 'navigate', failure: '' },
+    { entry: 'click', failure: '' },
+    { entry: 'start', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'changed-frame' },
+    { entry: 'navigate', failure: 'closed-share' },
+    { entry: 'navigate', failure: 'duplicate-share' },
+    { entry: 'navigate', failure: 'insufficient' },
+    { entry: 'navigate', failure: 'stale-checkpoint' },
+    { entry: 'start', failure: 'origin-redirect' },
+    { entry: 'navigate', failure: 'origin-redirect' },
+    { entry: 'click', failure: 'origin-redirect' },
+    { entry: 'replay', failure: 'insufficient' },
+    { entry: 'discovery', failure: 'insufficient' },
+  ])('captures the real transfer member checkpoint after $entry (failure=$failure)', async ({ entry, failure }) => {
+    let transferVisits = 0;
+    let wrongMemberVisits = 0;
+    let posts = 0;
+    const rows = eligibleRows.map(row => ({ ...row }));
+    if (failure === 'closed-share') rows[0]!.status = 'CLOSED';
+    if (failure === 'insufficient') rows[0]!.balance = '0.99';
+    if (failure === 'duplicate-share') rows.push({ ...rows[0]! });
+    const shares = `<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr>${rows.map(row => `<tr><td>${row.shareId}</td><td>${row.type}</td><td>$${row.balance}</td><td>${row.status}</td></tr>`).join('')}</table>`;
+    let member = `<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p><table><tbody><tr></tr><tr></tr><tr><td><table><tr><td>Member No.:</td><td>9001</td></tr></table>${shares}<a href="/members/9001/transfer">Transfer</a></td></tr></tbody></table>`;
+    const redirectApp = express();
+    redirectApp.get('/members/9001', (_req, res) => res.send(member));
+    redirectApp.get('/members/9001/transfer', (_req, res) => { transferVisits++; res.send('unexpected transfer'); });
+    redirectApp.post('*', (_req, res) => { posts++; res.send('unexpected post'); });
+    const redirectServer = redirectApp.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => redirectServer.once('listening', resolve));
+    const redirectOrigin = `http://127.0.0.1:${(redirectServer.address() as { port: number }).port}`;
+    const app = express();
+    app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
+    app.get('/members/9001', (_req, res) => failure === 'origin-redirect' ? res.redirect(`${redirectOrigin}/members/9001`) : res.send(member));
+    app.get('/members/9999', (_req, res) => { wrongMemberVisits++; res.send(member); });
+    app.get('/members/9001/transfer', (_req, res) => { transferVisits++; res.send('<p>Transfer form</p>'); });
+    app.post('*', (_req, res) => { posts++; res.send('unexpected post'); });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const allowedOrigins = [localOrigin, redirectOrigin];
+    const localPolicy = Policy.parse({ ...policy, allowedOrigins });
+    const browser = new BrowserSurface({ allowedOrigins, profile });
+    const readTable = browser.readTable.bind(browser);
+    const extracted = vi.spyOn(browser, 'readTable').mockImplementation(async (...args) => {
+      const result = await readTable(...args);
+      if (failure === 'changed-frame') await browser.page.reload();
+      return result;
+    });
+    const beforeDispatch = vi.fn();
+    const events: Array<{ event: string; attempt: unknown }> = [];
+    const surface = new GuardedSurface(browser, localPolicy, async () => true, undefined, {
+      profile, session: new ControlSession(), deadline: Date.now() + 10000,
+      runId: randomUUID(), artifact: 'meridian-funds-transfer', version: '1.0.0',
+      operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+      transfer: { expected: request, memberTable: meridianTransferMemberTable },
+    }, (event, data) => events.push({ event, attempt: data.attempt }));
+    try {
+      if (entry === 'navigate' || entry === 'click') await surface.start(`${localOrigin}/members`);
+      const memberUrl = `${localOrigin}/members/${failure === 'wrong-member' ? '9999' : '9001'}`;
+      if (entry === 'replay' || entry === 'discovery') {
+        const params = { ...request, operator: 'SUPER1', password: 'secret', branch: 'MAIN-001' };
+        const logger = new RunLogger(entry, new Redactor(), temp(), true);
+        const escalate = vi.fn(async () => 'abort' as const);
+        const create = vi.fn();
+        const artifact = applyMeridianContract(transferArtifact());
+        artifact.status = 'approved';
+        artifact.app.entryUrl = memberUrl;
+        artifact.app.allowedOrigins = allowedOrigins;
+        const result = entry === 'replay'
+          ? await runReplay(artifact, params, { surface, logger, policy: localPolicy, escalate })
+          : await runDiscovery('transfer', memberUrl, params, allowedOrigins, {
+            surface, logger, escalate, model: 'fixture', maxSteps: 1,
+            openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+          });
+        expect(result).toMatchObject({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS', detail: 'Insufficient available balance in the source share.' });
+        if (entry === 'replay') expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toMatchObject({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+        expect(extracted).toHaveBeenCalledOnce();
+        expect(escalate).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(transferVisits).toBe(0);
+      } else {
+        const visit = entry === 'start' ? surface.start(memberUrl) : entry === 'click'
+          ? surface.click({ description: 'Member', strategies: [{ kind: 'role', role: 'link', name: '9001 - Fixture Member' }] })
+          : surface.navigate(memberUrl);
+        if (failure === 'stale-checkpoint') {
+          await visit;
+          member = member.replace('<td>OPEN</td>', '<td>CLOSED</td>');
+          await expect(surface.navigate(memberUrl)).rejects.toThrow(/transfer/i);
+          await expect(surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] })).rejects.toThrow(/frame|eligibility/i);
+          expect(transferVisits).toBe(0);
+        } else if (failure) {
+          await expect(visit).rejects.toThrow(failure === 'insufficient' ? InsufficientFundsError : /member|bound|frame|transfer/i);
+          await expect(surface.navigate(`${localOrigin}/members/9001/transfer`)).rejects.toThrow(/eligibility|frame/i);
+          if (failure === 'origin-redirect') {
+            expect(surface.currentUrl()).toBe(`${redirectOrigin}/members/9001`);
+            expect(extracted).not.toHaveBeenCalled();
+            await expect(surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] })).rejects.toThrow(/eligibility|frame/i);
+          }
+          expect(transferVisits).toBe(0);
+        } else {
+          await visit;
+          expect(extracted).toHaveBeenCalledOnce();
+          await surface.navigate(memberUrl);
+          expect(extracted).toHaveBeenCalledTimes(2);
+          for (const suffix of ['', '/review', '/post']) {
+            await expect(surface.navigate(`${localOrigin}/members/9001/transfer${suffix}`)).rejects.toThrow(/eligibility|route/i);
+          }
+          await surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] });
+          expect(transferVisits).toBe(1);
+          expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001/transfer`);
+        }
+      }
+      expect(wrongMemberVisits).toBe(0);
+      expect(posts).toBe(0);
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(events.some(event => event.event === 'mutation.intent')).toBe(false);
+      expect(events.filter(event => event.event === 'action.end').map(event => event.attempt))
+        .toEqual(events.filter(event => event.event === 'action.start').map(event => event.attempt));
+    } finally {
+      await browser.close();
+      server.closeAllConnections();
+      redirectServer.closeAllConnections();
+      await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => redirectServer.close(() => resolve()))]);
+    }
+  });
 
   function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void, expected = request) {
     let currentRows: Array<Record<string, string>> = rows;
