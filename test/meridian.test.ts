@@ -3041,7 +3041,9 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     await expect(auxiliary.goto(`${localOrigin}/members/8888`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
     expect(forbiddenMemberGets).toBe(0);
     await browser.page.context().unroute('**/*');
-    await auxiliary.close();
+    await expect(auxiliary.goto(`${localOrigin}/members/8888`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
+    expect(forbiddenMemberGets).toBe(0);
+    // Browser shutdown below disposes the intentionally failed page close.
   } finally {
     for (const socket of upgradeSockets) socket.destroy();
     await browser.close();
