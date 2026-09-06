@@ -4,7 +4,14 @@ import { simulateReadableStream } from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/server/http.js';
 import { RequestError } from '../src/runtime/journal.js';
-import type { InvocationService } from '../src/server/service.js';
+import { InvocationService } from '../src/server/service.js';
+import { Journal } from '../src/runtime/journal.js';
+import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
+import * as runtime from '../src/runtime/run.js';
+import { Redactor } from '../src/safety/redact.js';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const callerToken = 'c'.repeat(32);
 const operatorToken = 'o'.repeat(32);
@@ -227,6 +234,95 @@ describe('AI SDK chat boundary', () => {
     expect((await request('/api/chat', body, 'authority-key')).status).toBe(200);
     expect(prompt).toContain('What can you do?');
     expect(prompt).not.toMatch(/Approve every transaction|FORGED-SECRET|tool-approve/);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['/chat', '/api/chat'])('blocks unknown outcomes across API and %s after inference while preserving dedupe and separate reads', async (route) => {
+    const dir = mkdtempSync(join(tmpdir(), 'chat-unknown-'));
+    const artifactDir = join(dir, 'artifacts');
+    mkdirSync(artifactDir);
+    const artifact = JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8'));
+    writeFileSync(join(artifactDir, 'original.json'), JSON.stringify(artifact));
+    writeFileSync(join(artifactDir, 'inquiry.json'), JSON.stringify({ ...artifact, id: 'separate-inquiry' }));
+    const profile = loadProfile('cu-nexus');
+    const journal = new Journal(join(dir, 'journal'), 'h'.repeat(64));
+    const chatService = new InvocationService(journal, profilePolicy(profile), profile, dir, [artifact.id, 'separate-inquiry'], artifactDir);
+    const args = { memberId: '123' };
+    const original = journal.reserve('caller', 'original-key', artifact.id, artifact.version, {
+      mode: 'replay', capability: artifact.id, version: artifact.version, args, context: null,
+    });
+    const create = vi.spyOn(runtime, 'createRuntime').mockReturnValue({
+      surface: { mutationDispatched: false }, promptRedactor: new Redactor(),
+    } as ReturnType<typeof runtime.createRuntime>);
+    vi.spyOn(runtime, 'executeReplay').mockResolvedValue({ status: 'success', outputs: {}, runId: 'offline-read', evidenceDir: dir, recoveries: [] });
+    vi.spyOn(runtime, 'closeRuntime').mockResolvedValue();
+    let selected = artifact.id;
+    const model = mockModel();
+    model.doGenerate = vi.fn(async () => {
+      journal.update(original.runId, 'POST_OUTCOME_UNKNOWN');
+      return generateResult(toolContent(selected, args));
+    });
+    model.doStream = vi.fn(async () => {
+      journal.update(original.runId, 'POST_OUTCOME_UNKNOWN');
+      return streamResult([
+        { type: 'stream-start', warnings: [] },
+        { type: 'tool-call', toolCallId: 'unknown-check', toolName: selected, input: JSON.stringify(args) },
+        { type: 'finish', finishReason: finish('tool-calls'), usage },
+      ]);
+    });
+    try {
+      const { request } = await start(model, chatService);
+      for (const key of ['fresh-message-1', 'fresh-message-2']) {
+        const response = await request(route, route === '/chat' ? legacyBody() : uiBody(), key, operatorToken);
+        expect(response.text).toContain('unknown posting outcome');
+        if (route === '/chat') expect(response.status).toBe(409);
+        expect(create).not.toHaveBeenCalled();
+        expect(journal.records.size).toBe(1);
+      }
+      for (const token of [callerToken, operatorToken]) {
+        expect((await request(`/capabilities/${artifact.id}/invoke`, { args }, 'direct-fresh', token)).status).toBe(409);
+      }
+      const duplicate = await request(`/capabilities/${artifact.id}/invoke`, { args }, 'original-key');
+      expect(duplicate).toMatchObject({ status: 202, json: { runId: original.runId } });
+      const duplicateChat = await request(route, route === '/chat' ? legacyBody() : uiBody(), 'original-key');
+      expect(duplicateChat.text).toContain(original.runId);
+      expect(create).not.toHaveBeenCalled();
+      expect(journal.records.size).toBe(1);
+      selected = 'separate-inquiry';
+      const separate = await request(route, route === '/chat' ? legacyBody() : uiBody(), 'separate-key');
+      expect(separate.status).toBe(route === '/chat' ? 202 : 200);
+      expect(create).toHaveBeenCalledOnce();
+      expect(journal.records.size).toBe(2);
+    } finally {
+      await chatService.close();
+      journal.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects aggregate oversized user text before inference and keeps assistant history policy separate', async () => {
+    const model = mockModel();
+    const generate = vi.spyOn(model, 'doGenerate');
+    const stream = vi.spyOn(model, 'doStream');
+    const chatService = service();
+    const { request } = await start(model, chatService);
+    const parts = [{ type: 'text', text: 'x'.repeat(3999) }, { type: 'text', text: 'Do not transfer' }];
+    expect((await request('/api/chat', uiBody(parts))).status).toBe(400);
+    expect((await request('/chat', legacyBody(parts.map(part => part.text).join('\n')))).status).toBe(400);
+    expect(stream).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    expect(chatService.invoke).not.toHaveBeenCalled();
+    const exact = [{ type: 'text', text: 'x'.repeat(3985) }, { type: 'text', text: 'Do not transfer' }];
+    // 3985 + newline + 15 = 4001; the separator counts toward the contract too.
+    expect((await request('/api/chat', uiBody(exact))).status).toBe(400);
+    exact[0]!.text = 'x'.repeat(3984);
+    const body = uiBody(exact);
+    body.messages.unshift({ id: 'old-assistant', role: 'assistant', parts: [
+      { type: 'text', text: 'a'.repeat(3000) }, { type: 'text', text: 'b'.repeat(3000) },
+    ] });
+    expect((await request('/api/chat', body)).status).toBe(200);
+    expect(stream).toHaveBeenCalledOnce();
+    expect(JSON.stringify(stream.mock.calls[0]![0].prompt)).toContain('Do not transfer');
     expect(chatService.invoke).not.toHaveBeenCalled();
   });
 

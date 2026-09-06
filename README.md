@@ -17,7 +17,7 @@ Evidence from real runs: **[evidence/](evidence/)**.
 
 ## Setup
 
-Requirements: Node 22.12.0 or newer, an OpenAI API key (discovery only — replay never needs one).
+Requirements: Node 22.12+ (22.x), 24.x, or 26+, an OpenAI API key (discovery only — replay never needs one).
 
 ```bash
 npm install

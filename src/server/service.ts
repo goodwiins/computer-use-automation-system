@@ -53,6 +53,10 @@ export class InvocationService {
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
     const { existing } = this.journal.lookup(principal, key, request);
     if (existing) return { runId: existing.runId };
+    // ponytail: capability-wide unknown block; narrower scope needs an explicit reconciliation contract.
+    // Terminal same-key lookups above remain readable across all entry points.
+    if ([...this.journal.records.values()].some(run => run.capability === id && run.state === 'POST_OUTCOME_UNKNOWN'))
+      throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
     const record = this.journal.reserve(principal, key, id, artifact.version, request);
     this.active = record.runId;

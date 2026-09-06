@@ -6,7 +6,7 @@ The user separately authorized a Vercel AI SDK conversational backend and [assis
 
 ## Setup
 
-Use Node 22.12.0 or newer and the repository's existing dependencies:
+Use Node 22.12+ (22.x), 24.x, or 26+ and the repository's existing dependencies:
 
 ```sh
 npm ci

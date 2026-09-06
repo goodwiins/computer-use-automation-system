@@ -139,14 +139,15 @@ const modelOptions = (model: LanguageModel, messages: ModelMessage[], tools: Too
 });
 
 function textHistory(messages: z.infer<typeof UIMessage>[]): ModelMessage[] {
-  return messages.map(message => ({
-    role: message.role,
-    content: message.parts
+  return messages.map(message => {
+    const content = message.parts
       .filter((part): part is { type: 'text'; text: string } => part.type === 'text' && typeof part.text === 'string')
       .map(part => part.text)
-      .join('\n')
-      .slice(0, 4000),
-  })).filter(message => message.content.length > 0);
+      .join('\n');
+    if (message.role === 'user' && content.length > 4000)
+      throw new RequestError(400, 'User message text must not exceed 4000 characters');
+    return { role: message.role, content: message.role === 'assistant' ? content.slice(0, 4000) : content };
+  }).filter(message => message.content.length > 0);
 }
 
 function requireConversation(messages: ModelMessage[]) {
