@@ -10,6 +10,7 @@ import { createApp } from '../src/server/http.js';
 import { RequestError } from '../src/runtime/journal.js';
 import type { InvocationService } from '../src/server/service.js';
 import { chatRequest } from '../src/server/ui/transport.js';
+import { publicIntervention } from '../src/runtime/approval.js';
 
 // All browser/model/run fixtures in this suite are offline. No target is invoked.
 const callerToken = 'c'.repeat(32),
@@ -521,21 +522,23 @@ it('keeps historical timeline data on refresh errors and cancels late active rea
 }, 30000);
 it('offline operator controls require live authority, disable expired/duplicate decisions and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
-  const intervention = {
+  const intervention = publicIntervention({
     id: approvalId,
     expiresAt: Date.now() + 60000,
-    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id },
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Transfer fixture', url: 'https://offline.example/review?api_key=short-secret' },
     action: {
-      destination: '/post',
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post',
+      destination: 'https://offline.example/post?sid=short-secret',
       method: 'POST',
       operator: 'offline-teller',
       branch: 'OFFLINE',
       role: 'TELLER',
-      facts: { amount: '25.00', sourceShare: 'OFFLINE-A', destinationShare: 'OFFLINE-B' },
+      facts: { amount: '25.00', body: 'hidden-body', token: 'hidden-token' },
+      visibleFacts: { amount: '25.00', sourceShare: 'OFFLINE-A', destinationShare: 'OFFLINE-B', api_key: 'short-secret' },
       tokenPresent: true,
       control: 'Post',
     },
-  };
+  });
   state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention });
   await connect();
   expect(await page.getByRole('button', { name: 'Approve submission' }).count()).toBe(0);
@@ -545,10 +548,12 @@ it('offline operator controls require live authority, disable expired/duplicate 
   const approve = page.getByRole('button', { name: 'Approve submission' });
   await approve.waitFor();
   expect(await page.locator('.approval').innerText()).toContain('25.00');
+  expect(await page.locator('.approval').innerText()).not.toMatch(/short-secret|hidden-body|hidden-token|visibleFacts|businessValues/);
   await approve.focus();
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
+  expect(state.requests.find(request => request.path.endsWith('/decision'))?.body).toEqual({ approvalId, decision: 'approve' });
   state.runs[0] = {
     ...initialRun(),
     state: 'awaiting-human',
