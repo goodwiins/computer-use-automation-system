@@ -17,6 +17,12 @@ Two fresh runs at producing source `5d31afd1ae36aea7878497233967805a455be858` ex
 
 The summaries contain metadata and hashes only; signed journals and raw run evidence remain private. Both runs are terminal and their local API process was stopped cleanly. These add fresh read and natural-outcome evidence, not discovery, injected-fault, chatbot or write acceptance. Coverage remains **3/7**. The old transfer pair is no longer eligible; a new pair must be selected and observed again before its separate final approval.
 
+## September 6 pre-post transfer checkpoint failures
+
+Two genuine fault-only discoveries at source `d1124eb7548705364a0e58b6d70f5d1a279f137e` stopped before reaching the configured injected-notfound operation page. [Attempt 1](evidence/transfer-checkpoint-sep6/attempt-1.json), `a0e04247-7884-452b-90ae-be613a35d599`, escalated after the menu shortcut lacked member/frame binding; its handoff expired. [Attempt 2](evidence/transfer-checkpoint-sep6/attempt-2.json), `56915f92-1942-4e03-a7f3-f72d363362f2`, entered the member first but still lacked transfer eligibility; the handoff was explicitly aborted. Both journals are terminal `failure`, with `escalated` results, authenticated evaluator PASS/task failure, 11 and 12 attempts, and zero mutation intents. Neither accepted posting, produced an artifact, or observed the injected condition. Log hashes were checked against the retained private evidence.
+
+The second failure exposed missing eligibility initialization after member start/navigation. [PR #87](https://github.com/goodwiins/computer-use-automation-system/pull/87) reuses native member-table capture and clears stale eligibility on failed refresh. Its head `5f79ff8` passed independent review, 644 local tests/typecheck and hosted CI `34029116834`; hosted review subsequently found cross-origin redirect binding and startup business-outcome gaps, which remain under repair before merge. These source checks do not close EXC-03 or transfer acceptance.
+
 ## Reviewed artifacts
 
 | Approved artifact | Genuine discovery run | Successful deterministic replay |

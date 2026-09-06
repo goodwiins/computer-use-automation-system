@@ -22,7 +22,7 @@ Business outcomes, recoverable conditions, hard failures and escalations are rep
 
 [PR #68](https://github.com/goodwiins/computer-use-automation-system/pull/68) merged as `d4ae5df6` after head checks passed; its merge CI then counted one forbidden member GET during auxiliary cleanup. [PR #86](https://github.com/goodwiins/computer-use-automation-system/pull/86) takes auxiliary pages offline before closure and covers the failure mode with actual-request regressions. Head `1b70984` and merge `1ce90333` have identical code trees; independent and hosted code/security reviews passed, as did head CI `34027127648` and merge CI `34027354453` with 635 tests. The precise event ordering of the original Linux failure remains untraced.
 
-PR #84 integrates that baseline at `2b4e32c` and passed 667 local tests plus hosted CI. Subsequent review findings remain under repair: unknown-outcome protection across chat/API entry points, aggregate user-message validation, and the supported Node range. UI merge and the current-source chat rehearsal remain pending.
+PR #84 head `3e3523f` passed 670 local tests and hosted CI after repairing shared unknown-outcome protection, aggregate message validation and Node support. Follow-up review found lost completed-run context and asset building before the server lock; those repairs remain under review. Two pre-post transfer discoveries also stopped with zero intents before the injected condition, exposing missing member-navigation eligibility capture. PR #87 fixes that source path and stale refresh state; its 644-test head CI passed, but hosted review found redirect-origin binding and startup outcome gaps still under repair. Neither gate establishes new live acceptance.
 
 ## Completion and demo path
 
