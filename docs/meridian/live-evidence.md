@@ -44,7 +44,7 @@ These verify the discovery halves of EXC-02/03/05/07. Their replay halves remain
 
 At PR #84 source `603b8398d5a5a5a85963a2294c37613ab74f010d`, [read run `00eddac9-7056-4ef6-9855-24847a70bce5`](evidence/ui-read-sep6/summary.json) returned 35 typed share rows through the real assistant-ui chat, caller API and deterministic member-record replay. Values and state matched in the chat card and dashboard; signed evaluation passed with 10 actions and zero mutation intents. Refresh, reload and reconnect produced no second run; reload cleared authentication and browser storage stayed empty. No approval endpoint was called. The UI browser closed and the API server exited normally.
 
-This is a source-specific read rehearsal. Hosted review subsequently found that explicit fresh requests could reuse old results and separate evidence roots could rebuild shared UI assets. PR #84 remains unmerged while those issues are repaired; the rehearsal does not establish final UI or write acceptance.
+This is a source-specific read rehearsal. Hosted review subsequently found that explicit fresh requests could reuse old results and separate evidence roots could rebuild shared UI assets. Those issues were repaired in PR #84, merged at `a80ac4e` with the same tree as reviewed head `53a6f56`. Both typechecks/build, 699 tests, head CI `34031468183` and merge CI `34033072454` passed. The earlier rehearsal retains its original producer; current evidence follows below.
 
 ## Reviewed artifacts
 
@@ -84,7 +84,15 @@ The accepted round1 controller evidence observed Refresh focused and activated b
 
 The independent post-restart projection recorded historical sensitive values as unavailable, 26 run IDs before and after with no new run, and an unchanged signed `POST_OUTCOME_UNKNOWN` envelope. The controller stopped its owned service cleanly and left the journal locks absent. These checks preserve the historical unknown state; they do not establish a write, same-browser repair or approval/handoff keyboard operation.
 
-The separate assistant-ui work remains local-only. Tested integration `c89f3d4` passed 418 tests in 19 files, both typechecks, build, validation, audit with zero findings and diff checks. It has no remote PR, hosted checks or new live run. The prior genuine UI source remains `681ab82`; these local checks do not replace or extend that evidence.
+At that historical checkpoint the separate assistant-ui work was local-only. Tested integration `c89f3d4` passed 418 tests in 19 files, both typechecks, build, validation, audit with zero findings and diff checks. It then had no remote PR, hosted checks or new live run. The prior genuine UI source was `681ab82`; these local checks do not replace or extend that evidence.
+
+## Merged UI exception and status rehearsal
+
+At reviewed head `53a6f5686b680bcb34f9232adef46fd44ce3d6b0` (tree-identical to merge `a80ac4e`), [absent-member run `d3fbdd8c-21a5-46cc-9e1c-3cee890287c9`](evidence/ui-final-sep6/missing-member.json) reached the artifact's Search step and returned `business_outcome / NO_SUCH_MEMBER`. Signed evaluation passed with nine actions and zero mutation intents. The chat card and dashboard agreed; explicit status mode returned the original run without changing its journal. Refresh, reload and reconnect created no new run, cleared authentication on reload and left browser storage empty. No decision endpoint was called, and browser/server cleanup completed normally. This is a genuine integrated exception demo, without write acceptance.
+
+A subsequent fresh [balance run `56030b14-15c0-4d41-8e41-c593e228b934`](evidence/ui-final-sep6/balance.json) returned 35 typed share rows matching the API, chat card and dashboard. Signed evaluation passed with ten actions and zero mutation intents. Explicit status lookup preserved the original signed journal; refresh/reload/reconnect created no duplicate, storage remained empty, and cleanup completed normally. This followed the missing-member run that demonstrated working sign-on/search; both earlier failures remain terminal.
+
+Two earlier attempts remain preserved: the [initial harness failure](evidence/ui-final-sep6/initial-harness-failure.json) waited incorrectly for an empty composer Send button to become enabled after a target `NO_SUCH_MEMBER` response at sign-on; the corrected harness waits for the stopped-thread Send control to be visible. The [subsequent read attempt](evidence/ui-final-sep6/session-expired.json) returned `SESSION_EXPIRED` after sign-on. Its failure/status/reconnect checks passed, but the requested balance read did not. The cause is unverified; this does not establish natural idle expiry. Neither result is counted as a successful read or a completed absent-member search.
 
 ## Acceptance ledger
 
