@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Pool } from 'pg';
 import { journalDigest, readJournalSnapshot, readSignedEnvelope, AuthorityMarkerSchema, type AuthorityMarker } from './journal.js';
@@ -49,6 +49,7 @@ export async function importJournal(dir: string, pool: Pool, key: string): Promi
   let startupFd: number;
   try { startupFd = openSync(startup, 'wx', 0o600); }
   catch { throw new Error('Journal import is already in progress'); }
+  const ownedLock = fstatSync(startupFd);
   try {
     if (existsSync(join(dir, 'server.lock'))) throw new Error('Filesystem journal is running');
     const snapshot = readJournalSnapshot(dir, key);
@@ -59,10 +60,16 @@ export async function importJournal(dir: string, pool: Pool, key: string): Promi
       : { importId: randomUUID(), digest, phase: 'pending' as const };
     if (marker.digest !== digest) throw new Error('Journal authority marker does not match snapshot');
     if (!existsSync(path)) writeMarker(dir, key, marker);
+    await PostgresJournal.migrate(pool);
     await PostgresJournal.importSnapshot(pool, key, snapshot, marker.importId, marker.digest, marker.phase === 'pending');
     if (marker.phase === 'pending') writeMarker(dir, key, { ...marker, phase: 'complete' });
   } finally {
+    let ownsPath = false;
+    try {
+      const current = lstatSync(startup);
+      ownsPath = current.dev === ownedLock.dev && current.ino === ownedLock.ino;
+    } catch { /* a removed lock is already released */ }
     closeSync(startupFd);
-    try { unlinkSync(startup); } catch { /* release only our lock; preserve another owner */ }
+    if (ownsPath) try { unlinkSync(startup); } catch { /* preserve a replacement owner */ }
   }
 }

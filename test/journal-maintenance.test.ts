@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresFixture } from './fixtures/postgres.js';
 import { Journal, journalDigest, readJournalSnapshot, type JournalRecord, type JournalSnapshot } from '../src/runtime/journal.js';
 import { importJournal, readAuthorityMarker } from '../src/runtime/journal-maintenance.js';
@@ -50,6 +51,15 @@ describe.sequential('filesystem journal maintenance', () => {
       await importJournal(join(dir, 'journal'), database.pool, key);
       const marker = readAuthorityMarker(join(dir, 'journal'), key);
       expect(marker.digest).toBe(journalDigest(key, snapshot));
+      expect(snapshot.records.find(record => record.runId === direct.runId)?.request).toBe(direct.request);
+      expect(snapshot.records.find(record => record.runId === direct.runId)?.identity).toBe(direct.identity);
+      expect(snapshot.aliases[0]).toMatchObject({ caller: direct.caller, request: direct.request, runId: direct.runId });
+      const directSnapshot = snapshot.records.find(record => record.runId === direct.runId)!;
+      expect(JSON.parse(readFileSync(join(dir, 'journal', `${direct.runId}.json`), 'utf8')).signature)
+        .toBe(journalDigest(key, directSnapshot));
+      const alias = snapshot.aliases[0]!;
+      expect(JSON.parse(readFileSync(join(dir, 'journal', 'aliases', `${alias.identity}.json`), 'utf8')).signature)
+        .toBe(journalDigest(key, alias));
       const journal = await PostgresJournal.open(database.pool, key, marker.importId, marker.digest);
       expect((await journal.get(direct.runId))?.identity).toBe(direct.identity);
       expect((await journal.get(unknown.runId))?.state).toBe('POST_OUTCOME_UNKNOWN');
@@ -86,7 +96,6 @@ describe.sequential('filesystem journal maintenance', () => {
     const journalDir = join(dir, 'journal');
     const database = await createPostgresFixture();
     try {
-      await PostgresJournal.migrate(database.pool);
       writeFileSync(join(journalDir, 'server.lock'), 'fixture');
       await expect(importJournal(journalDir, database.pool, key)).rejects.toThrow(/running/);
       rmSync(join(journalDir, 'server.lock'));
@@ -99,4 +108,100 @@ describe.sequential('filesystem journal maintenance', () => {
       expect(journalDigest(key, snapshot)).not.toBe('e'.repeat(64));
     } finally { await database.close(); }
   });
+
+  it('rejects malformed records, filename and alias owner mismatches, and duplicate identities before import', () => {
+    const dir = tempDir();
+    const { snapshot, direct } = fixtureSnapshot(dir);
+    const journalDir = join(dir, 'journal');
+    const wrongName = randomUUID();
+    signed(join(journalDir, `${wrongName}.json`), { ...direct, runId: randomUUID() });
+    expect(() => readJournalSnapshot(journalDir, key)).toThrow(/filename mismatch|duplicate/);
+    unlinkSync(join(journalDir, `${wrongName}.json`));
+    const duplicateRun = randomUUID();
+    signed(join(journalDir, `${duplicateRun}.json`), { ...direct, runId: duplicateRun, identity: direct.identity });
+    expect(() => readJournalSnapshot(journalDir, key)).toThrow(/duplicate/);
+    unlinkSync(join(journalDir, `${duplicateRun}.json`));
+    for (const file of readdirSync(join(journalDir, 'aliases'))) unlinkSync(join(journalDir, 'aliases', file));
+    const alias = snapshot.aliases[0]!;
+    signed(join(journalDir, 'aliases', `${alias.identity}.json`), { ...alias, caller: 'other-caller' });
+    expect(() => readJournalSnapshot(journalDir, key)).toThrow(/alias/);
+    writeFileSync(join(journalDir, 'invalid.json'), 'not json');
+    expect(() => readJournalSnapshot(journalDir, key)).toThrow();
+  });
+
+  it('serializes concurrent imports, recovers a lost acknowledgment by repeat, and refuses complete marker initialization on an empty target', async () => {
+    const dir = tempDir();
+    fixtureSnapshot(dir);
+    const database = await createPostgresFixture();
+    const secondPool = database.openPool();
+    try {
+      const results = await Promise.allSettled([
+        importJournal(join(dir, 'journal'), database.pool, key),
+        importJournal(join(dir, 'journal'), secondPool, key),
+      ]);
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter(result => result.status === 'rejected').map(result => (result as PromiseRejectedResult).reason.message))
+        .toContain('Journal import is already in progress');
+    } finally { await database.close(); }
+
+    const lostDir = tempDir();
+    fixtureSnapshot(lostDir);
+    const lost = await createPostgresFixture();
+    const originalConnect = lost.pool.connect.bind(lost.pool);
+    let commits = 0;
+    (lost.pool as Pool & { connect: typeof lost.pool.connect }).connect = (async () => {
+      const client = await originalConnect();
+      const query = client.query.bind(client);
+      client.query = (async (text: unknown, ...args: unknown[]) => {
+        const result = await (query as (...queryArgs: unknown[]) => Promise<unknown>)(text, ...args);
+        if (typeof text === 'string' && text.trim().toUpperCase() === 'COMMIT' && ++commits === 2) throw new Error('lost acknowledgement');
+        return result;
+      }) as typeof client.query;
+      return client;
+    }) as typeof lost.pool.connect;
+    try {
+      await expect(importJournal(join(lostDir, 'journal'), lost.pool, key)).rejects.toThrow();
+      expect(() => readAuthorityMarker(join(lostDir, 'journal'), key)).toThrow(/pending/);
+      lost.pool.connect = originalConnect;
+      await importJournal(join(lostDir, 'journal'), lost.pool, key);
+      expect(readAuthorityMarker(join(lostDir, 'journal'), key).importId).toBeTruthy();
+      const empty = await createPostgresFixture();
+      try {
+        await expect(importJournal(join(lostDir, 'journal'), empty.pool, key)).rejects.toThrow(/not initialized|already initialized/);
+      } finally { await empty.close(); }
+    } finally { lost.pool.connect = originalConnect; await lost.close(); }
+  });
+
+  it('dispatches maintenance CLI without entering runtime code and validates recovery flags', () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: process.env.PATH, EVIDENCE_DIR: tempDir() };
+    delete env.DATABASE_URL;
+    const imported = spawnSync(process.execPath, ['--import', 'tsx', 'cli.ts', 'journal-import'], { cwd: process.cwd(), env, encoding: 'utf8' });
+    expect(imported.status).not.toBe(0);
+    expect(`${imported.stdout}${imported.stderr}`).toContain('DATABASE_URL is required');
+    const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'cli.ts', 'journal-recover', '--owner', 'bad', '--confirm-fenced'], { cwd: process.cwd(), env, encoding: 'utf8' });
+    expect(invalid.status).not.toBe(0);
+    expect(`${invalid.stdout}${invalid.stderr}`).toContain('--owner must be a UUID');
+  });
+
+  it('does not remove a replacement startup lock it does not own', async () => {
+    const dir = tempDir();
+    fixtureSnapshot(dir);
+    const journalDir = join(dir, 'journal');
+    const migrate = vi.spyOn(PostgresJournal, 'migrate').mockImplementation(async () => {
+      unlinkSync(join(journalDir, 'startup.lock'));
+      writeFileSync(join(journalDir, 'startup.lock'), 'replacement-owner');
+    });
+    const imported = vi.spyOn(PostgresJournal, 'importSnapshot').mockResolvedValue(undefined);
+    try {
+      await importJournal(journalDir, {} as Pool, key);
+      expect(readFileSync(join(journalDir, 'startup.lock'), 'utf8')).toBe('replacement-owner');
+      expect(migrate).toHaveBeenCalledOnce();
+      expect(imported).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      unlinkSync(join(journalDir, 'startup.lock'));
+    }
+  });
+
+  it.todo('Task4 runtime opener rejects a target whose PostgreSQL marker identity does not match');
 });

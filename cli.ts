@@ -449,7 +449,7 @@ async function journalImport(argv: string[]): Promise<void> {
   const databaseUrl = requiredEnv('DATABASE_URL');
   const key = requiredEnv('JOURNAL_HMAC_KEY');
   const pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
-  try { await PostgresJournal.migrate(pool); await importJournal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), pool, key); }
+  try { await importJournal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), pool, key); }
   finally { await pool.end().catch(() => undefined); }
 }
 
