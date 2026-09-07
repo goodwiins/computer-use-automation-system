@@ -775,6 +775,8 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
   await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
   await page.getByText('The original request may still run or may have completed.', { exact: false }).waitFor();
+  state.runs[0]!.state = 'success';
+  expect(state.runs[0]!.state).toBe('success');
   const inquiry = { ...capability, id: 'meridian-member-inquiry' };
   service.catalog = () => [capability, inquiry];
   service.availability = () => fixtureAvailability('available', 'available');
@@ -818,7 +820,6 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(invokes[1]?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
   expect(invokes[1]?.body).toEqual({ args: { member: 'changed-member' }, operator: 'TELLER' });
   expect(await page.locator('#fields input').inputValue()).toBe('changed-member');
-  state.runs[0]!.state = 'success';
   state.runs[0]!.evidence.push('../private.json');
   await page.locator('#refresh').click();
   await page.getByText('Run details and evidence', { exact: true }).first().click();
