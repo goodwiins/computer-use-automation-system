@@ -215,30 +215,34 @@ export class BrowserSurface implements Surface {
     for (const frame of this.page.frames()) {
       if (frame.url() === 'about:blank' || !this.frameInBounds(frame)) continue;
       try {
+        // Skip confirmed frameset shells; ordinary documents still get the
+        // locator's bounded wait for a body while parsing or navigating.
+        if (await frame.evaluate(() => document.body?.localName === 'frameset')) continue;
         const snapshot = await frame.locator('body').ariaSnapshot({ timeout: 3000 });
-        const fields = await frame.evaluate(() =>
-          Array.from(document.querySelectorAll('input, select, textarea'))
+        const structure = await frame.evaluate(() => {
+          const fields = Array.from(document.querySelectorAll('input, select, textarea'))
             .map((e) => ({
               name: e.getAttribute('name') ?? '',
               type: e instanceof HTMLInputElement ? e.type : e.tagName.toLowerCase(),
             }))
-            .filter((f) => f.name),
-        );
-        const tables = await frame.evaluate(() => Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
-          const parts: string[] = [];
-          let node: Element | null = table;
-          while (node && node.tagName !== 'BODY') {
-            const parent: Element | null = node.parentElement;
-            const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
-            parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
-            node = parent;
-          }
-          const rowCells = Array.from(table.rows, row => Array.from(row.cells, cell => cell.tagName.toLowerCase() as 'td' | 'th'));
-          return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: rowCells[0] ?? [], rows: table.rows.length, rowCells };
-        }));
-        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, fields, tables });
+            .filter((f) => f.name);
+          const tables = Array.from(document.querySelectorAll('table')).filter(table => !table.querySelector('table')).map(table => {
+            const parts: string[] = [];
+            let node: Element | null = table;
+            while (node && node.localName !== 'body') {
+              const parent: Element | null = node.parentElement;
+              const index = parent ? Array.from(parent.children).filter(child => child.tagName === node!.tagName).indexOf(node) + 1 : 1;
+              parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+              node = parent;
+            }
+            const rowCells = Array.from(table.rows, row => Array.from(row.cells, cell => cell.tagName.toLowerCase() as 'td' | 'th'));
+            return { selector: `body > ${parts.join(' > ')}`, headers: Array.from(table.rows[0]?.cells ?? [], cell => (cell.textContent ?? '').trim().slice(0, 100)), headerCells: rowCells[0] ?? [], rows: table.rows.length, rowCells };
+          });
+          return { fields, tables };
+        });
+        frames.push({ frame: frame === this.page.mainFrame() ? '' : frame.name(), snapshot, ...structure });
       } catch {
-        // Frameset parent pages have no body; skip silently.
+        // Frame detached or navigated mid-observe; skip silently.
       }
     }
     return { url: this.currentUrl(), title: await this.page.title(), frames };
@@ -370,10 +374,17 @@ export class BrowserSurface implements Surface {
     };
   }
 
+  // PF-M4: collectSensitive runs on every inspect/observe/screenshot and used
+  // to re-send every cell text each time (2,400 values per call on a 500-row
+  // page); the redactor then deduped with an O(n^2) scan. Remember what was
+  // already forwarded so only new values cross. Values are never dropped —
+  // only repeats — so the redactor ends with the same set.
+  private readonly forwardedSensitive = { values: new Set<string>(), secrets: new Set<string>(), credentials: new Set<string>() };
+
   async collectSensitive(): Promise<void> {
     if (!this.opts.profile || !this.page) return;
-    for (const frame of this.page.frames()) {
-      const observed = await frame.evaluate(() => {
+    const observations = await Promise.all(this.page.frames().map(frame =>
+      frame.evaluate(() => {
         const result: string[] = [];
         const secrets: string[] = [];
         const credentials: string[] = [];
@@ -389,8 +400,19 @@ export class BrowserSurface implements Surface {
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
         if (sid) { result.push(sid); secrets.push(sid); credentials.push(sid); }
         return { values: result, secrets, credentials };
-      });
-      this.opts.sensitive?.(observed.values, observed.secrets, observed.credentials);
+      }),
+    ));
+    const fresh = (seen: Set<string>, found: string[]) => [...new Set(found)].filter(v => !seen.has(v));
+    for (const observed of observations) {
+      const values = fresh(this.forwardedSensitive.values, observed.values);
+      const secrets = fresh(this.forwardedSensitive.secrets, observed.secrets);
+      const credentials = fresh(this.forwardedSensitive.credentials, observed.credentials);
+      if (values.length || secrets.length || credentials.length) {
+        this.opts.sensitive?.(values, secrets, credentials);
+        for (const value of values) this.forwardedSensitive.values.add(value);
+        for (const secret of secrets) this.forwardedSensitive.secrets.add(secret);
+        for (const credential of credentials) this.forwardedSensitive.credentials.add(credential);
+      }
     }
   }
 
