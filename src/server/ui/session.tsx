@@ -2,9 +2,20 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { InvocationService, Principal } from '../service.js';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
-export type Availability = ReturnType<InvocationService['availability']>[number];
-export type Run = ReturnType<InvocationService['get']>;
+export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
+export type Run = Awaited<ReturnType<InvocationService['get']>>;
 export type Session = { token: string; principal: Principal; capabilities: Capability[]; availability?: Availability[] };
+export type ActionAttempt = {
+  kind: 'chat' | 'direct';
+  key: string;
+  body?: string;
+  capabilityId?: string;
+};
+export type ActionHold = ActionAttempt & {
+  state: 'active' | 'uncertain' | 'bound';
+  runId?: string;
+  boundCapabilityId?: string;
+};
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
@@ -27,6 +38,12 @@ const Context = createContext<{
   watched: ReadonlySet<string>;
   loading: boolean;
   error: string;
+  actionHold?: ActionHold;
+  beginAction: (attempt: ActionAttempt) => boolean;
+  markActionUncertain: (key: string) => void;
+  bindAction: (key: string, runId: string, capabilityId?: string) => void;
+  clearAction: (key: string) => void;
+  abandonAction: (key: string) => void;
   request: (path: string, options?: RequestInit) => Promise<Response>;
   refresh: () => Promise<void>;
   watch: (id: string) => void;
@@ -65,6 +82,8 @@ export function RunProvider({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [actionHold, setActionHold] = useState<ActionHold>();
+  const actionHoldRef = useRef<ActionHold | undefined>(undefined);
   const abort = useRef(new AbortController());
   const busy = useRef(false);
   const queued = useRef(false);
@@ -72,6 +91,32 @@ export function RunProvider({
   const [reviewRunId, setReviewRunId] = useState<string>();
   const reviewAttempts = useRef(new Map<string, ReviewAttempt>());
   const [, rerenderReview] = useState(0);
+  const updateAction = useCallback((key: string, update: (current: ActionHold) => ActionHold | undefined) => {
+    const current = actionHoldRef.current;
+    if (!current || current.key !== key) return;
+    const next = update(current);
+    actionHoldRef.current = next;
+    setActionHold(next);
+  }, []);
+  const beginAction = useCallback((attempt: ActionAttempt) => {
+    if (actionHoldRef.current) return false;
+    const next: ActionHold = { ...attempt, state: 'active' };
+    actionHoldRef.current = next;
+    setActionHold(next);
+    return true;
+  }, []);
+  const markActionUncertain = useCallback((key: string) => {
+    updateAction(key, current => ({ ...current, state: 'uncertain' }));
+  }, [updateAction]);
+  const bindAction = useCallback((key: string, runId: string, capabilityId?: string) => {
+    updateAction(key, current => ({ ...current, state: 'bound', runId, boundCapabilityId: capabilityId }));
+  }, [updateAction]);
+  const clearAction = useCallback((key: string) => {
+    updateAction(key, () => undefined);
+  }, [updateAction]);
+  const abandonAction = useCallback((key: string) => {
+    updateAction(key, () => undefined);
+  }, [updateAction]);
   const request = useCallback(
     async (path: string, options: RequestInit = {}) => {
       const response = await authenticatedFetch(session.token, path, {
@@ -187,7 +232,8 @@ export function RunProvider({
   }, [runs, error, loading, refresh]);
   const currentSession = { ...session, capabilities, availability };
   return (
-    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>
+    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, actionHold,
+      beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>
       {children}
     </Context.Provider>
   );

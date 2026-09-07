@@ -31,6 +31,7 @@
     "express": "^4.19.2",
     "next": "16.3.4",
     "openai": "^4.77.0",
+    "pg": "8.23.0",
     "playwright": "^1.49.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -39,6 +40,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
+    "@types/pg": "8.23.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "tsx": "^4.19.2",

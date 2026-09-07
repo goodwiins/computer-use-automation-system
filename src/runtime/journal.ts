@@ -7,14 +7,33 @@ const RecordSchema = z.object({
   kind: z.enum(['discovery', 'replay']).default('replay'),
   runId: z.string().uuid(), caller: z.string(), capability: z.string(), version: z.string(),
   request: z.string(), identity: z.string(), createdAt: z.string(),
+  invocationScope: z.enum(['public', 'member-identity']).optional(),
   state: z.enum(['reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN']),
 });
 export type JournalRecord = z.infer<typeof RecordSchema>;
+export type InvocationScope = 'public' | 'member-identity';
+export type ReservationOptions = { invocationScope?: InvocationScope };
 const AliasSchema = z.object({
   caller: z.string(), identity: z.string().regex(/^[a-f0-9]{64}$/),
   request: z.string().regex(/^[a-f0-9]{64}$/), runId: z.string().uuid(),
 }).strict();
-type RequestAlias = z.infer<typeof AliasSchema>;
+export type RequestAlias = z.infer<typeof AliasSchema>;
+export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[] };
+export type Awaitable<T> = T | Promise<T>;
+export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
+export interface RunJournal {
+  get(runId: string): Awaitable<JournalRecord | undefined>;
+  list(): Awaitable<JournalRecord[]>;
+  hasUnknown(capability: string): Awaitable<boolean>;
+  lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
+  findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown,
+    kind?: 'discovery' | 'replay', options?: ReservationOptions): Awaitable<JournalRecord>;
+  bindReference(caller: string, key: string, runId: string): Awaitable<void>;
+  update(runId: string, state: JournalRecord['state']): Awaitable<void>;
+  assertHealthy(): void;
+  close(): Awaitable<void>;
+}
 export class RequestError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
@@ -28,14 +47,36 @@ function canonical(value: unknown): string {
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
   return JSON.stringify(value);
 }
+export function journalDigest(key: string, value: unknown): string {
+  if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
+  return createHmac('sha256', key).update(canonical(value)).digest('hex');
+}
 
-function readEnvelope(path: string, key: string): unknown {
+export function readSignedEnvelope(path: string, key: string): unknown {
   if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
   const envelope = JSON.parse(readFileSync(path, 'utf8'));
   const actual = Buffer.from(createHmac('sha256', key).update(canonical(envelope.record)).digest('hex'));
   const signature = Buffer.from(String(envelope.signature));
   if (actual.length !== signature.length || !timingSafeEqual(actual, signature)) throw new Error('Journal authentication failed');
   return envelope.record;
+}
+
+const AUTHORITY_MARKER = 'postgres-authority.json';
+export const AuthorityMarkerSchema = z.object({
+  importId: z.string().uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/),
+  phase: z.enum(['pending', 'complete']),
+}).strict();
+export type AuthorityMarker = z.infer<typeof AuthorityMarkerSchema>;
+
+function readEnvelope(path: string, key: string): unknown { return readSignedEnvelope(path, key); }
+
+export function validateReservationScope(capability: string, runKind: 'discovery' | 'replay', options?: ReservationOptions): InvocationScope {
+  const scope = options?.invocationScope ?? 'public';
+  if (scope !== 'public' && scope !== 'member-identity') throw new RequestError(400, 'Invalid invocation scope');
+  if (scope === 'member-identity' && (runKind !== 'replay' || capability !== 'meridian-member-inquiry')) {
+    throw new RequestError(400, 'Invalid invocation scope');
+  }
+  return scope;
 }
 
 /** Authenticate a snapshot without acquiring a lock or recovering/mutating it. */
@@ -46,8 +87,46 @@ export function readJournalRecord(dir: string, runId: string, key: string): Jour
   return record;
 }
 
+const tempName = (name: string) => /^(?:[0-9a-f-]{36}\.json|postgres-authority\.json)\.[0-9a-f-]{36}\.tmp$/.test(name);
+const aliasTempName = (name: string) => /^[0-9a-f]{64}\.json\.[0-9a-f-]{36}\.tmp$/.test(name);
+
+/** Authenticate and normalize the complete filesystem journal without opening it. */
+export function readJournalSnapshot(dir: string, key: string): JournalSnapshot {
+  journalDigest(key, { records: [], aliases: [] });
+  const files = readdirSync(dir);
+  const records: JournalRecord[] = [];
+  for (const file of files) {
+    if (file === 'startup.lock' || file === 'server.lock' || file === AUTHORITY_MARKER || tempName(file)) continue;
+    if (file === 'aliases') continue;
+    if (!file.endsWith('.json')) throw new Error('Invalid journal snapshot entry');
+    records.push(readJournalRecord(dir, file.slice(0, -5), key));
+  }
+  const byRun = new Set<string>(), identities = new Set<string>();
+  for (const record of records) {
+    if (byRun.has(record.runId) || identities.has(record.identity)) throw new Error('Journal snapshot contains duplicate identities');
+    byRun.add(record.runId); identities.add(record.identity);
+  }
+  const aliases: RequestAlias[] = [];
+  const recordsByRun = new Map(records.map(record => [record.runId, record]));
+  const aliasesDir = join(dir, 'aliases');
+  if (existsSync(aliasesDir)) {
+    for (const file of readdirSync(aliasesDir)) {
+      if (tempName(file) || aliasTempName(file)) continue;
+      if (!file.endsWith('.json')) throw new Error('Invalid journal snapshot entry');
+      const alias = AliasSchema.parse(readSignedEnvelope(join(aliasesDir, file), key));
+      const target = recordsByRun.get(alias.runId);
+      if (file !== `${alias.identity}.json` || !target || target.caller !== alias.caller || target.request !== alias.request
+        || identities.has(alias.identity)) throw new Error('Invalid journal request alias');
+      identities.add(alias.identity); aliases.push(alias);
+    }
+  }
+  records.sort((a, b) => a.runId.localeCompare(b.runId));
+  aliases.sort((a, b) => a.identity.localeCompare(b.identity));
+  return { records, aliases };
+}
+
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
-export class Journal {
+export class Journal implements RunJournal {
   readonly records = new Map<string, JournalRecord>();
   private readonly runIdsByIdentity = new Map<string, string>();
   private readonly aliases = new Map<string, RequestAlias>();
@@ -63,6 +142,7 @@ export class Journal {
     const startup = join(dir, 'startup.lock');
     const startupFd = openSync(startup, 'wx', 0o600);
     try {
+      if (existsSync(join(dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
       if (existsSync(this.lock)) {
         const pid = Number(readFileSync(this.lock, 'utf8'));
         if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid journal lock; operator inspection required');
@@ -94,11 +174,12 @@ export class Journal {
       }
     } catch (error) { this.close(); throw error; }
   }
-  private mac(value: unknown) { return createHmac('sha256', this.key).update(canonical(value)).digest('hex'); }
+  private mac(value: unknown) { return journalDigest(this.key, value); }
   private syncDir(dir = this.dir) { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
   private persistEnvelope(path: string, record: unknown) {
     if (this.closed) throw new Error('Journal is closed');
     if (this.writeFailure) throw this.writeFailure;
+    if (existsSync(join(this.dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
     const tmp = `${path}.${randomUUID()}.tmp`;
     const fd = openSync(tmp, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify({ record, signature: this.mac(record) })); fsyncSync(fd); } finally { closeSync(fd); }
@@ -116,8 +197,14 @@ export class Journal {
     this.records.set(record.runId, record);
     if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
+  get(runId: string) { this.assertHealthy(); return this.records.get(runId); }
+  list() { this.assertHealthy(); return [...this.records.values()]; }
+  hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
+  assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
+    this.assertHealthy();
     validateIdempotencyKey(key);
+    if (existsSync(join(this.dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
     const target = this.records.get(runId);
     if (!target || target.caller !== caller) throw new RequestError(403, 'Run belongs to another principal');
     const existing = this.findRequest(caller, key);
@@ -134,7 +221,7 @@ export class Journal {
     this.aliases.set(identity, alias);
   }
   findRequest(caller: string, key: string) {
-    if (this.writeFailure) throw this.writeFailure;
+    this.assertHealthy();
     const identity = this.mac({ caller, key });
     const runId = this.runIdsByIdentity.get(identity);
     const direct = runId === undefined ? undefined : this.records.get(runId);
@@ -148,10 +235,14 @@ export class Journal {
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');
     return { existing, identity, digest };
   }
-  reserve(caller: string, key: string, capability: string, version: string, request: unknown, kind: 'discovery' | 'replay' = 'replay') {
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown,
+    kind: 'discovery' | 'replay' = 'replay', options?: ReservationOptions) {
+    const invocationScope = validateReservationScope(capability, kind, options);
     const { existing, identity, digest } = this.lookup(caller, key, request);
     if (existing) return existing;
-    const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity, createdAt: new Date().toISOString(), state: 'reserved' };
+    if (this.hasUnknown(capability)) throw new RequestError(409, 'This capability has an unknown posting outcome; use a separate read-only inquiry');
+    const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity,
+      invocationScope, createdAt: new Date().toISOString(), state: 'reserved' };
     this.persist(record); return record;
   }
   update(runId: string, state: JournalRecord['state']) {
@@ -163,7 +254,7 @@ export class Journal {
     }
     if (record.state === 'dispatching') {
       if (state === 'reserved' || state === 'running') throw new Error('Dispatch intent cannot be cleared');
-      if (state === 'failure' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
+      if (state === 'failure' || state === 'business_outcome' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
     }
     this.persist({ ...record, state });
   }
