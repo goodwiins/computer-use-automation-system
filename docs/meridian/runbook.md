@@ -184,6 +184,8 @@ The merged assistant-ui/Vercel AI SDK chat renders authoritative run results fro
 
 ## Faults, restart and result classes
 
+A fresh successful member-record request also starts one approved member-inquiry read in number mode, using the exact requested member, caller and execution role. Its request key is `member-identity:<balance run ID>`; the balance response links the inquiry run ID. Verification requires exactly one matching member-number/name row. Missing permission, unavailable outputs, failure or ambiguity leaves the balance intact with identity unavailable. Status and same-key reuse never start another lookup. Names and linkage remain in server/page memory; the UI clears identity display on disconnect, reload or stale updates and never joins historical runs by recency. Restored results cannot recover the name. This composition does not change capability artifacts or posting/approval guards.
+
 Use `--inject <kind> --fault-route <observed operation-entry GET path>` only after observing that exact GET route. The hook never applies to `/review`, `/post` or a POST. Do not guess a route or run a write-fault loop. Native POST-only rejection must be classified from its actual phase.
 
 ```sh

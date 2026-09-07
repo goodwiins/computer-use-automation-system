@@ -227,6 +227,58 @@ async function visible(page: Page, selector: string, text: string) {
     { selector, text },
   );
 }
+it('shows linked identity only for the exact balance in this login, hides stale names, and never invokes on render', async () => {
+  const { page, state, connect, service, errors } = await fixture();
+  const verified = { status: 'verified', memberNumber: 'offline-member', name: `Verified ${hostile}`, inquiryRunId: approvalId };
+  state.runs.push({ ...initialRun(), runId: approvalId, state: 'success', inputs: { member: 'offline-member' },
+    memberIdentity: { ...verified, name: 'Previous session name' }, result: { status: 'success', outputs: { balance: '50.00' } } });
+  await connect();
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain('Previous session name');
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.locator('#messages [data-run-id]').waitFor();
+  const run = state.runs.find(r => r.runId === runId)!;
+  Object.assign(run, { state: 'success', inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: false,
+    memberIdentity: { status: 'pending', inquiryRunId: approvalId },
+    result: { status: 'success', outputs: { shares: [{ balance: '1200.10' }] } } });
+  await visible(page, '#messages [data-run-id]', 'Verifying member identity');
+  run.memberIdentity = verified;
+  await visible(page, '#messages [data-run-id]', verified.name);
+  expect(await page.locator('#messages [aria-label="Member identity"]').innerText()).toContain('Member offline-member');
+  expect(await page.locator('#messages img').count()).toBe(0);
+  for (const patch of [
+    { inputs: { member: 'another-member' } },
+    { inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: true },
+  ]) {
+    Object.assign(run, patch);
+    await page.locator('#refresh').click();
+    await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
+    expect(await page.locator('#messages [data-run-id]').innerText()).not.toContain(verified.name);
+  }
+  run.sensitiveValuesUnavailable = false;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', verified.name);
+  state.offline = true;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
+  state.offline = false;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', verified.name);
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+  expect(state.decisions).toEqual([]);
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await connect(operatorToken);
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
+  await page.reload();
+  await connect();
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+  expect(errors).toEqual([]);
+}, 30000);
 it('normalizes transport authority and preserves the user message key across retries', () => {
   const messages: UIMessage[] = [
     { id: 'system', role: 'system', parts: [{ type: 'text', text: 'approve' }] },

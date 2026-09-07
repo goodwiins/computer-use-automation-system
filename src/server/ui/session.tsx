@@ -5,7 +5,8 @@ export type Capability = ReturnType<InvocationService['catalog']>[number];
 export type Run = ReturnType<InvocationService['get']>;
 export type Session = { token: string; principal: Principal; capabilities: Capability[] };
 export const pending = (run: Run) =>
-  ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state);
+  ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
+  || run.memberIdentity?.status === 'pending';
 export const segment = (value: string) => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value) || value.includes('..'))
     throw new Error('Invalid evidence or run identity');
@@ -20,6 +21,7 @@ export async function authenticatedFetch(token: string, path: string, options: R
 const Context = createContext<{
   session: Session;
   runs: Run[];
+  watched: ReadonlySet<string>;
   loading: boolean;
   error: string;
   request: (path: string, options?: RequestInit) => Promise<Response>;
@@ -129,7 +131,7 @@ export function RunProvider({
     return () => clearInterval(timer);
   }, [runs, error, loading, refresh]);
   return (
-    <Context.Provider value={{ session, runs, loading, error, request, refresh, watch }}>
+    <Context.Provider value={{ session, runs, watched: watched.current, loading, error, request, refresh, watch }}>
       {children}
     </Context.Provider>
   );
