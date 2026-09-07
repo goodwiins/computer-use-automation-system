@@ -1,0 +1,29 @@
+{
+  "kind": "discovery",
+  "runId": "4e737aae-27d8-4ad7-8a35-64b6bfbfc120",
+  "producerSha": "10fbfdc1f6a3f3d1f92f6e41f8c5b2773d84bf0a",
+  "resultStatus": "success",
+  "personalApprovalReceived": true,
+  "mutationIntents": 1,
+  "completion": "Runtime verified exactly one new share for the bound member, matching selected type, deposit and extracted shareId.",
+  "logSha256": "d5d5141533e65ebdc739064f110e938d5370425e717fab8003be3397fe69e910",
+  "resultSha256": "87df587f08f6a63f79b042c837ad994d4a5b78e7fa4529d05f27d1a71e58e064",
+  "journalSha256": "eb99b10c208707489a0ffce8502b4919b6327e02693105e395b03251bf52f287",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 17,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "artifactReview": {
+    "originalSha256": "9d593640477176e9c46bb34444a78ab4da86a4a3dfe04222970d325d23a9754a",
+    "status": "independently reviewed",
+    "issue": "One recorded inquiry assertion contains an unbound observed name and a volatile share count. Do not publish or replay this original draft.",
+    "curation": "Removed only original s8 inquiry text assertion containing private name and stale share count. No replacement step, assertion, or selector invented.",
+    "curatedDraftSha256": "48c79f07a925fed89521b8abd6df2c693f5ba9c16f1885b082a54d146408ec37",
+    "originalRetention": "Original draft hash captured before curation in the execution session; raw original not retained or committed because its removed checkpoint contained private member text. This hash is not independently recomputable from retained files."
+  }
+}
