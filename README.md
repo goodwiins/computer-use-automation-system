@@ -20,8 +20,8 @@ Evidence from real runs: **[evidence/](evidence/)**.
 Requirements: Node 22.12+ (22.x), 24.x, or 26+, an OpenAI API key (discovery only — replay never needs one).
 
 ```bash
-npm ci
-npx playwright install chromium
+npm run setup       # lockfile install + Chromium
+npm run test:smoke  # local browser/tsx and evidence checks; no API keys needed
 
 # Local CI: run `npm run ci` (typecheck + full suite, ~22s) by hand, or wire it
 # to run automatically before every push:
@@ -41,6 +41,9 @@ export AZURE_OPENAI_DEPLOYMENT=<deployment name, used as the model>
 Everything runs locally. The target application is a deliberately hostile mock
 "legacy credit-union servicing" app (framesets, nested tables, no test IDs)
 that ships in this repo — no external services, no real credentials, no real PII.
+
+For fresh worktrees, focused checks and failure diagnosis, see [AGENTS.md](AGENTS.md).
+On Linux, `npm run setup -- --with-deps` also installs Chromium's system dependencies.
 
 ## Demo path
 

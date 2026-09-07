@@ -5,6 +5,7 @@
   "description": "Computer-use automation system: LLM discovery -> capability artifact -> deterministic replay, with escalation and safety guardrails.",
   "type": "module",
   "scripts": {
+    "setup": "npm ci && playwright install chromium",
     "serve": "tsx cli.ts serve",
     "target-app": "tsx target-app/server.ts",
     "discover": "tsx cli.ts discover",
@@ -13,6 +14,7 @@
     "validate": "tsx cli.ts validate",
     "eval": "tsx scripts/evaluate-run.ts",
     "test": "vitest run",
+    "test:smoke": "vitest run test/browser-inspection-tsx.test.ts test/evidence-eval.test.ts",
     "ci": "npm run typecheck && npm run typecheck:ui && npm test",
     "typecheck": "tsc --noEmit",
     "build": "vite build --config vite.config.ts",
