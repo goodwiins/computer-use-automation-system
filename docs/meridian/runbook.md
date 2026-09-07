@@ -1,10 +1,14 @@
 # MERIDIAN demonstration runbook
 
-Status: partial Task 9 checkpoint. Live acceptance is **4/7**: sign-on, member inquiry, member record and open share are accepted. Funds transfer, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. See [open-share evidence](live-evidence.md#accepted-open-share-recording-and-replay) for its distinct approved pair and catalog checks. The current service baseline is `dev` merge `27767cfacd8ea6076969ce714d2f74438a39fb70`, including approval safety, auxiliary-page cleanup, transfer eligibility, assistant-ui, discovery outcome classification and historical field structure. Reviewed head `e9ab9d5` and this merge share tree `ab3fe003`; 710 tests, both typechecks/build and head/merge CI passed. These source gates do not create write acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
+Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The current service baseline is `dev` merge `27767cfacd8ea6076969ce714d2f74438a39fb70`, including approval safety, auxiliary-page cleanup, transfer eligibility, assistant-ui, discovery outcome classification and historical field structure. Reviewed head `e9ab9d5` and this merge share tree `ab3fe003`; 710 tests, both typechecks/build and head/merge CI passed. These source gates do not create write acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
 
 The user-selected Vercel AI SDK and assistant-ui stack merged through PR #84. Genuine final-head chat/API/dashboard balance and missing-member demos passed, including explicit status lookup and reconnect without duplicate runs; see [live evidence](live-evidence.md#merged-ui-exception-and-status-rehearsal). Express, shared `InvocationService`, server approval, authentication and operator boundaries remain authoritative. Final write acceptance remains open.
 
 ## Setup
+
+For a private local demo, set `LOCAL_TELLER_LOGIN=1` before starting `serve`. The login page then offers the configured teller and supervisor names. Select the teller and Connect without entering a credential; the supervisor still requires `OPERATOR_API_TOKEN` (not the target application's password). The default is credential-only login.
+
+This opt-in trusts local users with the existing caller allowlist and caller history. Teller login accepts only same-origin requests over loopback and issues a separate process-lifetime bearer token; it never returns either configured API key. The token stays in page memory and is invalid after a server restart. Switching operators or disconnecting clears the page session. Caller sessions cannot approve decisions or select supervisor execution; chat remains caller-bound even after supervisor login. Do not enable this mode for a shared or remotely exposed deployment.
 
 Use Node 22.12+ (22.x), 24.x, or 26+ and the repository's existing dependencies:
 
@@ -175,12 +179,13 @@ cu replay --profile meridian \
 `--attended` is required for a replay that can post. Repeat the same command/key only after a transport failure where the existing run can safely be returned; an unknown outcome is terminal and is never retried.
 
 ```sh
+npm run build
 cu serve --profile meridian
 ```
 
 Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The merged assistant-ui/Vercel AI SDK chat renders authoritative run results from the same API. Chat defaults to **Check run status** on connection and after a run: it can inspect an existing run without executing another capability. Choose **New operation** explicitly for a new request, including a deliberate repeat with identical arguments. Status uses the original signed run; it never retries an unknown posting. Separate server instances build isolated UI assets. Historical runs show recorded input/output field names and types with values withheld; files created before this metadata existed remain explicitly unavailable. Discovery business outcomes retain their category after service restart.
+The merged assistant-ui/Vercel AI SDK chat renders authoritative run results from the same API. Chat infers intent from each message; there is no request-type selector. A server-side model call with no executable capability tools classifies the latest message as a new request, a status question, or conversation. Only a new request exposes approved caller capability tools to the response model; status exposes only `run_status`, and conversation exposes no tools. Unclear requests should prompt clarification. A repeat must be explicitly requested in the message. Classification is model-based, while authorization, input validation, request identity, unknown-outcome blocking, and transaction approval remain enforced by the server. Status uses the original signed run; it never retries an unknown posting. The Next.js App Router frontend is statically exported by `npm run build`; `npm run serve` builds it automatically. Separate server instances snapshot the export into isolated directories. The default view is a full-height assistant-ui conversation; Activity opens the existing capability catalog, run history, evidence and operator approval controls. Exported bootstrap scripts use exact CSP hashes; no API credentials are included in the frontend build. Historical runs show recorded input/output field names and types with values withheld; files created before this metadata existed remain explicitly unavailable. Discovery business outcomes retain their category after service restart.
 
 ## Faults, restart and result classes
 
@@ -211,9 +216,9 @@ npm run validate
 git diff --check
 ```
 
-Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current runtime/UI gates and their earlier history are recorded in [the report](report.md) and [live evidence](live-evidence.md). PR #84 head workflow `34031468183` / producer `101481646089` and merge workflow `34033072454` passed. Those earlier source gates did not establish write acceptance; the later open-share pair is recorded separately.
+Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current runtime/UI gates and their earlier history are recorded in [the report](report.md) and [live evidence](live-evidence.md). PR #84 head workflow `34031468183` / producer `101481646089` and merge workflow `34033072454` passed. None of these gates closes the four writes or raises live acceptance above 3/7.
 
-Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise the accepted capability count. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.
+Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise `3/7`. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.
 
 The existing **offline fixture** command is:
 

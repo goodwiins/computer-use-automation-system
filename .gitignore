@@ -11,3 +11,7 @@ evidence/runs/
 evidence/meridian/
 .env.*
 !.env.example
+
+.next/
+out/
+*.tsbuildinfo
