@@ -306,9 +306,6 @@ it('recovers an accepted chat request by its original subject key without execut
   const { journal, service } = makeService();
   const own = journal.reserve(principalKey(a), 'recover-direct', 'lookup', '1.0.0', {});
   journal.update(own.runId, 'success');
-  const unknown = journal.reserve(principalKey(a), 'recover-unknown', 'lookup', '1.0.0', {});
-  journal.update(unknown.runId, 'dispatching');
-  journal.update(unknown.runId, 'failure');
   const alias = journal.bindReference(principalKey(a), 'recover-alias', own.runId);
   expect(alias).toBeUndefined();
   const operatorSubjectRun = journal.reserve(principalKey(operator), 'recover-operator-subject', 'lookup', '1.0.0', {});
@@ -317,6 +314,9 @@ it('recovers an accepted chat request by its original subject key without execut
   journal.update(legacyOperatorRun.runId, 'success');
   const foreign = journal.reserve(principalKey(b), 'recover-foreign', 'lookup', '1.0.0', {});
   journal.update(foreign.runId, 'success');
+  const unknown = journal.reserve(principalKey(a), 'recover-unknown', 'lookup', '1.0.0', {});
+  journal.update(unknown.runId, 'dispatching');
+  journal.update(unknown.runId, 'failure');
 
   const invoke = vi.spyOn(service, 'invoke');
   const bindReference = vi.spyOn(journal, 'bindReference');

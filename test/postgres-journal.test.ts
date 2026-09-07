@@ -52,6 +52,18 @@ describe.sequential('PostgresJournal', () => {
     expect((await journal.reserve(caller, 'dispatch-key', capability, version, {})).runId).toBe(run.runId);
   });
 
+  it('quarantines a business outcome after durable dispatch intent but preserves one before intent', async () => {
+    const before = await journal.reserve(caller, 'business-before-key', capability, version, {});
+    await journal.update(before.runId, 'business_outcome');
+    expect((await journal.get(before.runId))?.state).toBe('business_outcome');
+
+    const after = await journal.reserve(caller, 'business-after-key', capability, version, {});
+    await journal.update(after.runId, 'dispatching');
+    await journal.update(after.runId, 'business_outcome');
+    expect((await journal.get(after.runId))?.state).toBe('POST_OUTCOME_UNKNOWN');
+    expect(await journal.hasUnknown(capability)).toBe(true);
+  });
+
   it('shares direct and alias identities and preserves them across a healthy restart', async () => {
     const request = { amount: '1.00' };
     const original = await journal.reserve(caller, 'direct-key', 'read-only', version, request);

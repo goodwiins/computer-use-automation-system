@@ -4,18 +4,20 @@ import { request as httpRequest, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CapabilityArtifact } from '../src/artifact/schema.js';
 import { Journal } from '../src/runtime/journal.js';
 import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
 import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import { InvocationService } from '../src/server/service.js';
 import { createApp } from '../src/server/http.js';
 import * as runtime from '../src/runtime/run.js';
+import { applyMeridianContract, meridianContracts } from '../src/runtime/contracts.js';
 import { RunLogger } from '../src/evidence/logger.js';
 import { loadProfile } from '../src/runtime/profile.js';
 import { Policy } from '../src/safety/policy.js';
 import { Redactor } from '../src/safety/redact.js';
 import { recordedStructure } from '../src/evidence/safe-event.js';
-import type { ReplayResult } from '../src/replay/outcomes.js';
+import { InsufficientFundsError, type ReplayResult } from '../src/replay/outcomes.js';
 import { principalKey, type Principal } from '../src/server/auth.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
@@ -28,6 +30,45 @@ const identity = (rows = [{ memberNumber: member, name }]): ReplayResult =>
 const failure: ReplayResult = { ...context, status: 'failure', escalated: false,
   failure: { stepId: 'lookup', code: 'RUN_FAILED', intent: 'lookup', expected: 'member', observed: 'unavailable' } };
 const publicShares = { status: 'success', outputs: shares.outputs };
+function transferArtifact() {
+  const columns = [
+    { name: 'member', selector: 'td:nth-of-type(1)', type: 'string', sensitive: true },
+    { name: 'sourceShare', selector: 'td:nth-of-type(2)', type: 'string', sensitive: true },
+    { name: 'destinationShare', selector: 'td:nth-of-type(3)', type: 'string', sensitive: true },
+    { name: 'amount', selector: 'td:nth-of-type(4)', type: 'money', sensitive: true },
+    { name: 'memo', selector: 'td:nth-of-type(5)', type: 'string', sensitive: true },
+    { name: 'confirmation', selector: 'td:nth-of-type(6)', type: 'string', sensitive: true },
+  ];
+  return applyMeridianContract(CapabilityArtifact.parse({
+    schemaVersion: 2, id: 'meridian-funds-transfer', name: 'meridian-funds-transfer', description: 'Transfer funds',
+    version: '1.0.0', status: 'approved',
+    app: { appId: 'meridian', entryUrl: 'https://web-sample.interface-hiring.com/signon', allowedOrigins: ['https://web-sample.interface-hiring.com'] },
+    parameters: meridianContracts['meridian-funds-transfer'].parameters,
+    outputs: [
+      { name: 'confirmation', type: 'string', description: 'Confirmation', sensitive: true },
+      { name: 'transaction', type: 'table', description: 'Transaction', sensitive: true, minRows: 1, columns },
+    ],
+    steps: [
+      { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
+      { id: 'password', intent: 'password', action: 'fill', value: '{{password}}', risk: 'reversible_write' },
+      { id: 'branch', intent: 'branch', action: 'select', value: '{{branch}}', risk: 'reversible_write' },
+      ...meridianContracts['meridian-funds-transfer'].parameters.map(parameter => ({
+        id: `input-${parameter.name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`, intent: parameter.description, action: 'fill' as const,
+        target: { description: parameter.description, strategies: [{ kind: 'nameAttr' as const, name: parameter.name }] },
+        value: `{{${parameter.name}}}`, risk: 'reversible_write' as const,
+      })),
+      { id: 'checkpoint', intent: 'checkpoint', action: 'assert' as const, assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' as const },
+      { id: 'post', intent: 'post transfer', action: 'click' as const, target: { description: 'post', strategies: [{ kind: 'nameAttr' as const, name: 'post' }] }, risk: 'irreversible' as const },
+      { id: 'post-checkpoint', intent: 'verify transfer', action: 'assert' as const, assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' as const },
+      { id: 'confirmation', intent: 'record confirmation', action: 'extract' as const,
+        target: { description: 'confirmation', strategies: [{ kind: 'nameAttr' as const, name: 'confirmation' }] }, extract: { output: 'confirmation', pattern: '(.+)' }, risk: 'read' as const },
+      { id: 'transaction', intent: 'record transaction', action: 'extract' as const,
+        target: { description: 'transaction', strategies: [{ kind: 'nameAttr' as const, name: 'transaction' }] }, extract: { output: 'transaction', columns, rowSelector: 'tr' }, risk: 'read' as const },
+    ],
+    successCondition: { kind: 'textVisible', text: 'Transfer complete' }, detectors: [],
+    provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
+  }));
+}
 const cleanup: (() => Promise<void>)[] = [];
 const servers: Server[] = [];
 afterEach(async () => {
@@ -415,6 +456,86 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
     if (restoredPool) await database.closePool(restoredPool);
     await database.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('quarantines an insufficient-funds business outcome after durable dispatch intent in PostgreSQL', async () => {
+  for (const role of ['TELLER', 'SUPERVISOR']) {
+    vi.stubEnv(`MERIDIAN_${role}_OPERATOR`, role);
+    vi.stubEnv(`MERIDIAN_${role}_PASSWORD`, 'fixture-password');
+  }
+  vi.stubEnv('MERIDIAN_BRANCH', 'MAIN-001');
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'post-intent-business-postgres-'));
+  const artifactDir = mkdtempSync(join(tmpdir(), 'post-intent-business-artifacts-'));
+  let journal: PostgresJournal | undefined;
+  let service: InvocationService | undefined;
+  let beforeDispatch: (() => void | Promise<void>) | undefined;
+  try {
+    const key = 'member-identity-fixture-hmac-key-32-characters';
+    await PostgresJournal.migrate(database.pool);
+    const snapshot: JournalSnapshot = { records: [], aliases: [] };
+    const importId = randomUUID();
+    const digest = journalDigest(key, snapshot);
+    await PostgresJournal.importSnapshot(database.pool, key, snapshot, importId, digest);
+    journal = await PostgresJournal.open(database.pool, key, importId, digest);
+    const profile = loadProfile('meridian');
+    const policy = Policy.parse({ allowedOrigins: ['https://web-sample.interface-hiring.com'],
+      allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' } });
+    writeFileSync(join(artifactDir, 'meridian-funds-transfer.v1.0.0.json'), JSON.stringify(transferArtifact()));
+    service = new InvocationService(journal, policy, profile, dir, ['meridian-funds-transfer'], artifactDir);
+    vi.spyOn(runtime, 'createRuntime').mockImplementation(options => {
+      beforeDispatch = options.beforeDispatch ? () => options.beforeDispatch!(undefined as never) : undefined;
+      const redactor = new Redactor();
+      return {
+        surface: { mutationDispatched: false }, promptRedactor: redactor,
+        logger: new RunLogger(options.kind, redactor, options.evidenceDir, true, options.runId),
+        close: async () => {},
+      } as unknown as ReturnType<typeof runtime.createRuntime>;
+    });
+    const replay = vi.spyOn(runtime, 'executeReplay').mockImplementation(async (_artifact, _params, currentRuntime) => {
+      await beforeDispatch?.();
+      const error = new InsufficientFundsError();
+      return {
+        status: 'business_outcome', outcomeCode: error.outcomeCode, detail: error.message,
+        runId: currentRuntime.logger.runId, evidenceDir: currentRuntime.logger.dir, recoveries: [],
+      };
+    });
+    const args = { member, sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
+    const accepted = await service.invoke('operator', 'meridian-funds-transfer', args, 'post-intent-business', 'TELLER');
+    await vi.waitFor(async () => expect((await journal!.get(accepted.runId))?.state).toBe('POST_OUTCOME_UNKNOWN'));
+    expect((await database.pool.query<{ state: string; dispatch_intent: boolean }>(
+      'SELECT state, dispatch_intent FROM meridian_runs WHERE run_id = $1', [accepted.runId],
+    )).rows[0]).toEqual({ state: 'POST_OUTCOME_UNKNOWN', dispatch_intent: true });
+    expect((await service.get('operator', accepted.runId)).result).toMatchObject({
+      status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' },
+    });
+    await expect(service.invoke('operator', 'meridian-funds-transfer', args, 'post-intent-business-fresh', 'TELLER'))
+      .rejects.toMatchObject({ status: 409 });
+    expect(replay).toHaveBeenCalledOnce();
+
+    await service.close();
+    await journal.close();
+    const marker = (await database.pool.query<{ import_id: string; source_digest: string }>(
+      'SELECT import_id::text, source_digest FROM meridian_journal_authority WHERE singleton = true',
+    )).rows[0]!;
+    const restoredJournal = await PostgresJournal.open(database.pool, key, marker.import_id, marker.source_digest);
+    const restored = new InvocationService(restoredJournal, policy, profile, dir, ['meridian-funds-transfer'], artifactDir);
+    try {
+      expect(await restored.get('operator', accepted.runId)).toMatchObject({
+        state: 'POST_OUTCOME_UNKNOWN', result: { status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } },
+      });
+    } finally {
+      await restored.close();
+      await restoredJournal.close();
+    }
+  } finally {
+    await service?.close().catch(() => {});
+    await journal?.close().catch(() => {});
+    await database.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(artifactDir, { recursive: true, force: true });
   }
 });
 

@@ -88,6 +88,7 @@ export function readJournalRecord(dir: string, runId: string, key: string): Jour
 }
 
 const tempName = (name: string) => /^(?:[0-9a-f-]{36}\.json|postgres-authority\.json)\.[0-9a-f-]{36}\.tmp$/.test(name);
+const aliasTempName = (name: string) => /^[0-9a-f]{64}\.json\.[0-9a-f-]{36}\.tmp$/.test(name);
 
 /** Authenticate and normalize the complete filesystem journal without opening it. */
 export function readJournalSnapshot(dir: string, key: string): JournalSnapshot {
@@ -110,7 +111,7 @@ export function readJournalSnapshot(dir: string, key: string): JournalSnapshot {
   const aliasesDir = join(dir, 'aliases');
   if (existsSync(aliasesDir)) {
     for (const file of readdirSync(aliasesDir)) {
-      if (tempName(file)) continue;
+      if (tempName(file) || aliasTempName(file)) continue;
       if (!file.endsWith('.json')) throw new Error('Invalid journal snapshot entry');
       const alias = AliasSchema.parse(readSignedEnvelope(join(aliasesDir, file), key));
       const target = recordsByRun.get(alias.runId);
@@ -239,6 +240,7 @@ export class Journal implements RunJournal {
     const invocationScope = validateReservationScope(capability, kind, options);
     const { existing, identity, digest } = this.lookup(caller, key, request);
     if (existing) return existing;
+    if (this.hasUnknown(capability)) throw new RequestError(409, 'This capability has an unknown posting outcome; use a separate read-only inquiry');
     const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity,
       invocationScope, createdAt: new Date().toISOString(), state: 'reserved' };
     this.persist(record); return record;
@@ -252,7 +254,7 @@ export class Journal implements RunJournal {
     }
     if (record.state === 'dispatching') {
       if (state === 'reserved' || state === 'running') throw new Error('Dispatch intent cannot be cleared');
-      if (state === 'failure' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
+      if (state === 'failure' || state === 'business_outcome' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
     }
     this.persist({ ...record, state });
   }

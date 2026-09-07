@@ -45,3 +45,24 @@ export type ReplayResult =
       evidenceDir: string;
       recoveries: string[];
     };
+
+export const POST_OUTCOME_UNKNOWN_DETAIL = 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.';
+
+/** Replace an unverified terminal result after a durable dispatch intent. */
+export function postIntentUnknown(result: ReplayResult): ReplayResult {
+  if (result.status === 'success') return result;
+  return {
+    status: 'failure',
+    failure: {
+      code: 'POST_OUTCOME_UNKNOWN',
+      stepId: '(post-dispatch)',
+      intent: 'complete the replay',
+      expected: 'verified posting completion',
+      observed: POST_OUTCOME_UNKNOWN_DETAIL,
+    },
+    escalated: false,
+    runId: result.runId,
+    evidenceDir: result.evidenceDir,
+    recoveries: result.recoveries,
+  };
+}

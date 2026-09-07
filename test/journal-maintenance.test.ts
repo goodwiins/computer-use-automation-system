@@ -44,6 +44,9 @@ describe.sequential('filesystem journal maintenance', () => {
   it('imports authenticated direct and alias identities, converts dispatching safely, and restarts in PostgreSQL', async () => {
     const dir = tempDir();
     const { snapshot, direct, unknown } = fixtureSnapshot(dir);
+    const aliasPath = join(dir, 'journal', 'aliases', `${snapshot.aliases[0]!.identity}.json`);
+    writeFileSync(`${aliasPath}.${randomUUID()}.tmp`, readFileSync(aliasPath, 'utf8'));
+    expect(readJournalSnapshot(join(dir, 'journal'), key)).toEqual(snapshot);
     expect(snapshot.records.map(record => record.runId)).toContain(direct.runId);
     expect(snapshot.aliases).toHaveLength(1);
     const database = await createPostgresFixture();

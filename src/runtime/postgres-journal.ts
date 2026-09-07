@@ -476,8 +476,8 @@ export class PostgresJournal implements RunJournal {
         throw requestConflict('Dispatch intent cannot be cleared');
       }
       let stateToWrite = requested;
-      if (current.state === 'dispatching' && (requested === 'failure' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
-      if (current.dispatch_intent && (requested === 'failure' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
+      if (current.state === 'dispatching' && (requested === 'failure' || requested === 'business_outcome' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
+      if (current.dispatch_intent && (requested === 'failure' || requested === 'business_outcome' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
       await client.query(
         `UPDATE meridian_runs SET state = $1, dispatch_intent = CASE WHEN $1 = 'dispatching' THEN true ELSE dispatch_intent END WHERE run_id = $2`,
         [stateToWrite, id],

@@ -27,7 +27,7 @@ import { requestApproval, requireUuid } from './src/escalation/approval-cli.js';
 import { OperatorConsole } from './src/escalation/operator.js';
 import { originAllowed } from './src/safety/policy.js';
 import { runReplay } from './src/replay/executor.js';
-import type { ReplayResult } from './src/replay/outcomes.js';
+import { postIntentUnknown, type ReplayResult } from './src/replay/outcomes.js';
 
 const ARTIFACT_DIR = 'artifacts';
 const terminalText = (value: string) => JSON.stringify(value).slice(1, -1);
@@ -71,6 +71,14 @@ async function updateJournal(journal: RunJournal | undefined, runId: string | un
     if (!current || !['reserved', 'running', 'dispatching'].includes(current)) return;
     await journal.update(runId, state);
   } catch { process.exitCode = 1; }
+}
+
+/** Admission must be durable before a runtime can start; terminal cleanup remains best effort. */
+async function requireJournalRunning(journal: RunJournal | undefined, runId: string | undefined): Promise<void> {
+  if (!journal || !runId) return;
+  const current = await journal.get(runId);
+  if (!current || !['reserved', 'running', 'dispatching'].includes(current.state)) throw new Error('Journal run is not available for execution');
+  await journal.update(runId, 'running');
 }
 
 async function dispatchIntent(journal: RunJournal | undefined, runId: string | undefined, dispatched = false): Promise<boolean> {
@@ -187,6 +195,7 @@ async function discover(argv: string[]) {
       if (existing) { console.log(`Existing discovery run: ${existing.runId} (${existing.state})`); return; }
     }
     record = journal ? await journal.reserve('operator', key, name, '1.0.0', request, 'discovery') : undefined;
+    await requireJournalRunning(journal, record?.runId);
     const headful = meridian || !!flags.headful;
     try {
       runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, fault, params, sensitive, operator, headful,
@@ -201,7 +210,6 @@ async function discover(argv: string[]) {
         assertDispatchAllowed: journal ? () => journal!.assertHealthy() : undefined,
       });
       const { surface, browser, logger, session } = runtime;
-      await updateJournal(journal, record?.runId, 'running');
       console.log(`discovery run ${logger.runId} → ${logger.dir}`);
       const discoveryGoal = meridian && Object.hasOwn(meridianContracts, name) ? `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${meridianContracts[name as keyof typeof meridianContracts].outputs.join(', ')}. Table outputs must use named columns. ${name === 'meridian-funds-transfer' ? 'The transaction output must declare exactly one row with canonical columns member, sourceShare, destinationShare, amount, memo, confirmation; use type money only for amount and type string for the other columns, and mark every output and column sensitive. Observe each column selector and header handling from this recording; do not invent them.' : ''} Never choose the first of ambiguous matches.` : goal;
       const result = await runDiscovery(discoveryGoal, entry, params, policy.allowedOrigins, {
@@ -220,7 +228,12 @@ async function discover(argv: string[]) {
         validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : runtime.validateCompletion,
       });
 
-      if (result.status === 'success') {
+      const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched);
+      if (uncertain && result.status !== 'success') {
+        logger.writeResult({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
+        console.log('\n✘ discovery failure: POST_OUTCOME_UNKNOWN');
+        process.exitCode = 1;
+      } else if (result.status === 'success') {
         let artifact = recordArtifact(
           {
             name,
@@ -256,7 +269,6 @@ async function discover(argv: string[]) {
         console.log(`\n✘ discovery ${result.status}: ${result.stopReason ?? ''}`);
         process.exitCode = 1;
       }
-      const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched);
       await updateJournal(journal, record?.runId, result.status === 'success' ? 'success'
         : uncertain ? 'POST_OUTCOME_UNKNOWN'
         : result.status === 'business_outcome' ? 'business_outcome' : 'failure');
@@ -345,6 +357,7 @@ async function replay(argv: string[]) {
       if (existing) { console.log(`Existing run: ${existing.runId} (${existing.state})`); return; }
     }
     record = journal ? await journal.reserve('operator', key, artifact.id, artifact.version, request) : undefined;
+    await requireJournalRunning(journal, record?.runId);
     const attended = !!flags.attended;
     try {
       runtime = createRuntime({ kind: 'replay', artifact: artifact.id, version: artifact.version, policy, profile, fault, params: { ...artifact.paramDefaults, ...params },
@@ -360,14 +373,11 @@ async function replay(argv: string[]) {
         assertDispatchAllowed: journal ? () => journal!.assertHealthy() : undefined,
       });
       console.log(`replay run ${runtime.logger.runId} → ${runtime.logger.dir}`);
-      await updateJournal(journal, record?.runId, 'running');
       const result = await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy,
         escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session, runtime!.promptRedactor).intervene(req) : undefined,
         validateCompletion: runtime.validateCompletion });
       const uncertain = await dispatchIntent(journal, record?.runId, runtime.surface.mutationDispatched);
-      const output = result.status === 'failure' && uncertain && result.failure.code !== 'POST_OUTCOME_UNKNOWN'
-        ? { ...result, failure: { ...result.failure, code: 'POST_OUTCOME_UNKNOWN', observed: 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' } }
-        : result;
+      const output = uncertain ? postIntentUnknown(result) : result;
       if (output !== result || (runtime.logger.strict && output.status === 'failure')) runtime.logger.writeResult(output);
       console.log(JSON.stringify(replayOutput(runtime, output), null, 2));
       if (output.status === 'failure') process.exitCode = 1;

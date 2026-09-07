@@ -16,7 +16,7 @@ const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
 const ORIGIN = 'https://web-sample.interface-hiring.com';
 const JOURNAL_KEY = 'hmac-test-key-with-at-least-32-characters';
 const PRIVATE_FAILURE = 'PRIVATE_UNREGISTERED';
-type BoundaryMode = 'pre' | 'post' | 'returned' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition';
+type BoundaryMode = 'pre' | 'post' | 'returned' | 'business' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition' | 'running-failure';
 
 const boundary: {
   mode: BoundaryMode;
@@ -25,8 +25,11 @@ const boundary: {
   closeCalls: number;
   modelSetupCalls: number;
   runtimeCalls: number;
+  browserStarts: number;
+  executorCalls: number;
+  discoveryCalls: number;
   runtimeFault?: unknown;
-} = { mode: 'pre', dispatchCount: 0, closeCalls: 0, modelSetupCalls: 0, runtimeCalls: 0 };
+} = { mode: 'pre', dispatchCount: 0, closeCalls: 0, modelSetupCalls: 0, runtimeCalls: 0, browserStarts: 0, executorCalls: 0, discoveryCalls: 0 };
 
 interface BoundaryRun {
   stdout: string;
@@ -40,6 +43,9 @@ interface BoundaryRun {
   modelCalls: number;
   modelSetupCalls: number;
   runtimeCalls: number;
+  browserStarts: number;
+  executorCalls: number;
+  discoveryCalls: number;
   runtimeFault?: unknown;
   requests: string[];
 }
@@ -63,6 +69,9 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   boundary.closeCalls = 0;
   boundary.modelSetupCalls = 0;
   boundary.runtimeCalls = 0;
+  boundary.browserStarts = 0;
+  boundary.executorCalls = 0;
+  boundary.discoveryCalls = 0;
   boundary.runtimeFault = undefined;
 
   vi.resetModules();
@@ -86,7 +95,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
         const detector = options.profile?.detectors.find(d => d.id === condition?.id);
         const surface: Surface = {
           mutationDispatched: false,
-          start: async () => { if (condition?.post) { boundary.beforeDispatch?.(); boundary.dispatchCount++; surface.mutationDispatched = true; } },
+          start: async () => { boundary.browserStarts++; if (condition?.post) { boundary.beforeDispatch?.(); boundary.dispatchCount++; surface.mutationDispatched = true; } },
           currentUrl: () => 'https://web-sample.interface-hiring.com/menu', frameUrls: () => [],
           observe: async () => ({ url: 'https://web-sample.interface-hiring.com/menu', title: '', frames: [] }),
           isTextVisible: async text => detector?.match.kind === 'textVisible' && text === detector.match.text,
@@ -108,16 +117,42 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
       },
     };
   });
+  vi.doMock('../src/runtime/open-journal.js', async () => {
+    const actual = await vi.importActual<typeof import('../src/runtime/open-journal.js')>('../src/runtime/open-journal.js');
+    return {
+      ...actual,
+      openRunJournal: async (...args: Parameters<typeof actual.openRunJournal>) => {
+        const journal = await actual.openRunJournal(...args);
+        if (boundary.mode !== 'running-failure') return journal;
+        const update = journal.update.bind(journal);
+        let failed = false;
+        journal.update = async (runId, state) => {
+          if (!failed && state === 'running') { failed = true; throw new Error(PRIVATE_FAILURE); }
+          return update(runId, state);
+        };
+        return journal;
+      },
+    };
+  });
   vi.doMock('../src/replay/executor.js', async () => {
     const actual = await vi.importActual<typeof import('../src/replay/executor.js')>('../src/replay/executor.js');
     return {
       ...actual,
       runReplay: async (_artifact: unknown, _params: Record<string, string | number>, deps: { surface: { mutationDispatched: boolean }; logger: RunLogger }) => {
+        boundary.executorCalls++;
         if (boundary.mode === 'post') {
           boundary.dispatchCount++;
           boundary.beforeDispatch?.();
           deps.surface.mutationDispatched = true;
           throw new Error(PRIVATE_FAILURE);
+        }
+        if (boundary.mode === 'business') {
+          boundary.beforeDispatch?.();
+          return {
+            status: 'business_outcome' as const,
+            outcomeCode: 'INSUFFICIENT_FUNDS', detail: 'Insufficient available balance in the source share.',
+            runId: deps.logger.runId, evidenceDir: deps.logger.dir, recoveries: [],
+          };
         }
         if (boundary.mode !== 'returned') throw new Error(PRIVATE_FAILURE);
         return {
@@ -135,7 +170,10 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     const actual = await vi.importActual<typeof import('../src/agent/loop.js')>('../src/agent/loop.js');
     return {
       ...actual,
-      runDiscovery: async (...args: Parameters<typeof actual.runDiscovery>) => condition ? actual.runDiscovery(...args) : ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' }),
+      runDiscovery: async (...args: Parameters<typeof actual.runDiscovery>) => {
+        boundary.discoveryCalls++;
+        return condition ? actual.runDiscovery(...args) : ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' });
+      },
     };
   });
 
@@ -171,11 +209,15 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     modelCalls: create.mock.calls.length,
     modelSetupCalls: boundary.modelSetupCalls,
     runtimeCalls: boundary.runtimeCalls,
+    browserStarts: boundary.browserStarts,
+    executorCalls: boundary.executorCalls,
+    discoveryCalls: boundary.discoveryCalls,
     runtimeFault: boundary.runtimeFault,
     requests: records.map(record => record.request),
   };
   vi.doUnmock('../src/agent/client.js');
   vi.doUnmock('../src/runtime/run.js');
+  vi.doUnmock('../src/runtime/open-journal.js');
   vi.doUnmock('../src/replay/executor.js');
   vi.doUnmock('../src/agent/loop.js');
   vi.restoreAllMocks();
@@ -371,6 +413,28 @@ it('finalizes the journal when runtime construction fails', async () => {
     expect(run.dispatchCount).toBe(0);
     expect(run.closeCalls).toBe(0);
     expect(`${run.stdout}\n${run.stderr}`).not.toContain(PRIVATE_FAILURE);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each(['discover', 'replay'] as const)('fails closed when the authoritative running transition rejects: %s', async command => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-running-transition-'));
+  try {
+    const run = await runReplayBoundary('running-failure', dir, `running-failure-${command}`, 'teller-test', [], command);
+    expect(run).toMatchObject({
+      exitCode: 1, states: ['reserved'], runtimeCalls: 0, browserStarts: 0,
+      executorCalls: 0, discoveryCalls: 0, dispatchCount: 0, closeCalls: 0, lockPresent: false,
+    });
+    expect(`${run.stdout}\n${run.stderr}`).not.toContain(PRIVATE_FAILURE);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('normalizes a replay business outcome after durable dispatch intent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-business-'));
+  try {
+    const run = await runReplayBoundary('business', dir, 'business-post-intent');
+    expect(run).toMatchObject({ exitCode: 1, states: ['POST_OUTCOME_UNKNOWN'], dispatchCount: 0, executorCalls: 1, runtimeCalls: 1, closeCalls: 1 });
+    expect(JSON.parse(run.result!)).toMatchObject({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
+    expect(JSON.parse(run.result!)).not.toHaveProperty('outcomeCode');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

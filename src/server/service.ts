@@ -4,7 +4,7 @@ import { CapabilityArtifact, validateParams, normalizeParams } from '../artifact
 import { toToolSchema } from '../artifact/tools.js';
 import { OperatorConsole } from '../escalation/operator.js';
 import { ControlSession } from '../escalation/session.js';
-import type { ReplayResult } from '../replay/outcomes.js';
+import { postIntentUnknown, type ReplayResult } from '../replay/outcomes.js';
 import { applyMeridianContract } from '../runtime/contracts.js';
 import { Approval, publicIntervention } from '../runtime/approval.js';
 import { RequestError, type JournalRecord, type RunJournal } from '../runtime/journal.js';
@@ -189,8 +189,13 @@ export class InvocationService {
       }).then(async result => {
         const secrets = new Redactor();
         if (context) secrets.addSensitiveValues([context.password]);
-        state.result = secrets.redact(result);
-        state.state = result.status === 'failure' && (runtime.surface.mutationDispatched || intentRequested) ? 'POST_OUTCOME_UNKNOWN' : result.status;
+        const uncertain = runtime.surface.mutationDispatched || intentRequested;
+        const outcome = uncertain ? postIntentUnknown(result) : result;
+        state.result = secrets.redact(outcome);
+        if (outcome !== result) {
+          try { runtime.logger.writeResult(outcome); } catch { /* preserve the caller-visible quarantine state */ }
+        }
+        state.state = outcome.status === 'failure' && uncertain ? 'POST_OUTCOME_UNKNOWN' : outcome.status;
         await this.persistState(record.runId, state.state as 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN');
       }).catch(async () => {
         state.state = runtime.surface.mutationDispatched || intentRequested ? 'POST_OUTCOME_UNKNOWN' : 'failure';
@@ -269,7 +274,12 @@ export class InvocationService {
       const { structure: _structure, ...rest } = value as Record<string, unknown>;
       return rest;
     };
-    const safeResult = privateRun ? withoutPrivateStructure(privateResult)
+    const unknownResult = { status: 'failure' as const, failure: {
+      stepId: '(post-dispatch)', code: 'POST_OUTCOME_UNKNOWN',
+      detail: 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.',
+    } };
+    const safeResult = record.state === 'POST_OUTCOME_UNKNOWN' ? unknownResult
+      : privateRun ? withoutPrivateStructure(privateResult)
       : result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     const intervention = privateRun
       ? principalRole(principal) === 'operator' && live?.approval.pending ? {
