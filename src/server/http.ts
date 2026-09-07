@@ -1,5 +1,4 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,14 +7,13 @@ import { z } from 'zod';
 import { RequestError, Journal } from '../runtime/journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
-import { InvocationService, type Principal } from './service.js';
+import { InvocationService } from './service.js';
+import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional() }).strict();
-const hash = (value: string) => createHash('sha256').update(value).digest();
-
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number; chatModel?: LanguageModel; uiDir?: string }) {
-  if (config.callerToken.length < 32 || config.operatorToken.length < 32 || config.callerToken === config.operatorToken) throw new Error('Configure two distinct API credentials of at least 32 characters');
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; port: number; chatModel?: LanguageModel; uiDir?: string }) {
+  const authenticate = createAuthenticator(config);
   const app = express();
   app.disable('x-powered-by');
   const origin = `http://127.0.0.1:${config.port}`;
@@ -31,11 +29,14 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
-    const principal: Principal | undefined = timingSafeEqual(hash(token), hash(config.operatorToken)) ? 'operator' : timingSafeEqual(hash(token), hash(config.callerToken)) ? 'caller' : undefined;
+    const principal = authenticate(token);
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal; next();
   });
-  app.get('/capabilities', (_req, res) => res.json({ principal: res.locals.principal, capabilities: service.catalog(res.locals.principal) }));
+  app.get('/capabilities', (_req, res) => {
+    const principal = res.locals.principal;
+    res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal) });
+  });
   app.get('/runs', (_req, res) => res.json(service.history(res.locals.principal)));
   app.get('/runs/:id', (req, res) => res.json(service.get(res.locals.principal, req.params.id!)));
   app.post('/capabilities/:id/invoke', (req, res) => {
@@ -80,7 +81,7 @@ export async function serve(profileName = 'meridian') {
     const service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
-    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', port, uiDir });
+    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens: parseSubjectCredentials(process.env.SUBJECT_API_TOKENS), port, uiDir });
     const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
     let closing = false;
     const shutdown = () => {
