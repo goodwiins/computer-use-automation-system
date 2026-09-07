@@ -43,17 +43,17 @@ export class BrowserSurface implements Surface {
   private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
-  private submission?: { url: string; method: string; body: string };
+  private submission?: { url: string; method: string; body: string; frame: Frame };
   private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
   private readonly frameIds = new WeakMap<Frame, string>();
   private readonly frameNavigations = new WeakMap<Frame, number>();
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
+  private readonly pageClosures = new WeakMap<Page, Promise<void>>();
 
-  // When allowedOrigins is set, frames outside it are invisible to observation
-  // and untouchable by locator resolution — a foreign iframe embedded in a
-  // legacy page can neither be read nor clicked.
+  // Configured allowedOrigins bounds intercepted requests and makes foreign
+  // frames invisible to observation and untouchable by locator resolution.
   constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[], credentials?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
@@ -121,17 +121,21 @@ export class BrowserSurface implements Surface {
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
-    this.page = await this.context.newPage();
-    this.trackFrame(this.page.mainFrame());
-    this.page.on('frameattached', frame => this.trackFrame(frame));
-    this.page.on('framenavigated', frame => this.bumpFrame(frame));
-    this.page.on('framedetached', frame => this.bumpFrame(frame));
-    this.page.on('close', () => this.opts.onClose?.());
-    if (this.opts.profile) await this.page.route('**/*', async route => {
+    // Context interception precedes page creation: page routes and popup events
+    // miss a popup's first request. The newer read-only route handles its own
+    // bound auxiliary page and falls back here only for the primary page.
+    if (this.opts.profile || this.opts.allowedOrigins) await this.context.route('**/*', async route => {
       const request = route.request();
+      let frame: Frame;
+      try { frame = request.frame(); } catch { return route.abort(); }
+      if (!this.page || frame.page() !== this.page) return route.abort();
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!this.opts.profile) return route.continue();
       if (!['GET', 'HEAD'].includes(request.method())) {
+        // An unrelated frame must neither use nor clear the inspected form's
+        // one-shot allowance while its native submission is pending.
+        if (this.submission?.frame !== frame) return route.abort();
         const allowed = this.submission?.url === url.href && this.submission.method === request.method()
           && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
           && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
@@ -145,6 +149,13 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.page = await this.context.newPage();
+    this.trackFrame(this.page.mainFrame());
+    this.page.on('frameattached', frame => this.trackFrame(frame));
+    this.page.on('framenavigated', frame => this.bumpFrame(frame));
+    this.page.on('framedetached', frame => this.bumpFrame(frame));
+    this.page.on('close', () => this.opts.onClose?.());
+    this.page.on('popup', popup => this.closeAuxiliaryPage(popup).catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -158,6 +169,24 @@ export class BrowserSurface implements Surface {
 
   drainDialogs(): Array<{ type: string; message: string }> {
     return this.dialogs.splice(0);
+  }
+
+  private closeAuxiliaryPage(page: Page): Promise<void> {
+    if (page.isClosed()) return Promise.resolve();
+    let closing = this.pageClosures.get(page);
+    if (!closing) {
+      closing = (async () => {
+        // Playwright routing can disappear during close. Block in Chromium
+        // before starting teardown, and retain the block if close fails.
+        const guard = await this.context.newCDPSession(page);
+        await guard.send('Network.emulateNetworkConditions', {
+          offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0,
+        });
+        await page.close();
+      })();
+      this.pageClosures.set(page, closing);
+    }
+    return closing;
   }
 
   currentUrl(): string {
@@ -293,17 +322,8 @@ export class BrowserSurface implements Surface {
       if (!requiredMask || await this.page.locator(requiredMask).count() !== 1) throw new Error('Unknown page structure: metadata-only evidence');
       // Whole content cells include dynamically observed financial/contact data.
       const masks = this.page.frames().flatMap(frame => (profile.maskSelectors ?? ['body']).map(selector => frame.locator(selector)));
-      // PF-H2: one getByText locator per value per frame was O(values x DOM)
-      // inside page.screenshot (1.75 s at 500 values, past the 30 s screenshot
-      // timeout at 5000). Tag the matching text nodes' elements in a single
-      // evaluate per frame instead and mask the tag — same coverage, one trip.
-      const untag = await this.tagTextMatches(opts.maskValues ?? []);
-      try {
-        if (opts.maskValues?.length) for (const frame of this.page.frames()) masks.push(frame.locator('[data-cu-mask]'));
-        await this.page.screenshot({ path, fullPage: true, mask: masks });
-      } finally {
-        await untag();
-      }
+      for (const frame of this.page.frames()) for (const value of opts.maskValues ?? []) masks.push(frame.getByText(value, { exact: false }));
+      await this.page.screenshot({ path, fullPage: true, mask: masks });
       return;
     }
     const restore = await this.maskSensitiveInputs(opts.maskValues ?? []);
@@ -312,31 +332,6 @@ export class BrowserSurface implements Surface {
     } finally {
       await restore();
     }
-  }
-
-  /**
-   * Mark every element that directly contains one of `values` in a text node
-   * with `data-cu-mask`, mirroring what getByText(value, { exact: false })
-   * would match. Returns a function that removes the marks.
-   */
-  private async tagTextMatches(values: string[]): Promise<() => Promise<void>> {
-    if (values.length === 0) return async () => {};
-    for (const frame of this.page.frames()) {
-      await frame
-        .evaluate((needles: string[]) => {
-          const pattern = new RegExp(needles.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
-          const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
-          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-            if (pattern.test(node.nodeValue ?? '')) node.parentElement?.setAttribute('data-cu-mask', '');
-          }
-        }, values)
-        .catch(() => {}); // frame may be navigating — nothing to mask there
-    }
-    return async () => {
-      for (const frame of this.page.frames()) {
-        await frame.evaluate(() => { for (const el of document.querySelectorAll('[data-cu-mask]')) el.removeAttribute('data-cu-mask'); }).catch(() => {});
-      }
-    };
   }
 
   /**
@@ -401,14 +396,19 @@ export class BrowserSurface implements Surface {
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
         if (sid) { result.push(sid); secrets.push(sid); credentials.push(sid); }
         return { values: result, secrets, credentials };
-      }).catch(() => ({ values: [], secrets: [], credentials: [] })), // frame navigated mid-collect: nothing to forward
+      }),
     ));
-    const fresh = (seen: Set<string>, found: string[]) => found.filter(v => !seen.has(v) && (seen.add(v), true));
+    const fresh = (seen: Set<string>, found: string[]) => [...new Set(found)].filter(v => !seen.has(v));
     for (const observed of observations) {
       const values = fresh(this.forwardedSensitive.values, observed.values);
       const secrets = fresh(this.forwardedSensitive.secrets, observed.secrets);
       const credentials = fresh(this.forwardedSensitive.credentials, observed.credentials);
-      if (values.length || secrets.length || credentials.length) this.opts.sensitive?.(values, secrets, credentials);
+      if (values.length || secrets.length || credentials.length) {
+        this.opts.sensitive?.(values, secrets, credentials);
+        for (const value of values) this.forwardedSensitive.values.add(value);
+        for (const secret of secrets) this.forwardedSensitive.secrets.add(secret);
+        for (const credential of credentials) this.forwardedSensitive.credentials.add(credential);
+      }
     }
   }
 
@@ -590,7 +590,7 @@ export class BrowserSurface implements Surface {
           const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
           pagesToClose.delete(this.page!);
           for (const opened of pagesToClose) {
-            try { if (!opened.isClosed()) await opened.close(); }
+            try { if (!opened.isClosed()) await this.closeAuxiliaryPage(opened); }
             catch { closeError = true; }
             if (!opened.isClosed()) closeError = true;
           }
@@ -664,7 +664,7 @@ export class BrowserSurface implements Surface {
         if (!inspectedFrame || !sameFrameContext(currentFrame, inspectedFrame) || !sameFrameContext(currentFrame, expected.frame)) throw new Error('Control frame changed');
         const expectedState = { ...expected };
         delete expectedState.frame;
-        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody, frame };
         try {
           await Promise.all([
             frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),

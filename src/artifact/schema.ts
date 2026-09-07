@@ -149,7 +149,9 @@ export const CapabilityArtifact = z.object({
   }),
   parameters: z.array(Parameter),
   outputs: z.array(Output),
-  steps: z.array(Step).min(1),
+  // Replay looks failed steps up by id (executor.ts stepsById); a duplicate
+  // would let an operator retry re-run a different step than the one that failed.
+  steps: z.array(Step).min(1).refine(steps => new Set(steps.map(s => s.id)).size === steps.length, { message: 'step ids must be unique' }),
   successCondition: Assertion,
   detectors: z.array(Detector).default([]),
   // Present only when a tenant overlay was composed onto a base artifact at

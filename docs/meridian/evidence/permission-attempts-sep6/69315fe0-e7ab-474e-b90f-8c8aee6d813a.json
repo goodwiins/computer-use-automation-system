@@ -1,0 +1,27 @@
+{
+  "runId": "69315fe0-e7ab-474e-b90f-8c8aee6d813a",
+  "producerSha": "dfa6f5a5b9c58f2e360d84248f8b50255b13da04",
+  "coreMergeSha": "a80ac4e48138efd916fad8fe23f94b93767c5d97",
+  "configuredFault": "permission",
+  "intendedEntryVerified": false,
+  "discoveryStatus": "stopped",
+  "detectorClassification": "business_outcome",
+  "code": "VALIDATION_REJECTED",
+  "resultStatus": "failure",
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 5,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "actionsAfterDetection": 0,
+  "cliExitCode": 1,
+  "scope": "Validation rejection immediately after sign-on, before member search or the configured transfer-entry injection.",
+  "acceptance": "No permission discovery/replay acceptance added; both terminal attempts retained, with zero mutation intents. Live capability acceptance remains 3/7.",
+  "logSha256": "14357404959ada178b12ff66ca112bfe7fab0b06c4ef6a5ee67410b2bbd70977",
+  "resultSha256": "a08e7b6c558fa78534312382674d8a465e5aa984408ac068c9223d0512514752",
+  "journalSha256": "7693e0758614a9b3428db57f8f7ac469a37df3fe1e2ec369ea440cc7614825ee"
+}

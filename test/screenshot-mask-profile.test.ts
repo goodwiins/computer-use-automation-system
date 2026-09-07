@@ -1,15 +1,12 @@
-// PF-H2: profile screenshots mask sensitive values by tagging matching text
-// nodes in one evaluate per frame instead of one getByText locator per value.
-// The outcome must be identical: the value's pixels are covered, nothing else
-// changes, and no tag survives the shot. PF-M4: repeated collectSensitive()
-// calls forward each value once.
+// Native text masking preserves matching semantics and application attributes.
+// Sensitive-value deduplication must retain failed batches for the next attempt.
 
 import express from 'express';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BrowserSurface } from '../src/surface/browser.js';
 import type { AppProfile } from '../src/runtime/profile.js';
 
@@ -31,11 +28,15 @@ describe('profile screenshot value masking', () => {
   const listening = once(server, 'listening');
   let surface: BrowserSurface;
   const forwarded: string[][] = [];
+  let failNext = false;
 
   beforeAll(async () => {
     await listening;
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    surface = new BrowserSurface({ allowedOrigins: [origin], profile: { ...profile, entryUrl: `${origin}/page` }, sensitive: values => forwarded.push(values) });
+    surface = new BrowserSurface({ allowedOrigins: [origin], profile: { ...profile, entryUrl: `${origin}/page` }, sensitive: values => {
+      if (failNext) { failNext = false; throw new Error('collection callback failed'); }
+      forwarded.push(values);
+    } });
     await surface.start(`${origin}/page`);
   }, 30_000);
   afterAll(async () => { await surface?.close(); await new Promise<void>(resolve => server.close(() => resolve())); });
@@ -54,7 +55,7 @@ describe('profile screenshot value masking', () => {
     } finally { await page.close(); }
   }
 
-  it('covers the value text and only the value text, then removes its tags', async () => {
+  it('covers the value text and only the value text', async () => {
     const page = (surface as unknown as { page: import('playwright').Page }).page;
     const leak = (await page.locator('#leak').boundingBox())!;
     const plain = (await page.locator('#plain').boundingBox())!;
@@ -81,5 +82,35 @@ describe('profile screenshot value masking', () => {
     expect(all.filter(v => v === 'CELL-ONE')).toHaveLength(1);
     expect(all.filter(v => v === 'CELL-TWO')).toHaveLength(1);
     expect(forwarded.length).toBe(batches);
+  });
+
+  it('preserves normalized text masks and app attributes, aborts failed collection, and retries failed callbacks', async () => {
+    const page = surface.page;
+    await page.locator('#leak').evaluate(el => { el.innerHTML = 'JOHN <b>  DOE</b>'; el.setAttribute('data-cu-mask', 'owned'); });
+    await page.locator('#plain').evaluate(el => el.setAttribute('data-cu-mask', 'plain-owned'));
+    const leak = (await page.locator('#leak').boundingBox())!;
+    const plain = (await page.locator('#plain').boundingBox())!;
+    const shot = join(tmpdir(), `cu-profile-normalized-${process.pid}.png`);
+    await surface.screenshot(shot, { maskValues: ['John Doe'] });
+    expect(await pixelAt(shot, Math.round(leak.x + 10), Math.round(leak.y + leak.height / 2))).toEqual([255, 0, 255]);
+    expect(await pixelAt(shot, Math.round(plain.x + 10), Math.round(plain.y + plain.height / 2))).not.toEqual([255, 0, 255]);
+    expect(await page.locator('#leak').getAttribute('data-cu-mask')).toBe('owned');
+    expect(await page.locator('#plain').getAttribute('data-cu-mask')).toBe('plain-owned');
+
+    const evaluate = vi.spyOn(page.mainFrame(), 'evaluate');
+    const capture = vi.spyOn(page, 'screenshot');
+    try {
+      evaluate.mockRejectedValueOnce(new Error('Execution context was destroyed'));
+      await expect(surface.observe()).rejects.toThrow('Execution context');
+      evaluate.mockRejectedValueOnce(new Error('Execution context was destroyed'));
+      await expect(surface.screenshot(shot, { maskValues: ['John Doe'] })).rejects.toThrow('Execution context');
+      expect(capture).not.toHaveBeenCalled();
+    } finally { evaluate.mockRestore(); capture.mockRestore(); }
+
+    await page.locator('table').evaluate(el => el.insertAdjacentHTML('beforeend', '<tr><td>RETRY-SECRET</td></tr>'));
+    failNext = true;
+    await expect(surface.collectSensitive()).rejects.toThrow('collection callback failed');
+    await surface.collectSensitive();
+    expect(forwarded.flat().filter(value => value === 'RETRY-SECRET')).toHaveLength(1);
   });
 });

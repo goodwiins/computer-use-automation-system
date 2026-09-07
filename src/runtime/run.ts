@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CapabilityArtifact } from '../artifact/schema.js';
 import { ControlSession, type InterventionDecision, type InterventionRequest } from '../escalation/session.js';
 import { RunLogger } from '../evidence/logger.js';
+import { recordedStructure } from '../evidence/safe-event.js';
 import { runReplay } from '../replay/executor.js';
 import type { Policy } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
@@ -44,7 +45,8 @@ export function createRuntime(options: {
   if (!strict) promptRedactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   redactor.addSensitiveValues(options.sensitive.flatMap(k => options.params[k] !== undefined ? [options.params[k]!] : []));
   if (options.operator) redactor.addSensitiveValues([options.operator.password]);
-  const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId ?? randomUUID(), options.onEvent);
+  const logger = new RunLogger(options.kind, redactor, options.evidenceDir, strict, options.runId ?? randomUUID(), options.onEvent,
+    strict ? recordedStructure(options.artifact, options.params) : undefined);
   const session = options.session ?? new ControlSession(t => logger.log('control.transfer', t));
   const deadline = Date.now() + 600_000;
   const browser = new BrowserSurface({ headful: options.headful, fault, allowedOrigins: options.policy.allowedOrigins, onClose: options.onClose,

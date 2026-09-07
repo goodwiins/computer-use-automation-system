@@ -7,6 +7,9 @@ import { RunLogger } from '../src/evidence/logger.js';
 import { Journal, validateIdempotencyKey } from '../src/runtime/journal.js';
 import { meridianContracts } from '../src/runtime/contracts.js';
 import type { Surface } from '../src/surface/types.js';
+import { InvocationService } from '../src/server/service.js';
+import { loadProfile } from '../src/runtime/profile.js';
+import { Policy } from '../src/safety/policy.js';
 import { Redactor } from '../src/safety/redact.js';
 
 const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
@@ -663,14 +666,25 @@ it.each([
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-condition-'));
   try {
     const run = await runReplayBoundary('condition', dir, 'condition-key', 'teller-test', [], 'discover', { id });
-    expect(run).toMatchObject({ exitCode: 1, states: ['failure'], modelCalls: 0, dispatchCount: 0, closeCalls: 1, lockPresent: false });
-    expect(JSON.parse(run.result!)).toMatchObject({ status: 'failure', failure: { code } });
+    const business = ['insufficient-funds', 'validation', 'notfound'].includes(id);
+    const state = business ? 'business_outcome' : 'failure';
+    const expectedResult = business ? { status: state, outcomeCode: code } : { status: state, failure: { code } };
+    expect(run).toMatchObject({ states: [state], modelCalls: 0, dispatchCount: 0, closeCalls: 1, lockPresent: false });
+    expect(run.exitCode ?? 0).toBe(business ? 0 : 1);
+    expect(JSON.parse(run.result!)).toMatchObject(expectedResult);
     expect(JSON.parse(run.result!)).not.toHaveProperty('artifact');
-    expect(JSON.parse(run.result!)).not.toHaveProperty('outcomeCode');
+    if (!business) expect(JSON.parse(run.result!)).not.toHaveProperty('outcomeCode');
+    const journal = new Journal(join(dir, 'journal'), JOURNAL_KEY);
+    const policy = Policy.parse({ allowedOrigins: [ORIGIN], allowedActions: ['navigate'], riskHandling: { read: 'allow', reversible_write: 'block', irreversible: 'block' } });
+    const service = new InvocationService(journal, policy, loadProfile('meridian'), dir, [], dir);
+    try {
+      expect(service.history('operator')).toMatchObject([{ kind: 'discovery', state, result: expectedResult, sensitiveValuesUnavailable: true }]);
+      expect(service.live.size).toBe(0);
+    } finally { await service.close(); journal.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it.each(['validation', 'permission', 'maintenance'])('persists post-intent discovery condition %s as unknown', async id => {
+it.each(['insufficient-funds', 'notfound', 'validation', 'permission', 'maintenance'])('persists post-intent discovery condition %s as unknown', async id => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-condition-'));
   try {
     const run = await runReplayBoundary('condition', dir, 'condition-key', 'teller-test', [], 'discover', { id, post: true });
