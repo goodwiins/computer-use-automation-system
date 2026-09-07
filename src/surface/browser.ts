@@ -374,10 +374,17 @@ export class BrowserSurface implements Surface {
     };
   }
 
+  // PF-M4: collectSensitive runs on every inspect/observe/screenshot and used
+  // to re-send every cell text each time (2,400 values per call on a 500-row
+  // page); the redactor then deduped with an O(n^2) scan. Remember what was
+  // already forwarded so only new values cross. Values are never dropped —
+  // only repeats — so the redactor ends with the same set.
+  private readonly forwardedSensitive = { values: new Set<string>(), secrets: new Set<string>(), credentials: new Set<string>() };
+
   async collectSensitive(): Promise<void> {
     if (!this.opts.profile || !this.page) return;
-    for (const frame of this.page.frames()) {
-      const observed = await frame.evaluate(() => {
+    const observations = await Promise.all(this.page.frames().map(frame =>
+      frame.evaluate(() => {
         const result: string[] = [];
         const secrets: string[] = [];
         const credentials: string[] = [];
@@ -393,8 +400,19 @@ export class BrowserSurface implements Surface {
         const sid = document.body.innerText.match(/SID\s+(\S+)/)?.[1];
         if (sid) { result.push(sid); secrets.push(sid); credentials.push(sid); }
         return { values: result, secrets, credentials };
-      });
-      this.opts.sensitive?.(observed.values, observed.secrets, observed.credentials);
+      }),
+    ));
+    const fresh = (seen: Set<string>, found: string[]) => [...new Set(found)].filter(v => !seen.has(v));
+    for (const observed of observations) {
+      const values = fresh(this.forwardedSensitive.values, observed.values);
+      const secrets = fresh(this.forwardedSensitive.secrets, observed.secrets);
+      const credentials = fresh(this.forwardedSensitive.credentials, observed.credentials);
+      if (values.length || secrets.length || credentials.length) {
+        this.opts.sensitive?.(values, secrets, credentials);
+        for (const value of values) this.forwardedSensitive.values.add(value);
+        for (const secret of secrets) this.forwardedSensitive.secrets.add(secret);
+        for (const credential of credentials) this.forwardedSensitive.credentials.add(credential);
+      }
     }
   }
 
