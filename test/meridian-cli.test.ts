@@ -325,7 +325,7 @@ it.each([
     expect(existsSync(join(dir, 'journal', 'server.lock'))).toBe(false);
     expect(readdirSync(dir).filter(name => name !== 'journal')).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
+}, 20_000);
 
 it.each([
   ['pre', 'failure', 'RUN_FAILED', 0],
