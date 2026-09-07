@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { fieldLabel, displayValue } from './presentation';
 import { pending, segment, useRuns, type Run, type ReviewAttempt } from './session';
 
@@ -171,6 +171,10 @@ export function ReviewDialog() {
   const heading = useRef<HTMLHeadingElement>(null);
   const run = runs.find(candidate => candidate.runId === reviewRunId);
   const intervention = interventionOf(run);
+  const reviewIdentity = reviewRunId && intervention ? `${reviewRunId}:${intervention.id}` : reviewRunId;
+  useLayoutEffect(() => {
+    if (reviewIdentity && dialog.current?.open) heading.current?.focus();
+  }, [reviewIdentity]);
   useEffect(() => {
     const element = dialog.current;
     if (!element) return;

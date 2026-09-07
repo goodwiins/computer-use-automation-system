@@ -779,6 +779,51 @@ it('offline operator controls require live authority, disable expired/duplicate 
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
 }, 20000);
+
+it('resets neutral focus when an open review receives a replacement intervention', async () => {
+  const { page, state, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId,
+    expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post',
+      destination: 'https://offline.example/post', method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { amount: '25.00', memo: 'original' }, visibleFacts: { amount: '25.00', memo: 'original' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  const replacementId = '55555555-5555-4555-8555-555555555555';
+  state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention });
+  await connect(operatorToken);
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  const dialog = page.getByRole('dialog');
+  const heading = dialog.getByRole('heading', { name: 'Review request', exact: true });
+  const confirm = page.getByRole('button', { name: 'Confirm request', exact: true });
+  await confirm.waitFor();
+  await confirm.focus();
+  state.runs[0] = {
+    ...initialRun(),
+    state: 'awaiting-human',
+    intervention: publicIntervention({
+      ...intervention,
+      id: replacementId,
+      action: { ...intervention.action!, facts: { amount: '99.00', memo: 'replacement' }, visibleFacts: { amount: '99.00', memo: 'replacement' } },
+    }),
+  };
+  // The native modal intentionally blocks the Activity panel; let authenticated polling replace the intervention in place.
+  await page.waitForTimeout(1800);
+  await visible(page, '.approval', '99.00');
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  expect(state.decisions).toEqual([]);
+  await confirm.click();
+  await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
+  expect(state.requests.filter(request => request.path.endsWith('/decision')).at(-1)?.body).toEqual({
+    approvalId: replacementId,
+    decision: 'approve',
+  });
+}, 15000);
+
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {
   const { page, state, service, connect, errors, url } = await fixture();
   await page.locator('#credential').fill('invalid');
