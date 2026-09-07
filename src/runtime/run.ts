@@ -26,7 +26,7 @@ export function createRuntime(options: {
   kind: 'replay' | 'discovery'; artifact: string; version: string; policy: Policy;
   fault?: FaultScenario; profile?: AppProfile; params: Record<string, string | number>; sensitive: string[];
   operator?: OperatorContext; headful?: boolean; runId?: string; evidenceDir?: string;
-  session?: ControlSession; gate: HumanGate; beforeDispatch?: (context: ActionContext) => void;
+  session?: ControlSession; gate: HumanGate; beforeDispatch?: (context: ActionContext) => void | Promise<void>;
   onEvent?: (event: string, data: Record<string, unknown>) => void; onClose?: () => void;
 }) {
   const strict = options.profile?.appId === 'meridian';
@@ -59,7 +59,7 @@ export function createRuntime(options: {
       openShare: openShare ? { expected: openShare, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } : undefined,
       memberUpdate: memberUpdate ? { expected: memberUpdate, contactTable: meridianMemberContactTable } : undefined,
       hold: hold ? { expected: hold, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } : undefined,
-      beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); options.beforeDispatch(context); },
+      beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); return options.beforeDispatch(context); },
     } : undefined, (event, data) => logger.log(event, data));
   let timer: ReturnType<typeof setTimeout>;
   const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,

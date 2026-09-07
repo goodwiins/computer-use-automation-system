@@ -193,6 +193,78 @@ it('blocks a profile mutation intent and dispatch after revalidation crosses the
   expect(events).not.toContain('mutation.intent');
 });
 
+it('durable intent await holds native dispatch until the hook resolves', async () => {
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const run = guarded({}, async () => true, { beforeDispatch: async () => { enter(); await durable; } });
+  const pending = run.surface.click(target, 1000, 'read');
+  await entered;
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+  release();
+  await pending;
+  expect(run.dispatch).toHaveBeenCalledOnce();
+  expect(run.surface.mutationDispatched).toBe(true);
+});
+
+it('durable intent await rejects without native dispatch or mutation intent', async () => {
+  const events: string[] = [];
+  const run = guarded({}, async () => true, { beforeDispatch: async () => { throw new Error('durable write failed'); } }, event => events.push(event));
+  await expect(run.surface.click(target, 1000, 'read')).rejects.toThrow('durable write failed');
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+  expect(events).not.toContain('mutation.intent');
+});
+
+it('durable intent await rejects when the approved page changes while pending', async () => {
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const run = guarded({}, async () => true, { beforeDispatch: async () => { enter(); await durable; } });
+  const pending = run.surface.click(target, 1000, 'read');
+  await entered;
+  run.change({ facts: { share: 'changed', reason: 'FRAUD' } });
+  release();
+  await expect(pending).rejects.toThrow(/invalidated|review facts/i);
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+});
+
+it('durable intent await rejects when automation ownership is invalidated while pending', async () => {
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const session = new ControlSession();
+  const run = guarded({}, async () => true, { session, beforeDispatch: async () => { enter(); session.transfer('human', 'pending'); await durable; } });
+  const pending = run.surface.click(target, 1000, 'read');
+  await entered;
+  release();
+  await expect(pending).rejects.toThrow(/Human owns this session/);
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+});
+
+it('durable intent await rejects when the deadline expires while pending', async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const run = guarded({}, async () => true, { deadline: Date.now() + 20, beforeDispatch: async () => { enter(); await durable; } });
+  const pending = run.surface.click(target, 1000, 'read');
+  await entered;
+  vi.setSystemTime(Date.now() + 25);
+  release();
+  await expect(pending).rejects.toThrow(/Run deadline expired/);
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+});
+
 describe('durable request identity', () => {
   it('isolates caller keys and returns current records through updates and restart', () => {
     const dir = temp(); let journal = new Journal(dir, key);
@@ -1382,7 +1454,7 @@ describe('MERIDIAN guarded transfer path', () => {
     expect(harness.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(harness.run.dispatch).toHaveBeenCalledOnce();
     expect(harness.run.surface.mutationDispatched).toBe(true);
-    expect(harness.readOnlyPage).toHaveBeenCalledOnce();
+    expect(harness.readOnlyPage).toHaveBeenCalledTimes(2);
   });
 
   it('projects inspected hidden credentials through the guard, prompt, socket and API while preserving visible transfer facts', async () => {
@@ -2275,7 +2347,7 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
     expect(h.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(h.run.dispatch).toHaveBeenCalledOnce();
     expect(h.run.surface.mutationDispatched).toBe(true);
-    expect(h.readOnlyPage).toHaveBeenCalledOnce();
+    expect(h.readOnlyPage).toHaveBeenCalledTimes(2);
   });
 
   it.each(['HOLD', 'CLOSED'] as const)('rejects a selected share changed to %s during approval with zero intent', async status => {
@@ -3507,6 +3579,35 @@ it('rechecks a real form before approved dispatch and masks dynamic evidence end
     changed = false;
     await guard.click(button, 3000, 'read'); expect(posted).toBe(1); expect(guard.mutationDispatched).toBe(true);
   } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); }
+}, 15000);
+
+it('durable intent await prevents a real form POST until the hook resolves', async () => {
+  const app = express(); let posted = 0;
+  app.get('/menu', (_req, res) => res.send('<p>Signed on as J. SUPERVISOR (SUPERVISOR)</p><p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p>'));
+  app.get('/members/1/update', (_req, res) => res.send('<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p><form method="post" action="/members/1/update"><input type="hidden" name="_token" value="TOKEN"><input name="email" value="fixture@example.test"><input name="phone" value="5550001111"><input name="address" value="1 Main Street"><input type="submit" value="Save Changes"></form>'));
+  app.post('/members/1/update', (_req, res) => { posted++; res.end('Saved'); });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = new BrowserSurface({ allowedOrigins: [localOrigin], profile });
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const guard = new GuardedSurface(browser, { ...policy, allowedOrigins: [localOrigin] }, async () => true, undefined, {
+    profile, session: new ControlSession(), deadline: Date.now() + 10_000, runId: randomUUID(), artifact: 'update', version: '1.0.0',
+    operator: 'super1', branch: 'MAIN-001', role: 'SUPERVISOR', beforeDispatch: async () => { enter(); await durable; },
+  });
+  const button = { description: 'Save Changes', strategies: [{ kind: 'role' as const, role: 'button', name: 'Save Changes' }] };
+  try {
+    await guard.start(`${localOrigin}/menu`);
+    await guard.navigate(`${localOrigin}/members/1/update`);
+    const pending = guard.click(button, 3000, 'read');
+    await entered;
+    expect(posted).toBe(0);
+    release();
+    await pending;
+    expect(posted).toBe(1);
+  } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
 it.each(['role', 'session', 'detector', 'token', 'submit-handler', 'formdata-handler'] as const)('refuses a real posting after %s changes', async scenario => {

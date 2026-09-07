@@ -166,7 +166,7 @@ export class GuardedSurface implements Surface {
     private readonly runtime?: {
       profile: AppProfile; session: ControlSession; deadline: number;
       runId: string; artifact: string; version: string; operator: string; branch: string; role: string;
-      beforeDispatch: (context: ActionContext) => void;
+      beforeDispatch: (context: ActionContext) => void | Promise<void>;
       fault?: FaultScenario;
       transfer?: TransferBinding;
       openShare?: OpenShareBinding;
@@ -1052,34 +1052,47 @@ export class GuardedSurface implements Surface {
           const approved = await outsideBudget(() => this.humanGate('click', 'irreversible', 'Review and approve the live transaction', context));
           this.emit('approval.result', { approved, effectiveRisk: 'irreversible' });
           if (!approved) throw new RunAbortedError('click');
-          this.assertAutomation();
-          if (this.runtime.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
-          if (this.runtime.openShare && this.openShareStage(live.url)) this.assertOpenShareControl(live);
-          if (memberUpdatePost) this.assertMemberUpdateControl(live);
-          if (this.runtime.hold && this.holdStage(live.url)) this.assertHoldControl(live);
-          const refreshed = await prepared.inspect(remaining());
-          remaining();
-          if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
-          if (transferPost) {
-            this.assertTransferReview(refreshed);
-          }
-          if (openSharePost) this.assertOpenShareReview(refreshed);
-          if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
-          if (holdPost) this.assertHoldReview(refreshed);
-          if (transferPost || holdPost) {
-            // This same-session UI reread narrows the approval-wait race. The
-            // target remains responsible for enforcing eligibility atomically.
-            if (transferPost) await this.refreshTransferEligibility(refreshed, remaining());
-            else await this.refreshHoldEligibility(refreshed, remaining());
-            const afterEligibility = await prepared.inspect(remaining());
-            if (JSON.stringify(afterEligibility) !== JSON.stringify(refreshed)) throw new Error('Approval invalidated by changed page state');
-            if (transferPost) this.assertTransferReview(afterEligibility);
-            else this.assertHoldReview(afterEligibility);
-          }
-          this.assertAutomation();
-          this.runtime.beforeDispatch(context);
-          this.assertAutomation();
-          if (memberUpdatePost) this.memberUpdateOrigin = new URL(refreshed.destination).origin;
+          const revalidateApprovedControl = async (): Promise<LiveControl> => {
+            this.assertAutomation();
+            this.assertStillInBounds('click');
+            if (this.runtime!.transfer && this.transferStage(live.url)) this.assertTransferControl(live);
+            if (this.runtime!.openShare && this.openShareStage(live.url)) this.assertOpenShareControl(live);
+            if (memberUpdatePost) this.assertMemberUpdateControl(live);
+            if (this.runtime!.hold && this.holdStage(live.url)) this.assertHoldControl(live);
+            const refreshed = await prepared.inspect(remaining());
+            remaining();
+            if (JSON.stringify(refreshed) !== JSON.stringify(live)) throw new Error('Approval invalidated by changed page state');
+            this.assertBoundOperationNavigation(refreshed.destination);
+            const refreshedRule = classify(this.runtime!.profile, refreshed, this.policy.allowedOrigins);
+            if (!refreshedRule?.mutation) throw new Error('Target authority or review state invalid');
+            if (refreshed.error || refreshed.conditions.length || !refreshed.role || refreshed.role !== this.runtime!.role
+              || refreshed.operator !== this.runtime!.operator.toUpperCase() || refreshed.branch !== this.runtime!.branch
+              || (refreshedRule.role && refreshedRule.role !== refreshed.role)) throw new Error('Target authority or review state invalid');
+            this.assertMeridianMutationOrigin(refreshed);
+            this.assertCapabilityOperation(refreshed.destination);
+            if (transferPost) this.assertTransferReview(refreshed);
+            if (openSharePost) this.assertOpenShareReview(refreshed);
+            if (memberUpdatePost) this.assertMemberUpdateControl(refreshed);
+            if (holdPost) this.assertHoldReview(refreshed);
+            if (transferPost || holdPost) {
+              // This same-session UI reread narrows the approval-wait race. The
+              // target remains responsible for enforcing eligibility atomically.
+              if (transferPost) await this.refreshTransferEligibility(refreshed, remaining());
+              else await this.refreshHoldEligibility(refreshed, remaining());
+            }
+            const final = await prepared.inspect(remaining());
+            if (JSON.stringify(final) !== JSON.stringify(refreshed)) throw new Error('Approval invalidated by changed page state');
+            if (transferPost) this.assertTransferReview(final);
+            if (openSharePost) this.assertOpenShareReview(final);
+            if (memberUpdatePost) this.assertMemberUpdateControl(final);
+            if (holdPost) this.assertHoldReview(final);
+            this.assertAutomation();
+            return final;
+          };
+          await revalidateApprovedControl();
+          await this.runtime.beforeDispatch(context);
+          const validated = await revalidateApprovedControl();
+          if (memberUpdatePost) this.memberUpdateOrigin = new URL(validated.destination).origin;
           this.mutationDispatched = true;
           // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.
           this.emit('mutation.intent', { effectiveRisk: 'irreversible' });
