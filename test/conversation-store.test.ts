@@ -22,6 +22,22 @@ describe.sequential('ConversationStore', () => {
   });
   afterAll(async () => { await database.close(); });
 
+  it('overrides connection URL search_path options with its disposable schema', async () => {
+    const original = process.env.TEST_DATABASE_URL!;
+    const url = new URL(original);
+    url.searchParams.set('options', '-c search_path=public');
+    let isolated: Awaited<ReturnType<typeof createPostgresFixture>> | undefined;
+    try {
+      process.env.TEST_DATABASE_URL = url.toString();
+      isolated = await createPostgresFixture();
+      const current = await isolated.pool.query<{ schema: string }>('SELECT current_schema() AS schema');
+      expect(current.rows[0]?.schema).toMatch(/^test_conversations_[0-9a-f]{32}$/);
+    } finally {
+      process.env.TEST_DATABASE_URL = original;
+      await isolated?.close();
+    }
+  });
+
   it('creates idempotently, isolates owners, paginates by UUID, and survives a reopened pool', async () => {
     const created = await Promise.all(Object.values(ids).map(id => store.create(owner, id)));
     expect(created[0]).toMatchObject({ id: ids.first, archived: false, revision: 0 });
@@ -37,10 +53,15 @@ describe.sequential('ConversationStore', () => {
     expect(page2.nextCursor).toBeUndefined();
     expect((await store.list(otherOwner)).conversations).toEqual([]);
 
+    await store.append(owner, ids.third, {
+      id: randomUUID(), kind: 'message_omitted', role: 'user', expectedRevision: 0,
+    });
+    const history = await store.events(owner, ids.third);
     await database.closePool(database.pool);
     database.pool = database.openPool();
     store = new ConversationStore(database.pool);
     expect(await store.get(owner, ids.first)).toEqual(created[0]);
+    expect(await store.events(owner, ids.third)).toEqual(history);
   });
 
   it('deduplicates an identical concurrent event before stale checks and rejects conflicting reuse', async () => {
@@ -103,6 +124,9 @@ describe.sequential('ConversationStore', () => {
     await expect(store.archive(owner, conversationId, false, 0)).rejects.toMatchObject({ status: 409 });
     expect(await store.get(owner, conversationId)).toEqual(archived);
     expect(await store.archive(owner, conversationId, false, 1)).toMatchObject({ archived: false, revision: 2 });
+    expect(await store.append(owner, conversationId, {
+      id: randomUUID(), kind: 'message_omitted', role: 'user', expectedRevision: 2,
+    })).toMatchObject({ sequence: 3 });
     await expect(store.archive(otherOwner, conversationId, true, 2)).rejects.toMatchObject({ status: 404 });
   });
 
