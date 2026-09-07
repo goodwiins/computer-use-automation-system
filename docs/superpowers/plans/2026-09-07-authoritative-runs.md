@@ -49,7 +49,7 @@ await revalidateApprovedControl();
 this.assertAutomation();
 ```
 
-- [ ] Run the focused new cases, then `npx vitest run test/meridian.test.ts test/runtime-lifecycle.test.ts` and `npm run typecheck`. Coordinate the browser-heavy run with controller first. Commit `fix: await durable intent before revalidating dispatch` and report exact counts/output. Full combined CI runs at final integration, not after every task.
+- [ ] Run the focused new cases, ensure `npm run build` has produced `out/index.html`, then run `npx vitest run test/meridian.test.ts test/runtime-lifecycle.test.ts` and `npm run typecheck`. Coordinate the browser-heavy run with controller first. Commit `fix: await durable intent before revalidating dispatch` and report exact counts/output. Full combined CI runs at final integration, not after every task.
 
 ### Task 2: Concrete PostgreSQL journal and shared contract
 
@@ -74,7 +74,7 @@ expect((await journal.get(pair[0].runId))?.state).toBe('POST_OUTCOME_UNKNOWN');
 - [ ] Implement transactions with `BEGIN`, authority-row `FOR UPDATE`, owner verification, conditional writes, `COMMIT`, release in finally. Validation/RequestError rollbacks do not poison; SQL/transport/commit uncertainty does poison, retains owner, sanitizes error and rejects later operations. `open` claims only initialized matching import/digest with null owner; never recovers. `close` releases only a healthy instance with no active records. Concurrent calls through the same instance remain valid and DB-serialized. Reads query the DB and reject poisoned/closed instances.
 - [ ] Implement conservative import into empty uninitialized authority, preserving exact request mappings. Reject duplicate direct/alias identities and mismatched alias targets. Convert reserved/running to interrupted and dispatching to UNKNOWN; retain UNKNOWN. A repeated exact import ID/digest is a no-op and must not overwrite later state. Different imports reject. Recover uses exact non-null owner CAS; convert active states by intent and clear ownership atomically. No lease clocks.
 - [ ] Add tests for second-owner denial after client disconnect, exact-owner recovery, stale-owner writes, close with active records, uncertain COMMIT (inject lost acknowledgement around a real committed DB transaction), subsequent-read/write rejection, and persisted intent/owner after failure. Canary raw requests must not appear in any database table values or public error text. Cover schema rejection with direct SQL where it protects races.
-- [ ] Run focused test, `npm run typecheck`, `git diff --check`; commit `feat: add authoritative PostgreSQL run journal`. Report any actual interface changes for Task3/4. No full browser suite required for this task.
+- [ ] Run `npx vitest run test/postgres-journal.test.ts` and the existing HMAC identity regressions with `npx vitest run test/meridian.test.ts -t 'durable request identity'`, then `npm run typecheck`, `git diff --check`; commit `feat: add authoritative PostgreSQL run journal`. Report any actual interface changes for Task3/4. No full browser suite required for this task.
 
 ### Task 3: Non-executing import and fenced maintenance commands
 
