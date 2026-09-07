@@ -17,7 +17,7 @@ Evidence from real runs: **[evidence/](evidence/)**.
 
 ## Setup
 
-Requirements: Node 22+, an OpenAI API key (discovery only — replay never needs one).
+Requirements: Node 22.12+ (22.x), 24.x, or 26+, an OpenAI API key (discovery only — replay never needs one).
 
 ```bash
 npm run setup       # lockfile install + Chromium
@@ -176,6 +176,20 @@ npm run ci      # what the pre-push hook runs: typecheck + the suite, ~22s
 every pull request and pushes to `master` or `dev`, using Node 22 and Chromium
 on Ubuntu. It also supports manual runs from the Actions tab. No API keys or
 repository secrets are required.
+
+Each new worktree needs its own `npm ci`; Chromium is installed with
+`npx playwright install chromium`. Browser fixtures bind to OS-assigned ports,
+so suites in different worktrees can run concurrently. For a focused loop:
+
+```bash
+npm test -- test/meridian.test.ts -t 'durable request identity'
+npx tsx scripts/benchmark-journal.ts  # lookup timings at 100, 1,000 and 10,000 records
+```
+
+The benchmark creates and removes a temporary journal. Its setup uses real
+authenticated, durable writes; reported timings cover warmed lookups only.
+Run `npm run ci` before handing off a change; artifact validation is included
+in the suite.
 
 ## Repo map
 

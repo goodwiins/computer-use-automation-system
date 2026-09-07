@@ -32,5 +32,3 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Typecheck and tests
         run: npm run ci
-      - name: Validate recorded artifacts
-        run: npm run validate

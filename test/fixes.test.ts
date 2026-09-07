@@ -516,6 +516,21 @@ describe('Sep-02 audit LOW findings', () => {
     }
   });
 
+  it('R3-S1: popups opened by the primary page are closed, not left unrouted', async () => {
+    const surface = new BrowserSurface();
+    await surface.start('data:text/html,' + encodeURIComponent('<a id="x" href="about:blank" target="_blank">x</a>'));
+    try {
+      const popup = surface.page.waitForEvent('popup');
+      await surface.page.click('#x');
+      const opened = await popup;
+      await opened.waitForEvent('close', { timeout: 5000 }).catch(() => {});
+      expect(opened.isClosed()).toBe(true);
+      expect(surface.page.context().pages()).toHaveLength(1);
+    } finally {
+      await surface.close();
+    }
+  }, 30_000);
+
   it('A-L3: the select value= fallback shares the budget instead of doubling it', async () => {
     const surface = new BrowserSurface();
     await surface.start(

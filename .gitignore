@@ -1,4 +1,5 @@
 node_modules/
+dist/
 evidence/test-runs/
 evidence/runs/
 !evidence/runs/.gitkeep

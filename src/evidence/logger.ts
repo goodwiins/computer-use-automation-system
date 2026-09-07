@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Redactor } from '../safety/redact.js';
 import type { Surface } from '../surface/types.js';
-import { safeEvent, safeResult } from './safe-event.js';
+import { recordedStructure, safeEvent, safeResult, type RecordedStructure } from './safe-event.js';
 
 const STRUCTURAL_SELECTOR = /^body > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\)(?: > [a-z][a-z0-9-]*:nth-of-type\([1-9]\d*\))*$/;
 const STRUCTURAL_TAGS = new Set(['article', 'center', 'div', 'form', 'main', 'section', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr']);
@@ -35,6 +35,7 @@ export class RunLogger {
     readonly strict = false,
     runId?: string,
     private readonly onEvent?: (event: string, data: Record<string, unknown>) => void,
+    private readonly inputStructure?: RecordedStructure,
   ) {
     this.runId = runId ?? `${kind}-${randomUUID()}`;
     this.dir = join(baseDir, this.runId);
@@ -79,7 +80,10 @@ export class RunLogger {
   }
 
   writeResult(result: unknown): void {
-    const persisted = this.strict ? safeResult(result) : this.redactor.redact(result);
+    const metadata = this.strict && this.inputStructure ? {
+      ...recordedStructure(this.inputStructure.capability, {}, result), inputs: this.inputStructure.inputs,
+    } : undefined;
+    const persisted = this.strict ? safeResult(result && typeof result === 'object' ? { ...result, structure: metadata } : result) : this.redactor.redact(result);
     writeFileSync(join(this.dir, 'result.json'), JSON.stringify(persisted, null, 2), { mode: 0o600 });
   }
 }

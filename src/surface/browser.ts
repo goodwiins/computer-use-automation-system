@@ -43,17 +43,17 @@ export class BrowserSurface implements Surface {
   private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
-  private submission?: { url: string; method: string; body: string };
+  private submission?: { url: string; method: string; body: string; frame: Frame };
   private identity?: TargetIdentity;
   private dialogs: Array<{ type: string; message: string }> = [];
   private readonly frameIds = new WeakMap<Frame, string>();
   private readonly frameNavigations = new WeakMap<Frame, number>();
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
+  private readonly pageClosures = new WeakMap<Page, Promise<void>>();
 
-  // When allowedOrigins is set, frames outside it are invisible to observation
-  // and untouchable by locator resolution — a foreign iframe embedded in a
-  // legacy page can neither be read nor clicked.
+  // Configured allowedOrigins bounds intercepted requests and makes foreign
+  // frames invisible to observation and untouchable by locator resolution.
   constructor(private readonly opts: { headful?: boolean; allowedOrigins?: string[]; profile?: AppProfile; fault?: FaultScenario; onClose?: () => void; sensitive?: (values: string[], secrets?: string[], credentials?: string[]) => void } = {}) {}
 
   private frameInBounds(frame: Frame): boolean {
@@ -121,17 +121,21 @@ export class BrowserSurface implements Surface {
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
-    this.page = await this.context.newPage();
-    this.trackFrame(this.page.mainFrame());
-    this.page.on('frameattached', frame => this.trackFrame(frame));
-    this.page.on('framenavigated', frame => this.bumpFrame(frame));
-    this.page.on('framedetached', frame => this.bumpFrame(frame));
-    this.page.on('close', () => this.opts.onClose?.());
-    if (this.opts.profile) await this.page.route('**/*', async route => {
+    // Context interception precedes page creation: page routes and popup events
+    // miss a popup's first request. The newer read-only route handles its own
+    // bound auxiliary page and falls back here only for the primary page.
+    if (this.opts.profile || this.opts.allowedOrigins) await this.context.route('**/*', async route => {
       const request = route.request();
+      let frame: Frame;
+      try { frame = request.frame(); } catch { return route.abort(); }
+      if (!this.page || frame.page() !== this.page) return route.abort();
       const url = new URL(request.url());
       if (!originAllowed(this.opts.allowedOrigins ?? [], url.href)) return route.abort();
+      if (!this.opts.profile) return route.continue();
       if (!['GET', 'HEAD'].includes(request.method())) {
+        // An unrelated frame must neither use nor clear the inspected form's
+        // one-shot allowance while its native submission is pending.
+        if (this.submission?.frame !== frame) return route.abort();
         const allowed = this.submission?.url === url.href && this.submission.method === request.method()
           && request.headers()['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded'
           && this.submission.body === canonicalForm(new URLSearchParams(request.postData() ?? ''));
@@ -145,6 +149,13 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.page = await this.context.newPage();
+    this.trackFrame(this.page.mainFrame());
+    this.page.on('frameattached', frame => this.trackFrame(frame));
+    this.page.on('framenavigated', frame => this.bumpFrame(frame));
+    this.page.on('framedetached', frame => this.bumpFrame(frame));
+    this.page.on('close', () => this.opts.onClose?.());
+    this.page.on('popup', popup => this.closeAuxiliaryPage(popup).catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -158,6 +169,24 @@ export class BrowserSurface implements Surface {
 
   drainDialogs(): Array<{ type: string; message: string }> {
     return this.dialogs.splice(0);
+  }
+
+  private closeAuxiliaryPage(page: Page): Promise<void> {
+    if (page.isClosed()) return Promise.resolve();
+    let closing = this.pageClosures.get(page);
+    if (!closing) {
+      closing = (async () => {
+        // Playwright routing can disappear during close. Block in Chromium
+        // before starting teardown, and retain the block if close fails.
+        const guard = await this.context.newCDPSession(page);
+        await guard.send('Network.emulateNetworkConditions', {
+          offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0,
+        });
+        await page.close();
+      })();
+      this.pageClosures.set(page, closing);
+    }
+    return closing;
   }
 
   currentUrl(): string {
@@ -543,7 +572,7 @@ export class BrowserSurface implements Surface {
           const pagesToClose = new Set([...createdPages, ...unexpectedPages, ...this.context!.pages(), ...(page ? [page] : [])]);
           pagesToClose.delete(this.page!);
           for (const opened of pagesToClose) {
-            try { if (!opened.isClosed()) await opened.close(); }
+            try { if (!opened.isClosed()) await this.closeAuxiliaryPage(opened); }
             catch { closeError = true; }
             if (!opened.isClosed()) closeError = true;
           }
@@ -617,7 +646,7 @@ export class BrowserSurface implements Surface {
         if (!inspectedFrame || !sameFrameContext(currentFrame, inspectedFrame) || !sameFrameContext(currentFrame, expected.frame)) throw new Error('Control frame changed');
         const expectedState = { ...expected };
         delete expectedState.frame;
-        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody };
+        if (expected.submit) this.submission = { url: expected.destination, method: expected.method, body: approvedBody, frame };
         try {
           await Promise.all([
             frame.waitForNavigation({ waitUntil: 'load', timeout: actionTimeout }),
