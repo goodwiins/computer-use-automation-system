@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
-import { PostgresJournal } from '../src/runtime/postgres-journal.js';
+import { POSTGRES_LOCK_TIMEOUT_MS, PostgresJournal } from '../src/runtime/postgres-journal.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
 const key = 'postgres-journal-test-key-0123456789abcdef0123456789abcdef';
@@ -155,6 +155,56 @@ describe.sequential('PostgresJournal', () => {
       await expect(PostgresJournal.migrate(pool)).rejects.toThrow(/Journal operation failed/);
       expect(releasedWithDiscard).toBe(true);
     } finally { pool.connect = originalConnect; }
+  });
+
+  it('poisons the instance after its authority lock exceeds the bounded budget', async () => {
+    const blocker = database.openPool();
+    const blockerClient = await blocker.connect();
+    await blockerClient.query('BEGIN');
+    await blockerClient.query('SELECT singleton FROM meridian_journal_authority WHERE singleton = true FOR UPDATE');
+    const started = Date.now();
+    try {
+      const failure = await journal.list().then(() => undefined, error => error as Error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure?.message).toBe('Journal storage outcome uncertain; restart or recover required');
+      expect(failure?.message).not.toContain('canceling statement');
+      expect(Date.now() - started).toBeLessThan(POSTGRES_LOCK_TIMEOUT_MS + 1_500);
+      expect(() => journal.assertHealthy()).toThrow('Journal storage outcome uncertain; restart or recover required');
+      const followUp = Date.now();
+      await expect(journal.get(randomUUID())).rejects.toThrow('Journal storage outcome uncertain; restart or recover required');
+      expect(Date.now() - followUp).toBeLessThan(500);
+      await expect(journal.reserve(caller, 'after-lock-timeout', capability, version, {}))
+        .rejects.toThrow('Journal storage outcome uncertain; restart or recover required');
+    } finally {
+      await blockerClient.query('ROLLBACK');
+      blockerClient.release();
+      await database.closePool(blocker);
+    }
+  });
+
+  it('bounds and sanitizes a static startup lock failure', async () => {
+    const marker = (await database.pool.query<{ import_id: string; source_digest: string }>(
+      'SELECT import_id, source_digest FROM meridian_journal_authority WHERE singleton = true',
+    )).rows[0]!;
+    const blocker = database.openPool();
+    const blockerClient = await blocker.connect();
+    const opener = database.openPool();
+    await blockerClient.query('BEGIN');
+    await blockerClient.query('SELECT singleton FROM meridian_journal_authority WHERE singleton = true FOR UPDATE');
+    const started = Date.now();
+    try {
+      const failure = await PostgresJournal.open(opener, key, marker.import_id, marker.source_digest)
+        .then(() => undefined, error => error as Error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure?.message).toBe('Journal operation failed');
+      expect(failure?.message).not.toContain('canceling statement');
+      expect(Date.now() - started).toBeLessThan(POSTGRES_LOCK_TIMEOUT_MS + 1_500);
+    } finally {
+      await blockerClient.query('ROLLBACK');
+      blockerClient.release();
+      await database.closePool(blocker);
+      await database.closePool(opener);
+    }
   });
 
   it('recovers by exact owner, fences the stale instance, and permits a new owner', async () => {
