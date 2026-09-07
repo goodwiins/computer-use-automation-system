@@ -24,6 +24,7 @@ type ChatLifecycle = {
   sawStatusTool: boolean;
   sawOtherTool: boolean;
   finished: boolean;
+  finishReason?: string;
   failed: boolean;
   settled: boolean;
   toolNames: Map<string, string>;
@@ -91,6 +92,7 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
               lifecycle.failed = true;
             } else if (chunk.type === 'finish') {
               lifecycle.finished = true;
+              lifecycle.finishReason = chunk.finishReason;
               settle();
             }
             controller.enqueue(chunk);
@@ -245,17 +247,23 @@ export function Chat() {
           lifecycleRef.current.delete(current.key);
           if (current.intent !== 'action') {
             return;
-          } else if (current.failed) {
+          } else if (current.failed
+            || !current.finished
+            || (current.finishReason !== 'stop' && current.finishReason !== 'tool-calls')) {
             markActionUncertain(current.key);
-          } else if (current.sawTool) {
+          } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
               setLookupRunId(binding.runId);
               bindAction(current.key, binding.runId);
               watch(binding.runId);
             }).catch(() => markActionUncertain(current.key));
-          } else {
+          } else if (current.finishReason === 'stop' && !current.sawTool) {
             clearAction(current.key);
+          } else if (current.finishReason === 'tool-calls' && current.sawStatusTool && !current.sawOtherTool) {
+            clearAction(current.key);
+          } else {
+            markActionUncertain(current.key);
           }
         },
         uncertain: key => {

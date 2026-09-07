@@ -98,6 +98,9 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
     decisions: [] as string[],
     toolSchemas: [] as string[],
     partialStream: false,
+    noTool: false,
+    finishReason: 'tool-calls' as string | undefined,
+    omitFinishReason: false,
     offline: false,
   };
   const service = {
@@ -174,6 +177,9 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
       state.toolSchemas.push(serializedTools);
       const statusOnly = !serializedTools.includes(capability.id);
       const statusNeedsNoTool = statusOnly && state.runs.length === 0;
+      const finishReason = statusNeedsNoTool && state.finishReason === 'tool-calls'
+        ? 'stop'
+        : state.finishReason ?? 'tool-calls';
       if (state.partialStream) {
         return {
           stream: new ReadableStream<{ type: string; [key: string]: unknown }>({
@@ -197,7 +203,7 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
           { type: 'text-start', id: 'text' },
           { type: 'text-delta', id: 'text', delta: hostile },
           { type: 'text-end', id: 'text' },
-          ...(statusNeedsNoTool ? [] : [{
+          ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
             toolName: statusOnly ? 'run_status' : capability.id,
@@ -205,7 +211,7 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
           }]),
           {
             type: 'finish',
-            finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+            ...(state.omitFinishReason ? {} : { finishReason: { unified: finishReason, raw: finishReason } }),
             usage: {
               inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
               outputTokens: { total: 1, text: 1, reasoning: 0 },
@@ -587,6 +593,77 @@ it('reconciles a clean tool-bearing chat stream with its exact key before readin
   await page.locator('#refresh').click();
   await vi.waitFor(async () => expect(await invoke.isDisabled()).toBe(false));
   expect(state.invocations.size).toBe(1);
+}, 30000);
+const nonCleanFinishCases: Array<[string, string, boolean]> = [
+  ['length', 'length', false],
+  ['error', 'error', false],
+  ['content-filter', 'content-filter', false],
+  ['other', 'other', false],
+  ['missing reason', 'stop', false],
+  ['tool with length', 'length', true],
+];
+it.each(nonCleanFinishCases)('keeps the action hold uncertain for %s finish responses', async (_label, reason, withTool) => {
+  const { page, state, connect } = await fixture();
+  state.finishReason = reason;
+  state.noTool = !withTool;
+  if (reason === 'stop' && !withTool) state.omitFinishReason = true;
+  let lookupCount = 0;
+  await page.route('**/api/chat/request', async route => {
+    lookupCount += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'running' }),
+    });
+  });
+  await connect();
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByText('Acceptance is unconfirmed. The original request may still run or may have completed.', { exact: false }).waitFor();
+  expect(lookupCount).toBe(0);
+  expect(state.invocations.size).toBe(0);
+  if (withTool) expect(state.toolSchemas.at(-1)).toContain(capability.id);
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+}, 30000);
+
+it('settles a run_status-only auto response without a lookup after the prior action clears', async () => {
+  const { page, state, service, connect } = await fixture();
+  const lookupKeys: string[] = [];
+  await page.route('**/api/chat/request', async route => {
+    lookupKeys.push(route.request().headers()['idempotency-key'] ?? '');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'running' }),
+    });
+  });
+  await connect();
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.locator('#messages [data-run-id]').first().waitFor();
+  await vi.waitFor(() => expect(lookupKeys).toHaveLength(1));
+  const originalKey = lookupKeys[0];
+  state.runs[0]!.state = 'success';
+  service.availability = () => fixtureAvailability('available');
+  await page.locator('#refresh').click();
+
+  await page.locator('#message').fill('Did that finish?');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await vi.waitFor(() => expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(2));
+  expect(lookupKeys).toEqual([originalKey]);
+  const statusChat = state.requests.filter(request => request.path === '/api/chat').at(-1);
+  expect(statusChat?.body.intent).toBe('auto');
+  expect(state.toolSchemas.at(-1)).toContain('run_status');
+  expect(state.toolSchemas.at(-1)).not.toContain(capability.id);
+  expect(state.invocations.size).toBe(1);
+
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('new-member');
+  const invoke = page.getByRole('button', { name: 'Invoke capability', exact: true });
+  await vi.waitFor(async () => expect(await invoke.isDisabled()).toBe(false));
+  await invoke.click();
+  await vi.waitFor(() => expect(state.invocations.size).toBe(2));
 }, 30000);
 it('holds a lost chat action across status-only chat and direct submission until exact lookup or abandonment', async () => {
   const { page, state, service, connect } = await fixture();
