@@ -25,6 +25,16 @@ const trajectory = [
 ];
 const encode = (events: Record<string, unknown>[]) => events.map((e, seq) => JSON.stringify({ seq, ...e })).join('\n');
 
+it('preserves valid falsy metadata while dropping absent, invalid and private fields', () => {
+  expect(safeEvent('action.end', {
+    attempt: 1, ms: 0, isRetry: false, approved: false, mutation: false,
+    status: 'success', code: undefined, action: 'PRIVATE', turn: null, url: 'PRIVATE',
+  })).toEqual({ event: 'action.end', data: {
+    attempt: 1, ms: 0, isRetry: false, approved: false, mutation: false, status: 'success',
+  } });
+  expect(safeEvent('replay.success', {})).toEqual({ event: 'replay.success', data: {} });
+});
+
 it('keeps sensitive data and arbitrary values out of observers, even in non-strict mode', async () => {
   for (const strict of [false, true]) {
     const received: unknown[] = [];

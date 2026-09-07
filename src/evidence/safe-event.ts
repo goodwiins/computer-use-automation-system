@@ -107,7 +107,9 @@ export function safeEvent(event: string, data: Record<string, unknown>) {
   if (!names.has(event)) return { event: 'evidence.omitted', data: {} as Record<string, unknown> };
   const safe: Record<string, unknown> = {};
   for (const [key, schema] of Object.entries(fields)) {
-    const parsed = schema.safeParse(data[key]);
+    const value = data[key];
+    if (value === undefined) continue;
+    const parsed = schema.safeParse(value);
     if (parsed.success) safe[key] = parsed.data;
   }
   return { event, data: safe };
