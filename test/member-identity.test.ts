@@ -439,6 +439,7 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
     expect((await journal!.get(publicInquiry.runId))?.invocationScope).toBe('public');
     releases[2]!(identity());
     await vi.waitFor(async () => expect((await service.get({ ...principal, role: 'caller' }, publicInquiry.runId)).state).toBe('success'));
+    await journal!.bindReference(principalKey({ ...principal, role: 'caller' }), 'pg-public-status-alias', publicInquiry.runId);
     await service.close();
     await journal.close();
     journal = undefined;
@@ -449,6 +450,20 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
     );
     restoredJournal = await PostgresJournal.open(restoredPool, 'member-identity-fixture-hmac-key-32-characters', marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
     const restored = new InvocationService(restoredJournal, policy, profile, dir, [balance, inquiry]);
+    const recordsBeforeRecovery = (await restoredJournal.list()).length;
+    const recoveryReserve = vi.spyOn(restoredJournal, 'reserve');
+    const recoveryAlias = vi.spyOn(restoredJournal, 'bindReference');
+    const runtimeCreations = create.mock.calls.length;
+    expect(await restored.invoke({ ...principal, role: 'caller' }, inquiry,
+      { searchMode: 'number', searchValue: member }, 'member-identity:client-controlled-number', 'TELLER', true))
+      .toEqual({ runId: publicInquiry.runId, reused: true });
+    await expect(restored.invoke({ ...principal, role: 'caller' }, inquiry,
+      { searchMode: 'number', searchValue: member }, 'pg-public-status-alias', 'TELLER', true))
+      .rejects.toThrow(/another request/);
+    expect((await restoredJournal.list())).toHaveLength(recordsBeforeRecovery);
+    expect(recoveryReserve).not.toHaveBeenCalled();
+    expect(recoveryAlias).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(runtimeCreations);
     expect(await restored.get({ ...principal, role: 'caller' }, accepted.runId)).toMatchObject({
       memberIdentity: { status: 'unavailable' },
     });

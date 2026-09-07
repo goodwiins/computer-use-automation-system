@@ -390,7 +390,7 @@ export class PostgresJournal implements RunJournal {
     return this.transaction(async client => {
       await this.lockAuthority(client);
       const existing = await this.findRequestWithIdentity(client, principal, identity);
-      return { existing, matches: existing?.recoveryRequest === digest };
+      return { existing, matches: existing?.recoveryRequest === digest, direct: existing?.identity === identity };
     });
   }
 

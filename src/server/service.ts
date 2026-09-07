@@ -118,7 +118,7 @@ export class InvocationService {
       if (!existing || this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
       if (existing.capability !== id) throw new RequestError(409, 'Idempotency key already identifies another request');
       if (existing.recoveryRequest !== undefined) {
-        if (!recovery.matches) throw new RequestError(409, 'Idempotency key already identifies another request');
+        if (!recovery.direct || !recovery.matches) throw new RequestError(409, 'Idempotency key already identifies another request');
         return { runId: existing.runId, reused: true as const };
       }
       // Legacy records without a recovery digest retain the current-artifact exact lookup below.

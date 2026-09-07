@@ -394,6 +394,7 @@ it.each(['removed', 'upgraded'] as const)('recovers an exact accepted request af
   const capability = 'hand-lookup-member-balance';
   const accepted = await service.invoke(a, capability, { memberId: '123' }, 'deployment-recovery', 'TELLER');
   await vi.waitFor(() => expect(journal.records.get(accepted.runId)?.state).toBe('success'));
+  journal.bindReference(principalKey(a), 'deployment-status-alias', accepted.runId);
 
   const artifactDir = join(dir, `artifacts-${deployment}`);
   mkdirSync(artifactDir);
@@ -415,6 +416,8 @@ it.each(['removed', 'upgraded'] as const)('recovers an exact accepted request af
     .rejects.toThrow(/another request/);
   await expect(restored.invoke(b, capability, { memberId: '123' }, 'deployment-recovery', 'TELLER', true))
     .rejects.toThrow(/No accepted request/);
+  await expect(restored.invoke(a, capability, { memberId: '123' }, 'deployment-status-alias', 'TELLER', true))
+    .rejects.toThrow(/another request/);
   expect(journal.records.size).toBe(recordsBefore);
   expect(reserve).not.toHaveBeenCalled();
   expect(bindReference).not.toHaveBeenCalled();

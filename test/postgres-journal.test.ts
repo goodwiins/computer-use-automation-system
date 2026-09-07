@@ -94,10 +94,14 @@ describe.sequential('PostgresJournal', () => {
       { mode: 'replay', capability: 'meridian-member-record', version, args: { member: 'normalized' }, context: null },
       'replay', { invocationScope: 'public', recoveryRequest });
     await journal.update(original.runId, 'success');
+    await journal.bindReference(caller, 'recovery-status-alias', original.runId);
 
     expect(original.recoveryRequest).toBe(journalRecoveryDigest(key, recoveryRequest));
     expect(await journal.recover(caller, 'recovery-key', recoveryRequest)).toMatchObject({
-      existing: { runId: original.runId }, matches: true,
+      existing: { runId: original.runId }, matches: true, direct: true,
+    });
+    expect(await journal.recover(caller, 'recovery-status-alias', recoveryRequest)).toMatchObject({
+      existing: { runId: original.runId }, matches: true, direct: false,
     });
     expect(await journal.recover(caller, 'recovery-key', {
       ...recoveryRequest, args: { member: 'changed' },
@@ -109,7 +113,7 @@ describe.sequential('PostgresJournal', () => {
       ...recoveryRequest, role: 'SUPERVISOR',
     })).toMatchObject({ existing: { runId: original.runId }, matches: false });
     expect(await journal.recover('other-caller', 'recovery-key', recoveryRequest)).toEqual({
-      existing: undefined, matches: false,
+      existing: undefined, matches: false, direct: false,
     });
     const persisted = await database.pool.query<{ recovery_request: string }>(
       'SELECT recovery_request FROM meridian_runs WHERE run_id = $1', [original.runId],

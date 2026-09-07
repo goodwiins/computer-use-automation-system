@@ -22,7 +22,7 @@ export type RequestAlias = z.infer<typeof AliasSchema>;
 export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[] };
 export type Awaitable<T> = T | Promise<T>;
 export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
-export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean };
+export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean; direct: boolean };
 export interface RunJournal {
   get(runId: string): Awaitable<JournalRecord | undefined>;
   list(): Awaitable<JournalRecord[]>;
@@ -244,8 +244,13 @@ export class Journal implements RunJournal {
   }
   recover(caller: string, key: string, request: unknown) {
     validateIdempotencyKey(key);
+    const identity = this.mac({ caller, key });
     const existing = this.findRequest(caller, key);
-    return { existing, matches: existing?.recoveryRequest === journalRecoveryDigest(this.key, request) };
+    return {
+      existing,
+      matches: existing?.recoveryRequest === journalRecoveryDigest(this.key, request),
+      direct: existing?.identity === identity,
+    };
   }
   reserve(caller: string, key: string, capability: string, version: string, request: unknown,
     kind: 'discovery' | 'replay' = 'replay', options?: ReservationOptions) {
