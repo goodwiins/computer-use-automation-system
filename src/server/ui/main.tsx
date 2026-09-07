@@ -60,7 +60,7 @@ export default function App() {
       const data = await response.json();
       if (attempt !== loginAttempt.current) return;
       if (localLogin && data.principal !== (loginRole === 'teller' ? 'caller' : 'operator')) throw new Error('Supervisor access requires an operator API credential.');
-      setSession({ token, principal: data.principal, capabilities: data.capabilities });
+      setSession({ token, principal: data.principal, capabilities: data.capabilities, availability: Array.isArray(data.availability) ? data.availability : undefined });
       setStatus(`Connected as ${data.principal}. Credentials remain in page memory.`);
     } catch (e) {
       if (attempt === loginAttempt.current) setStatus(e instanceof Error ? e.message : 'Connection failed.');

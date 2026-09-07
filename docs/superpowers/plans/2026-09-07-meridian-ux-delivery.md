@@ -27,9 +27,9 @@
 
 | Unit | Work / current state | Dependency / exact completion gate |
 | --- | --- | --- |
-| 0 | Next/chat/teller baseline: packaging in `codex/next-chat-demo-ui` | Detailed plan `2026-09-07-next-chat-demo.md`; independent review, clean PR and exact-head CI |
-| 1 | Member identity: implemented in open PR93 | Local live one-request composition and signed evaluations passed; merging is a separate action |
-| 2 | Capability readiness and result/progress language: pending implementation | Unit 0 UI; additive access-aware catalog metadata coordinated with backend |
+| 0 | Published [PR95](https://github.com/goodwiins/computer-use-automation-system/pull/95), head `0914e1d` | Independent task/fix/final reviews clear; local 735 tests/typechecks/Next build and exact-head hosted CI 34082993000 passed; PR remains unmerged |
+| 1 | Published [PR93](https://github.com/goodwiins/computer-use-automation-system/pull/93), privacy-fixed head `dcb048c` | Local 749 tests and hosted CI 34083144047 passed; independent final safety review clear. Earlier live read composition passed; privacy fix has not been applied to protected demo. PR remains unmerged |
+| 2 | Implementation active in `codex/meridian-ui-readiness` | Plan `2026-09-07-ui-readiness.md`, base `4f9d81c` combines reviewed PR95 and PR93; B1 retains auth/store ownership |
 | 3 | Exact-run review and readable approval facts: pending implementation | Unit 2 labels; existing decision API, one active review surface |
 | 4 | Transfer/update/hold live acceptance: external demo/runtime gate | Genuine recording, approved artifact and separately approved replay; no UI simulation can close this |
 | 5 | Honest role workspace and authorized review queue: pending implementation | Unit 3 review navigation; B1 subject contract for individual identity; cross-person grants unavailable |

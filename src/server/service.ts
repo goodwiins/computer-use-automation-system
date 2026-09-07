@@ -13,8 +13,15 @@ import { closeRuntime, createRuntime, executeReplay, operatorContext } from '../
 import { Redactor } from '../safety/redact.js';
 import type { Policy } from '../safety/policy.js';
 import { safeResult as persistedResult, type RecordedStructure } from '../evidence/safe-event.js';
+import { MERIDIAN_CAPABILITIES, type MeridianCapabilityId } from './capability-labels.js';
 
 export type Principal = 'caller' | 'operator';
+export type CapabilityAvailability = {
+  id: MeridianCapabilityId;
+  label: string;
+  state: 'available' | 'not_recorded' | 'restricted' | 'temporarily_unavailable';
+  reason: string;
+};
 export type MemberIdentity =
   | { status: 'pending' | 'unavailable'; inquiryRunId?: string }
   | { status: 'verified'; inquiryRunId: string; memberNumber: string; name: string };
@@ -40,6 +47,20 @@ export class InvocationService {
   catalog(principal: Principal) {
     return [...this.artifacts.values()].filter(a => principal === 'operator' || this.allowlist.includes(a.id))
       .map(a => ({ id: a.id, version: a.version, description: a.description, parameters: a.parameters.filter(p => p.source !== 'server'), outputs: a.outputs, tools: toToolSchema(a) }));
+  }
+  availability(principal: Principal): CapabilityAvailability[] {
+    if (this.profile.appId !== 'meridian') return [];
+    const unknown = (id: string) => [...this.journal.records.values()].some(run => run.capability === id && run.state === 'POST_OUTCOME_UNKNOWN');
+    return MERIDIAN_CAPABILITIES.map(([id, label]) => {
+      const authorized = principal === 'operator' || this.allowlist.includes(id);
+      if (!authorized) return { id, label, state: 'restricted' as const, reason: 'Not authorized for this caller' };
+      const artifact = this.artifacts.get(id);
+      if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
+      if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
+      if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
+      if (unknown(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
+      return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
+    });
   }
   invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
     return this.invokeRun(principal, id, args, key, role, false);
@@ -187,6 +208,7 @@ export class InvocationService {
       : result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: this.privateInvocations.has(runId) ? undefined : live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
+      finishedAt: live?.finished ? new Date(live.finished).toISOString() : undefined,
       intervention: principal === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
       result: safeResult, structure, sensitiveValuesUnavailable: !live || this.privateInvocations.has(runId), evidence,
       memberIdentity: record.capability === 'meridian-member-record' ? live?.memberIdentity ?? { status: 'unavailable' as const } : undefined };

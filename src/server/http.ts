@@ -51,7 +51,8 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal; next();
   });
-  app.get('/capabilities', (_req, res) => res.json({ principal: res.locals.principal, capabilities: service.catalog(res.locals.principal) }));
+  app.get('/capabilities', (_req, res) => res.json({ principal: res.locals.principal, capabilities: service.catalog(res.locals.principal),
+    availability: typeof service.availability === 'function' ? service.availability(res.locals.principal) : null }));
   app.get('/runs', (_req, res) => res.json(service.history(res.locals.principal)));
   app.get('/runs/:id', (req, res) => res.json(service.get(res.locals.principal, req.params.id!)));
   app.post('/capabilities/:id/invoke', (req, res) => {

@@ -83,6 +83,17 @@ async function fixture(localTeller = false) {
     journal: { findRequest: () => undefined, bindReference: () => {} },
     evidenceDir,
     catalog: () => [capability],
+    availability: () => [
+      ['meridian-sign-on', 'Sign on'],
+      ['meridian-member-inquiry', 'Member inquiry'],
+      ['meridian-member-record', 'Member record'],
+      ['meridian-funds-transfer', 'Funds transfer'],
+      ['meridian-open-share', 'Open share'],
+      ['meridian-update-member', 'Update contact'],
+      ['meridian-place-hold', 'Supervisor hold'],
+    ].map(([id, label]) => service.catalog().some((entry) => entry.id === id)
+      ? { id, label, state: 'available', reason: 'Approved recording is ready' }
+      : { id, label, state: 'not_recorded', reason: 'No approved recording' }),
     history: (principal: string) => {
       if (state.offline) throw new RequestError(503, 'Offline fixture disconnected');
       return state.runs.map((r) =>
@@ -380,7 +391,7 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   expect(await page.locator('#credential').inputValue()).toBe('');
   expect(await page.locator('.catalog li').count()).toBe(7);
   expect(await page.locator('.catalog').innerText()).toContain('Approved · available · 1.0.0');
-  expect(await page.getByText('Missing or not authorized', { exact: true }).count()).toBe(6);
+  expect(await page.getByText('not_recorded · No approved recording', { exact: true }).count()).toBe(6);
   await page.locator('#message').fill('Read offline-member shares');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('#messages [data-run-id]').waitFor();
@@ -423,8 +434,8 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
       },
     },
   });
-  await visible(page, '#messages [data-run-id]', '1200.10');
-  await visible(page, '#runs', '1200.10');
+  await visible(page, '#messages [data-run-id]', '$1,200.10');
+  await visible(page, '#runs', '$1,200.10');
   expect(await page.locator('#messages [data-run-id]').getAttribute('data-run-id')).toBe(
     await page.locator('#runs [data-run-id]').getAttribute('data-run-id'),
   );

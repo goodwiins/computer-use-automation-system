@@ -3,16 +3,8 @@ import { pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
-
-const requested = [
-  ['meridian-sign-on', 'Sign on'],
-  ['meridian-member-inquiry', 'Member inquiry'],
-  ['meridian-member-record', 'Member record'],
-  ['meridian-funds-transfer', 'Funds transfer'],
-  ['meridian-open-share', 'Open share'],
-  ['meridian-update-member', 'Update contact'],
-  ['meridian-place-hold', 'Supervisor hold'],
-];
+import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
+import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
 export function OperatorSessionControls() {
   const { session } = useRuns();
   return session.principal === 'operator' ? (
@@ -32,13 +24,22 @@ export function CapabilityCatalog() {
   const [busy, setBusy] = useState(false);
   const [acceptedId, setAcceptedId] = useState('');
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
+  const availability = session.availability;
+  const metadataUnavailable = availability === undefined;
+  const meridianAvailability = availability?.length ? availability : MERIDIAN_CAPABILITIES.map(([id, label]) => ({ id, label, state: undefined, reason: '' }));
   const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
   const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
-  const capability = session.capabilities.find((c) => c.id === selected);
+  const visibleCapabilities = session.capabilities.filter(c => !availability?.length || availability.some(item => item.id === c.id));
+  const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current || acceptedId || loading || historyError) return;
+    if (!capability || active.current || acceptedId || loading || historyError || metadataUnavailable) return;
+    const status = availability?.find(item => item.id === capability.id);
+    if (status && status.state !== 'available') {
+      setError(status.reason);
+      return;
+    }
     if (unknownCapabilities.has(capability.id)) {
       setError('This capability has an unknown posting outcome. Choose a separate read-only inquiry; do not retry it.');
       return;
@@ -86,13 +87,13 @@ export function CapabilityCatalog() {
     <section aria-labelledby="catalog-heading">
       <h2 id="catalog-heading">Capability catalog</h2>
       <ul className="catalog">
-        {requested.map(([id, label]) => (
+        {meridianAvailability.map(({ id, label, state, reason }) => (
           <li key={id}>
             <span>{label}</span>
             <small>
-              {session.capabilities.some((c) => c.id === id)
-                ? `Approved · available · ${session.capabilities.find((c) => c.id === id)!.version}`
-                : 'Missing or not authorized'}
+              {metadataUnavailable ? 'Availability unavailable' : state === 'available'
+                ? `Approved · available · ${session.capabilities.find((c) => c.id === id)?.version ?? 'recorded'}`
+                : `${state === undefined ? 'Availability unavailable' : state} · ${reason}`}
             </small>
           </li>
         ))}
@@ -103,7 +104,7 @@ export function CapabilityCatalog() {
           <p className="empty">No approved capabilities are available to this principal.</p>
         ) : (
           <form id="invoke" onSubmit={invoke} autoComplete="off">
-            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}>
+            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError) || metadataUnavailable || Boolean(availability?.find(item => item.id === capability.id && item.state !== 'available'))}>
               <label htmlFor="capability">Capability</label>
               <select
                 id="capability"
@@ -113,7 +114,7 @@ export function CapabilityCatalog() {
                   setError('');
                 }}
               >
-                {session.capabilities.map((c) => (
+                {visibleCapabilities.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.id} · {c.version}
                   </option>
@@ -170,34 +171,29 @@ function WithheldFields({ fields }: { fields: NonNullable<RecordedStructure['out
 export function ResultCard({ run }: { run: Run }) {
   const { watched, error } = useRuns();
   const identity = !error && watched.has(run.runId) && !run.sensitiveValuesUnavailable ? run.memberIdentity : undefined;
+  const presentation = runPresentation(run);
   if (run.state === 'POST_OUTCOME_UNKNOWN')
     return (
       <div className="warning">
-        <strong>POST_OUTCOME_UNKNOWN</strong>
-        <p>Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.</p>
+        <strong>{presentation.label}</strong>
+        <p>Posting outcome is unknown. Investigate with a separate read-only inquiry; do not retry.</p>
       </div>
     );
   const result = run.result;
   if (!result)
-    return (
-      <p>
-        {pending(run)
-          ? 'Run is still in progress. Tool completion is not run completion.'
-          : 'No result was recorded.'}
-      </p>
-    );
+    return <p>{pending(run) || run.state === 'interrupted' ? presentation.description : 'No result was recorded.'}</p>;
   if (result.status === 'business_outcome')
     return (
       <div>
-        <strong>Business outcome: {result.outcomeCode}</strong>
+        <strong>{presentation.label}: {result.outcomeCode}</strong>
         <p>{result.detail}</p>
       </div>
     );
   if (result.status === 'failure')
     return (
       <div role="status">
-        <strong>{result.failure?.code ?? 'RUN_FAILED'}</strong>
-        <p>{result.failure?.detail ?? 'Run stopped. Inspect recorded evidence.'}</p>
+        <strong>{presentation.label}</strong>
+        <p>{presentation.description}</p>
       </div>
     );
   if (run.sensitiveValuesUnavailable && !result.outputs) return <div>
@@ -214,7 +210,7 @@ export function ResultCard({ run }: { run: Run }) {
       </p>}
       {Object.entries(result.outputs ?? {}).map(([name, value]) => (
         <div key={name}>
-          <h4>{name}</h4>
+          <h4>{fieldLabel(name)}</h4>
           {Array.isArray(value) ? (
             <div className="table-scroll" role="region" aria-label={`${name} result table`} tabIndex={0}>
               <table>
@@ -222,7 +218,7 @@ export function ResultCard({ run }: { run: Run }) {
                   <tr>
                     {Object.keys(value[0] ?? {}).map((column) => (
                       <th scope="col" key={column}>
-                        {column}
+                        {fieldLabel(column)}
                       </th>
                     ))}
                   </tr>
@@ -231,7 +227,7 @@ export function ResultCard({ run }: { run: Run }) {
                   {value.map((row, index) => (
                     <tr key={index}>
                       {Object.keys(value[0] ?? {}).map((column) => (
-                        <td key={column}>{String(row[column] ?? '')}</td>
+                        <td key={column}>{displayValue(column, row[column])}</td>
                       ))}
                     </tr>
                   ))}
@@ -240,7 +236,7 @@ export function ResultCard({ run }: { run: Run }) {
               {!value.length && <p>No rows.</p>}
             </div>
           ) : (
-            <p className="output">{String(value)}</p>
+            <p className="output">{displayValue(name, value)}</p>
           )}
         </div>
       ))}
@@ -354,6 +350,7 @@ export function RunDetail({ run }: { run: Run }) {
             <p>Recorded input structure; values withheld.</p>
             {run.structure?.inputs ? run.structure.inputs.length ? <WithheldFields fields={run.structure.inputs} /> : <p>No public inputs were recorded for this run.</p> : <p>Input structure was not recorded or is unavailable.</p>}
           </div>}
+          <pre aria-label="Raw run details">{JSON.stringify({ runId: run.runId, capability: run.capability, version: run.version, state: run.state, step: run.step, finishedAt: run.finishedAt, result: run.result }, null, 2)}</pre>
           <RecordedTimeline key={run.runId} run={run} />
           <EvidenceViewer run={run} />
         </>
@@ -377,10 +374,10 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
   return (
     <article data-run-id={run.runId}>
       <div className="run-title">
-        <h3>{run.capability}</h3>
+        <h3>{capabilityLabel(run.capability)}</h3>
         <span className="badge" role="status" aria-live="polite" aria-atomic="true">
-          <span className="sr-only">{run.capability}, run {run.runId}: </span>
-          {run.state}
+          <span className="sr-only">{run.capability}, run {run.runId}, state {run.state}: </span>
+          {runPresentation(run).label}
           {run.result?.status === 'business_outcome' && <span className="sr-only">: {run.result.outcomeCode}</span>}
         </span>
       </div>
@@ -389,6 +386,9 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
         {run.version ? ` · v${run.version}` : ''} · {run.runId}
       </p>
       {run.step && <p>Current step: {run.step}</p>}
+      {run.state === 'success' && run.finishedAt && isReadCapability(run.capability) && !run.sensitiveValuesUnavailable && (
+        <p>Read completed at {new Date(run.finishedAt).toLocaleString()}</p>
+      )}
       {Number.isFinite(run.elapsedMs) && run.elapsedMs! >= 0 && (
         <p>
           Elapsed: {run.elapsedMs! < 1000 ? `${run.elapsedMs} ms` : `${(run.elapsedMs! / 1000).toFixed(1)} s`}
