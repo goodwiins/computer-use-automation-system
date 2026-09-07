@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AssistantRuntimeProvider,
   AuiConfig,
@@ -11,9 +11,120 @@ import {
   AuiIf,
 } from '@assistant-ui/react';
 import { AssistantChatTransport, useChatRuntime } from '@assistant-ui/ai-sdk';
+import type { UIMessage, UIMessageChunk } from 'ai';
 import { ChatRequestError, chatRequest } from './transport';
-import { useRuns } from './session';
+import { pending, useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
+
+type ChatLifecycle = {
+  key: string;
+  guardKey?: string;
+  intent: 'action' | 'status';
+  sawTool: boolean;
+  sawStatusTool: boolean;
+  sawOtherTool: boolean;
+  finished: boolean;
+  failed: boolean;
+  settled: boolean;
+  toolNames: Map<string, string>;
+};
+type ChatLifecycleCallbacks = {
+  complete: (lifecycle: ChatLifecycle) => void;
+  uncertain: (key: string) => void;
+};
+const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
+  private readonly initOptions: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0];
+  constructor(
+    options: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0],
+    private readonly lifecycles: Map<string, ChatLifecycle>,
+    private readonly callbacks: ChatLifecycleCallbacks,
+  ) {
+    super(options);
+    this.initOptions = options;
+  }
+
+  override __internal_clone(): AssistantChatTransport<UIMessage> {
+    return new GuardedAssistantChatTransport(this.initOptions, this.lifecycles, this.callbacks);
+  }
+
+  override async sendMessages(options: Parameters<AssistantChatTransport<UIMessage>['sendMessages']>[0]) {
+    const key = [...options.messages].reverse().find(message => message.role === 'user')?.id;
+    try {
+      const stream = await super.sendMessages(options);
+      const lifecycle = key ? this.lifecycles.get(key) : undefined;
+      if (!lifecycle) return stream;
+      const reader = stream.getReader();
+      const callbacks = this.callbacks;
+      const lifecycles = this.lifecycles;
+      const settle = () => {
+        if (lifecycle.settled) return;
+        lifecycle.settled = true;
+        lifecycles.delete(lifecycle.key);
+        if (lifecycle.intent !== 'action') return;
+        if (lifecycle.finished && !lifecycle.failed) callbacks.complete(lifecycle);
+        else callbacks.uncertain(lifecycle.key);
+      };
+      return new ReadableStream<UIMessageChunk>({
+        async pull(controller) {
+          try {
+            const next = await reader.read();
+            if (next.done) {
+              settle();
+              controller.close();
+              return;
+            }
+            const chunk = next.value;
+            if (chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available') {
+              lifecycle.sawTool = true;
+              lifecycle.toolNames.set(chunk.toolCallId, chunk.toolName);
+              if (chunk.toolName === 'run_status') lifecycle.sawStatusTool = true;
+              else lifecycle.sawOtherTool = true;
+            } else if (chunk.type === 'tool-output-available') {
+              lifecycle.sawTool = true;
+              if (lifecycle.toolNames.get(chunk.toolCallId) === 'run_status') lifecycle.sawStatusTool = true;
+              else lifecycle.sawOtherTool = true;
+            } else if (chunk.type === 'tool-input-error' || chunk.type === 'tool-output-error'
+              || chunk.type === 'tool-output-denied' || chunk.type === 'error' || chunk.type === 'abort') {
+              lifecycle.sawTool = true;
+              lifecycle.failed = true;
+            } else if (chunk.type === 'finish') {
+              lifecycle.finished = true;
+              settle();
+            }
+            controller.enqueue(chunk);
+          } catch (error) {
+            if (lifecycle.intent === 'action' && !lifecycle.settled) {
+              lifecycle.settled = true;
+              lifecycles.delete(lifecycle.key);
+              callbacks.uncertain(lifecycle.key);
+            } else if (!lifecycle.settled) {
+              lifecycle.settled = true;
+              lifecycles.delete(lifecycle.key);
+            }
+            controller.error(error);
+          }
+        },
+        cancel(reason) {
+          if (lifecycle.intent === 'action' && !lifecycle.settled) {
+            lifecycle.settled = true;
+            lifecycles.delete(lifecycle.key);
+            callbacks.uncertain(lifecycle.key);
+          } else if (!lifecycle.settled) {
+            lifecycle.settled = true;
+            lifecycles.delete(lifecycle.key);
+          }
+          return reader.cancel(reason);
+        },
+      });
+    } catch (error) {
+      const lifecycle = key ? this.lifecycles.get(key) : undefined;
+      if (lifecycle?.intent === 'action') this.callbacks.uncertain(lifecycle.key);
+      else if (lifecycle) this.lifecycles.delete(lifecycle.key);
+      throw error;
+    }
+  }
+}
 
 function RunTool({ result, status }: { result?: unknown; status?: { type: string } }) {
   const { watch } = useRuns();
@@ -65,20 +176,69 @@ function Message() {
   );
 }
 export function Chat() {
-  const { session, refresh, request } = useRuns();
+  const {
+    session,
+    runs,
+    refresh,
+    request,
+    actionHold,
+    beginAction,
+    markActionUncertain,
+    bindAction,
+    clearAction,
+    abandonAction,
+    watch,
+  } = useRuns();
   const [error, setError] = useState('');
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupRunId, setLookupRunId] = useState('');
+  const actionHoldRef = useRef(actionHold);
+  const lifecycleRef = useRef(new Map<string, ChatLifecycle>());
+  actionHoldRef.current = actionHold;
+  useEffect(() => {
+    if (actionHold?.kind !== 'chat' || actionHold.state !== 'bound' || !actionHold.runId) return;
+    const run = runs.find((candidate) => candidate.runId === actionHold.runId);
+    const availability = run && session.availability;
+    const availabilityReady = availability !== undefined
+      && availability.some(item => item.id === run?.capability && item.state === 'available');
+    if (run && !pending(run) && availabilityReady) clearAction(actionHold.key);
+  }, [actionHold, runs, session.availability, clearAction]);
   const transport = useMemo(
     () =>
-      new AssistantChatTransport({
+      new GuardedAssistantChatTransport({
         api: '/api/chat',
         prepareSendMessagesRequest: ({ messages, id }) => {
-          const prepared = chatRequest(messages, id, 'auto');
+          const hold = actionHoldRef.current;
+          const prepared = chatRequest(messages, id, hold ? 'status' : 'auto');
+          const key = String(prepared.headers['Idempotency-Key']);
+          if (hold) {
+            lifecycleRef.current.set(key, { key, guardKey: hold.key, intent: 'status', sawTool: false, sawStatusTool: false, sawOtherTool: false, finished: false, failed: false, settled: false, toolNames: new Map() });
+          } else if (!beginAction({ kind: 'chat', key, body: JSON.stringify(prepared.body) })) {
+            throw new ChatRequestError('An operation request is still unresolved. Ask about its status before sending another action. No request was sent.');
+          } else {
+            lifecycleRef.current.set(key, { key, intent: 'action', sawTool: false, sawStatusTool: false, sawOtherTool: false, finished: false, failed: false, settled: false, toolNames: new Map() });
+          }
           setError('');
           return prepared;
         },
         fetch: (input, init) => request(String(input), init),
+      }, lifecycleRef.current, {
+        complete: current => {
+          lifecycleRef.current.delete(current.key);
+          if (current.intent !== 'action') {
+            return;
+          } else if (current.sawTool || current.failed) {
+            markActionUncertain(current.key);
+          } else {
+            clearAction(current.key);
+          }
+        },
+        uncertain: key => {
+          lifecycleRef.current.delete(key);
+          markActionUncertain(key);
+        },
       }),
-    [request],
+    [request, beginAction, markActionUncertain, bindAction, clearAction, watch],
   );
   const runtime = useChatRuntime({
     transport,
@@ -106,6 +266,38 @@ export function Chat() {
     [session.capabilities],
   );
   const config = AuiConfig({ tools: Tools({ toolkit }) });
+  async function lookupOriginal() {
+    const hold = actionHoldRef.current;
+    if (!hold || hold.kind !== 'chat' || hold.state !== 'uncertain' || lookupBusy) return;
+    setLookupBusy(true);
+    setError('');
+    try {
+      const response = await request('/api/chat/request', {
+        cache: 'no-store',
+        headers: { 'Idempotency-Key': hold.key },
+      });
+      const result = await response.json() as { kind?: unknown; runId?: unknown; capability?: unknown; state?: unknown };
+      if (result.kind !== 'run'
+        || typeof result.runId !== 'string' || !runIdPattern.test(result.runId)
+        || typeof result.capability !== 'string' || !result.capability.length
+        || typeof result.state !== 'string' || !result.state.length) {
+        throw new Error('Lookup returned an invalid run binding.');
+      }
+      setLookupRunId(result.runId);
+      bindAction(hold.key, result.runId);
+      watch(result.runId);
+    } catch (e) {
+      setError(`${e instanceof Error ? e.message : 'Lookup interrupted.'} Acceptance remains unconfirmed. Refresh history before taking further action.`);
+    } finally {
+      setLookupBusy(false);
+    }
+  }
+  function abandonChat() {
+    const hold = actionHoldRef.current;
+    if (!hold || hold.kind !== 'chat' || hold.state !== 'uncertain' || lookupBusy) return;
+    abandonAction(hold.key);
+    setError('The original request may still run or may have completed; this local action does not cancel it. Start a new request only after reviewing its status.');
+  }
   return (
     <section aria-labelledby="chat-heading" className="chat">
       <h2 id="chat-heading" className="sr-only">Assistant</h2>
@@ -125,6 +317,13 @@ export function Chat() {
             </div>
             <ThreadPrimitive.ViewportFooter className="composer-footer">
               <ThreadPrimitive.ScrollToBottom className="scroll-bottom secondary" aria-label="Scroll to bottom">↓</ThreadPrimitive.ScrollToBottom>
+              {actionHold?.kind === 'direct' && <p role="status">A direct request is unresolved. Chat messages are status-only until it is looked up or locally abandoned.</p>}
+              {actionHold?.kind === 'chat' && actionHold.state === 'uncertain' && <p role="alert">
+                Acceptance is unconfirmed. The original request may still run or may have completed. Looking it up does not cancel it.
+                <button type="button" disabled={lookupBusy} onClick={() => void lookupOriginal()}>Look up original request</button>
+                <button type="button" disabled={lookupBusy} onClick={abandonChat}>Start a separate request</button>
+              </p>}
+              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} /></div>}
               {error && <p role="alert">{error}</p>}
               <ComposerPrimitive.Root className="composer">
                 <label htmlFor="message" className="sr-only">Your request</label>
