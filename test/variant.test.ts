@@ -70,7 +70,7 @@ describe('cross-tenant replay via overlay', () => {
   it(
     'base artifact alone fails loudly at the renamed control',
     async () => {
-      const result = await replay(base, { memberId: '23456' });
+      const result = await replay({ ...base, steps: base.steps.map(step => ({ ...step, timeoutMs: 1000 })) }, { memberId: '23456' });
       expect(result.status).toBe('failure');
       if (result.status === 'failure') {
         expect(result.failure.stepId).toBe('s1');
