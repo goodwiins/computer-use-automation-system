@@ -14,6 +14,7 @@ export type ActionAttempt = {
 export type ActionHold = ActionAttempt & {
   state: 'active' | 'uncertain' | 'bound';
   runId?: string;
+  boundCapabilityId?: string;
 };
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
@@ -38,7 +39,7 @@ const Context = createContext<{
   actionHold?: ActionHold;
   beginAction: (attempt: ActionAttempt) => boolean;
   markActionUncertain: (key: string) => void;
-  bindAction: (key: string, runId: string) => void;
+  bindAction: (key: string, runId: string, capabilityId?: string) => void;
   clearAction: (key: string) => void;
   abandonAction: (key: string) => void;
   request: (path: string, options?: RequestInit) => Promise<Response>;
@@ -88,8 +89,8 @@ export function RunProvider({
   const markActionUncertain = useCallback((key: string) => {
     updateAction(key, current => ({ ...current, state: 'uncertain' }));
   }, [updateAction]);
-  const bindAction = useCallback((key: string, runId: string) => {
-    updateAction(key, current => ({ ...current, state: 'bound', runId }));
+  const bindAction = useCallback((key: string, runId: string, capabilityId?: string) => {
+    updateAction(key, current => ({ ...current, state: 'bound', runId, boundCapabilityId: capabilityId }));
   }, [updateAction]);
   const clearAction = useCallback((key: string) => {
     updateAction(key, () => undefined);

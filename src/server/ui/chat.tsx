@@ -23,8 +23,9 @@ type ChatLifecycle = {
   sawTool: boolean;
   sawStatusTool: boolean;
   sawOtherTool: boolean;
-  finished: boolean;
   finishReason?: string;
+  finishSeen: boolean;
+  postFinishFailure: boolean;
   failed: boolean;
   settled: boolean;
   toolNames: Map<string, string>;
@@ -35,6 +36,27 @@ type ChatLifecycleCallbacks = {
 };
 type ChatRunBinding = { runId: string; capability: string; state: string };
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const capabilityIdPattern = /^[a-z0-9][a-z0-9-]*$/;
+const bindingKeys = ['kind', 'runId', 'capability', 'state'] as const;
+const supportedRunStates = new Set([
+  'accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human',
+  'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN',
+]);
+function parseChatRunBinding(value: unknown): ChatRunBinding {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype)
+    throw new Error('Lookup returned an invalid run binding.');
+  const result = value as Record<string, unknown>;
+  const keys = Object.keys(result);
+  if (keys.length !== bindingKeys.length || bindingKeys.some(key => !Object.prototype.hasOwnProperty.call(result, key)))
+    throw new Error('Lookup returned an invalid run binding.');
+  if (result.kind !== 'run'
+    || typeof result.runId !== 'string' || !runIdPattern.test(result.runId)
+    || typeof result.capability !== 'string' || !capabilityIdPattern.test(result.capability)
+    || typeof result.state !== 'string' || !supportedRunStates.has(result.state)) {
+    throw new Error('Lookup returned an invalid run binding.');
+  }
+  return { runId: result.runId, capability: result.capability, state: result.state };
+}
 class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
   private readonly initOptions: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0];
   constructor(
@@ -64,7 +86,7 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
         lifecycle.settled = true;
         lifecycles.delete(lifecycle.key);
         if (lifecycle.intent !== 'action') return;
-        if (lifecycle.finished && !lifecycle.failed) callbacks.complete(lifecycle);
+        if (lifecycle.finishSeen && !lifecycle.failed && !lifecycle.postFinishFailure) callbacks.complete(lifecycle);
         else callbacks.uncertain(lifecycle.key);
       };
       return new ReadableStream<UIMessageChunk>({
@@ -77,6 +99,7 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
               return;
             }
             const chunk = next.value;
+            if (lifecycle.finishSeen) lifecycle.postFinishFailure = true;
             if (chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available') {
               lifecycle.sawTool = true;
               lifecycle.toolNames.set(chunk.toolCallId, chunk.toolName);
@@ -91,9 +114,11 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
               lifecycle.sawTool = true;
               lifecycle.failed = true;
             } else if (chunk.type === 'finish') {
-              lifecycle.finished = true;
-              lifecycle.finishReason = chunk.finishReason;
-              settle();
+              if (lifecycle.finishSeen) lifecycle.failed = true;
+              else {
+                lifecycle.finishSeen = true;
+                lifecycle.finishReason = chunk.finishReason;
+              }
             }
             controller.enqueue(chunk);
           } catch (error) {
@@ -203,14 +228,7 @@ export function Chat() {
       cache: 'no-store',
       headers: { 'Idempotency-Key': key },
     });
-    const result = await response.json() as { kind?: unknown; runId?: unknown; capability?: unknown; state?: unknown };
-    if (result.kind !== 'run'
-      || typeof result.runId !== 'string' || !runIdPattern.test(result.runId)
-      || typeof result.capability !== 'string' || !result.capability.length
-      || typeof result.state !== 'string' || !result.state.length) {
-      throw new Error('Lookup returned an invalid run binding.');
-    }
-    return { runId: result.runId, capability: result.capability, state: result.state };
+    return parseChatRunBinding(await response.json());
   }, [request]);
   const boundRun = actionHold?.kind === 'chat' && actionHold.state === 'bound' && actionHold.runId
     ? runs.find(candidate => candidate.runId === actionHold.runId)
@@ -218,10 +236,11 @@ export function Chat() {
   useEffect(() => {
     if (actionHold?.kind !== 'chat' || actionHold.state !== 'bound' || !actionHold.runId) return;
     const run = runs.find((candidate) => candidate.runId === actionHold.runId);
+    if (!run || !actionHold.boundCapabilityId || run.capability !== actionHold.boundCapabilityId) return;
     const availability = run && session.availability;
     const availabilityReady = availability !== undefined
-      && availability.some(item => item.id === run?.capability && item.state === 'available');
-    if (run && !pending(run) && availabilityReady) clearAction(actionHold.key);
+      && availability.some(item => item.id === actionHold.boundCapabilityId && item.state === 'available');
+    if (!pending(run) && availabilityReady) clearAction(actionHold.key);
   }, [actionHold, runs, session.availability, clearAction]);
   const transport = useMemo(
     () =>
@@ -232,11 +251,11 @@ export function Chat() {
           const prepared = chatRequest(messages, id, hold ? 'status' : 'auto');
           const key = String(prepared.headers['Idempotency-Key']);
           if (hold) {
-            lifecycleRef.current.set(key, { key, guardKey: hold.key, intent: 'status', sawTool: false, sawStatusTool: false, sawOtherTool: false, finished: false, failed: false, settled: false, toolNames: new Map() });
+            lifecycleRef.current.set(key, { key, guardKey: hold.key, intent: 'status', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
           } else if (!beginAction({ kind: 'chat', key, body: JSON.stringify(prepared.body) })) {
             throw new ChatRequestError('An operation request is still unresolved. Ask about its status before sending another action. No request was sent.');
           } else {
-            lifecycleRef.current.set(key, { key, intent: 'action', sawTool: false, sawStatusTool: false, sawOtherTool: false, finished: false, failed: false, settled: false, toolNames: new Map() });
+            lifecycleRef.current.set(key, { key, intent: 'action', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
           }
           setError('');
           return prepared;
@@ -248,14 +267,14 @@ export function Chat() {
           if (current.intent !== 'action') {
             return;
           } else if (current.failed
-            || !current.finished
+            || !current.finishSeen
             || (current.finishReason !== 'stop' && current.finishReason !== 'tool-calls')) {
             markActionUncertain(current.key);
           } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
               setLookupRunId(binding.runId);
-              bindAction(current.key, binding.runId);
+              bindAction(current.key, binding.runId, binding.capability);
               watch(binding.runId);
             }).catch(() => markActionUncertain(current.key));
           } else if (current.finishReason === 'stop' && !current.sawTool) {
@@ -308,7 +327,7 @@ export function Chat() {
       const binding = await lookupRun(hold.key);
       if (actionHoldRef.current?.key !== hold.key) return;
       setLookupRunId(binding.runId);
-      bindAction(hold.key, binding.runId);
+      bindAction(hold.key, binding.runId, binding.capability);
       watch(binding.runId);
     } catch (e) {
       setError(`${e instanceof Error ? e.message : 'Lookup interrupted.'} Acceptance remains unconfirmed. Refresh history before taking further action.`);
@@ -348,6 +367,7 @@ export function Chat() {
             <ThreadPrimitive.ViewportFooter className="composer-footer">
               <ThreadPrimitive.ScrollToBottom className="scroll-bottom secondary" aria-label="Scroll to bottom">↓</ThreadPrimitive.ScrollToBottom>
               {actionHold?.kind === 'direct' && <p role="status">A direct request is unresolved. Chat messages are status-only until it is looked up or locally abandoned.</p>}
+              {actionHold?.kind === 'chat' && <p role="status">Chat messages are status-only while this action request is being confirmed and until its run is ready.</p>}
               {actionHold?.kind === 'chat' && actionHold.state === 'uncertain' && <p role="alert">
                 Acceptance is unconfirmed. The original request may still run or may have completed. Looking it up does not cancel it.
                 <button type="button" disabled={lookupBusy} onClick={() => void lookupOriginal()}>Look up original request</button>

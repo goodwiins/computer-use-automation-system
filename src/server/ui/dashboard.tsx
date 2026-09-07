@@ -60,6 +60,9 @@ export function CapabilityCatalog() {
   const recoveryPending = recoveryAvailable && Boolean(attempt.current);
   const ordinarySubmitBlocked = active.current || Boolean(acceptedId) || loading || Boolean(historyError)
     || recoveryPending || Boolean(actionHold);
+  const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
+    && acceptedRun.capability === attempt.current.capabilityId
+    && availability?.some(item => item.id === acceptedRun.capability && item.state === 'available'));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;
@@ -76,7 +79,7 @@ export function CapabilityCatalog() {
       const accepted: { runId: string } = await response.json();
       segment(accepted.runId);
       setAcceptedId(accepted.runId);
-      bindAction(retained.key, accepted.runId);
+      bindAction(retained.key, accepted.runId, retained.capabilityId);
       watch(accepted.runId);
     } catch (e) {
       markActionUncertain(retained.key);
@@ -232,8 +235,9 @@ export function CapabilityCatalog() {
           </p>
         )}
         {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
-        {acceptedRun && !pending(acceptedRun) && (
+        {acceptedRun && !pending(acceptedRun) && (acceptedRun.state === 'POST_OUTCOME_UNKNOWN' || acceptedCapabilityReady) && (
           <button onClick={() => {
+            if (acceptedRun.state !== 'POST_OUTCOME_UNKNOWN' && !acceptedCapabilityReady) return;
             if (attempt.current) clearAction(attempt.current.key);
             setAcceptedId('');
             attempt.current = undefined;
