@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { authenticatedFetch, RunProvider, useRuns, type Session } from './session';
 import { Chat } from './chat';
 import { CapabilityCatalog, RunHistory } from './dashboard';
+import { ReviewDialog } from './review';
 
 const preview = typeof document !== 'undefined' && document.documentElement.dataset.uiPreview === 'true';
 
@@ -142,5 +143,6 @@ function Workspace() {
       <CapabilityCatalog />
       <RunHistory />
     </aside>
+    <ReviewDialog />
   </div>;
 }

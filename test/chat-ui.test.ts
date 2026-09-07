@@ -701,15 +701,32 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.getByText('Loading authenticated history…', { exact: true }).waitFor();
   expect(await page.locator('#invoke button').isDisabled()).toBe(true);
   releaseHistory();
-  await page.getByText('Waiting for an operator.', { exact: true }).waitFor();
-  expect(await page.getByRole('button', { name: 'Approve submission' }).count()).toBe(0);
-  expect(await page.getByText('Waiting for an operator.', { exact: true }).count()).toBe(1);
+  const callerReview = page.getByRole('button', { name: 'Review request', exact: true }).first();
+  await callerReview.waitFor();
+  await callerReview.click();
+  await page.getByRole('dialog').waitFor();
+  expect(await page.getByRole('dialog').innerText()).not.toContain('offline-teller');
+  expect(await page.getByRole('dialog').getByRole('button', { name: /Confirm|Refuse|Retry|Stop/ }).count()).toBe(0);
+  await page.keyboard.press('Escape');
+  expect(await page.getByRole('dialog').isVisible()).toBe(false);
+  expect(await callerReview.evaluate(element => element === document.activeElement)).toBe(true);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await connect(operatorToken);
-  const approve = page.getByRole('button', { name: 'Approve submission' });
+  const review = page.getByRole('button', { name: 'Review request', exact: true }).first();
+  await review.focus();
+  await review.click();
+  const dialog = page.getByRole('dialog');
+  await dialog.waitFor();
+  expect(await dialog.getAttribute('data-run-id')).toBe(runId);
+  expect(await page.getByRole('dialog').count()).toBe(1);
+  const approve = page.getByRole('button', { name: 'Confirm request', exact: true });
   await approve.waitFor();
-  expect(await page.locator('.approval').innerText()).toContain('25.00');
-  expect(await page.locator('.approval').innerText()).not.toMatch(/short-secret|hidden-body|hidden-token|visibleFacts|businessValues/);
+  expect(await dialog.innerText()).toContain('25.00');
+  expect(await dialog.innerText()).not.toMatch(/short-secret|hidden-body|hidden-token|visibleFacts|businessValues/);
+  await page.screenshot({ path: join(evidencePath, 'review-dialog-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.screenshot({ path: join(evidencePath, 'review-dialog-320.png'), fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await approve.focus();
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
@@ -720,7 +737,9 @@ it('offline operator controls require live authority, disable expired/duplicate 
     state: 'awaiting-human',
     intervention: { ...intervention, expiresAt: Date.now() - 1 },
   };
+  await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   await visible(page, '.approval', 'Intervention expired.');
   expect(await approve.isDisabled()).toBe(true);
   state.runs[0] = {
@@ -732,7 +751,9 @@ it('offline operator controls require live authority, disable expired/duplicate 
       request: { kind: 'locator_failed', reason: 'Repair the exact active page' },
     },
   };
+  await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
   await retry.click();
@@ -742,13 +763,16 @@ it('offline operator controls require live authority, disable expired/duplicate 
     state: 'awaiting-human',
     intervention: { ...intervention, id: '44444444-4444-4444-8444-444444444444' },
   };
+  await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
-  await page.getByRole('button', { name: 'Abort', exact: true }).click();
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Refuse request', exact: true }).click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve', 'retry', 'abort']));
   state.runs[0] = { ...initialRun(), state: 'POST_OUTCOME_UNKNOWN', intervention };
+  await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
   await visible(page, '#runs', 'POST_OUTCOME_UNKNOWN');
-  expect(await page.getByRole('button', { name: /Retry|Approve|Abort/ }).count()).toBe(0);
+  expect(await page.getByRole('button', { name: /Retry|Confirm|Refuse/ }).count()).toBe(0);
   await page.screenshot({ path: join(evidencePath, 'offline-unknown.png'), fullPage: true });
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
@@ -1183,6 +1207,9 @@ it('unlocks a failed decision only after fresh authoritative confirmation and ne
     request: { kind: 'locator_failed', reason: 'Repair fixture' },
   } });
   await connect(operatorToken);
+  const review = page.getByRole('button', { name: 'Review request', exact: true }).first();
+  await review.focus();
+  await review.click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
   let posts = 0;
@@ -1190,18 +1217,28 @@ it('unlocks a failed decision only after fresh authoritative confirmation and ne
   await retry.click();
   await page.getByText('Refresh to inspect authoritative state.', { exact: false }).waitFor();
   expect(await retry.isDisabled()).toBe(true);
-  await page.locator('#refresh').click();
+  await page.keyboard.press('Escape');
+  expect(await page.locator('dialog').isVisible()).toBe(false);
+  await review.click();
   expect(await retry.isDisabled()).toBe(true);
+  await page.keyboard.press('Escape');
+  expect(await page.locator('dialog').isVisible()).toBe(false);
+  await page.locator('#refresh').click();
   let releaseProbe!: () => void;
   const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
   let probes = 0;
   await page.route(`**/runs/${runId}`, async route => { probes++; await heldProbe; await route.continue(); });
   state.offline = false;
   await page.locator('#refresh').click();
+  await review.click();
   await vi.waitFor(() => expect(probes).toBe(1));
+  expect(await retry.isDisabled()).toBe(true);
+  await page.keyboard.press('Escape');
+  expect(await page.locator('dialog').isVisible()).toBe(false);
   const reads = state.requests.filter(r => r.path === '/runs').length;
   await page.locator('#refresh').click();
   await vi.waitFor(() => expect(state.requests.filter(r => r.path === '/runs').length).toBeGreaterThan(reads));
+  await review.click();
   expect(await retry.isDisabled()).toBe(true);
   releaseProbe();
   await page.getByText('The server confirms this intervention is still pending.', { exact: false }).waitFor();
@@ -1212,6 +1249,43 @@ it('unlocks a failed decision only after fresh authoritative confirmation and ne
   await page.unroute('**/decision');
   await retry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['retry']));
+}, 15000);
+
+it('fails closed for mismatched or incomplete action context while keeping refusal available', async () => {
+  const { page, state, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId,
+    expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+    action: {
+      runId: 'different-run', artifact: capability.id, version: '1.0.0', stepId: 'post',
+      destination: 'https://offline.example/post', method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { amount: '25.00' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention });
+  await connect(operatorToken);
+  const review = page.getByRole('button', { name: 'Review request', exact: true }).first();
+  await review.click();
+  const confirm = page.getByRole('button', { name: 'Confirm request', exact: true });
+  const refuse = page.getByRole('button', { name: 'Refuse request', exact: true });
+  await confirm.waitFor();
+  expect(await confirm.isDisabled()).toBe(true);
+  expect(await refuse.isDisabled()).toBe(false);
+  state.runs[0] = {
+    ...initialRun(), state: 'awaiting-human',
+    intervention: publicIntervention({
+      ...intervention,
+      id: '33333333-3333-4333-8333-333333333333',
+      action: { ...intervention.action!, runId, facts: {} },
+    }),
+  };
+  await page.keyboard.press('Escape');
+  await page.locator('#refresh').click();
+  await review.click();
+  expect(await page.getByRole('button', { name: 'Confirm request', exact: true }).isDisabled()).toBe(true);
+  await page.getByRole('button', { name: 'Refuse request', exact: true }).click();
+  await vi.waitFor(() => expect(state.decisions).toEqual(['abort']));
 }, 15000);
 
 it('renders strict and legacy business outcome codes while dropping arbitrary values', async () => {

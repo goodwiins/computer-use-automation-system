@@ -29,8 +29,8 @@
 | --- | --- | --- |
 | 0 | Published [PR95](https://github.com/goodwiins/computer-use-automation-system/pull/95), head `0914e1d` | Independent task/fix/final reviews clear; local 735 tests/typechecks/Next build and exact-head hosted CI 34082993000 passed; PR remains unmerged |
 | 1 | Published [PR93](https://github.com/goodwiins/computer-use-automation-system/pull/93), privacy-fixed head `dcb048c` | Local 749 tests and hosted CI 34083144047 passed; independent final safety review clear. Earlier live read composition passed; privacy fix has not been applied to protected demo. PR remains unmerged |
-| 2 | Published [PR97](https://github.com/goodwiins/computer-use-automation-system/pull/97), head `7245196` | Independent task/fix/final integration reviews clear; local771 tests/typechecks/Next build passed, exact-head hosted CI pending. Adds strict lookupOnly request recovery; B1/B2 retain auth/store ownership |
-| 3 | Exact-run review and readable approval facts: implementation active | Plan `2026-09-07-ui-review.md`, reviewed PR97 dependency; existing decision API, one active review surface, per-session decision locks |
+| 2 | Published [PR97](https://github.com/goodwiins/computer-use-automation-system/pull/97), head `9894740` | P1 unresolved-request guard and explicit local separate-request follow-up independently reviewed; local771 tests/typechecks/Next build passed; exact-head hosted34091920542 passed. Earlier7245196 hosted34087815152 passed. Adds strict lookupOnly recovery; separate private-inquiry P1 remains backend B2 integration-owned |
+| 3 | Exact-run review and readable approval facts: UI implementation complete in this checkout | Plan `2026-09-07-ui-review.md`, reviewed PR97 dependency; existing decision API, one active review surface, per-session decision locks. Local focused UI checks, typecheck and Next build pass; coordinator owns independent review/publication |
 | 4 | Transfer/update/hold live acceptance: external demo/runtime gate | Genuine recording, approved artifact and separately approved replay; no UI simulation can close this |
 | 5 | Honest role workspace and authorized review queue: pending implementation | Unit 3 review navigation; B1 subject contract for individual identity; cross-person grants unavailable |
 | 6 | assistant-ui persistent conversation adapter: ready for deliberate backend integration | [PR96](https://github.com/goodwiins/computer-use-automation-system/pull/96), reviewed head `1e029eb`, source CI782 and exact hosted34084793710 passed; real PG/journal restore30/30 accepted. Unmerged. Safe events only, no replay on restore |
@@ -67,7 +67,7 @@ expect(formatMoney('90071992547409.91')).toBe('$90,071,992,547,409.91');
 
 **Interfaces:** `useRuns()` adds current `reviewRunId`, `openReview(runId: string)` and `closeReview()`. A single native dialog mounted in `Workspace` resolves that exact ID from current authenticated runs. Chat/history links open this same surface; they do not create duplicate approval panels or execute a request. Session replacement clears the selected review.
 
-- [ ] Write tests proving a chat “Review request” action opens exactly the bound run, caller sees no operator-only facts/decision controls, Escape restores focus, and changing sessions removes the dialog.
+- [x] Write tests proving a chat “Review request” action opens exactly the bound run, caller sees no operator-only facts/decision controls, Escape restores focus, and changing sessions removes the dialog.
 
 ```ts
 await page.getByRole('button', {name: 'Review request', exact: true}).click();
@@ -75,8 +75,8 @@ expect(await page.getByRole('dialog').getAttribute('data-run-id')).toBe(runId);
 expect(decisions).toEqual([]);
 ```
 
-- [ ] Reuse `EscalationCard`/`ApprovalPanel` inside that one dialog. Render public action facts as named fields: member, source/destination, amount/memo, share type/deposit, changed contact fields, or share/reason/notes. Preserve every provided review fact; unknown fields remain readable. Show actual action operator/branch/role and expiry. Technical method/destination/IDs go under Details; never expose filtered credential fields.
-- [ ] Use action-specific confirmation labels and “Refuse request” for posting approval; manual recovery remains a separate bounded-retry/stop flow. Missing action context disables confirmation. Expiry, changed facts, stale updates and response loss remain locked to the current server intervention.
+- [x] Reuse `EscalationCard`/`ApprovalPanel` inside that one dialog. Render public action facts as named fields: member, source/destination, amount/memo, share type/deposit, changed contact fields, or share/reason/notes. Preserve every provided review fact; unknown fields remain readable. Show actual action operator/branch/role and expiry. Technical method/destination/IDs go under Details; never expose filtered credential fields.
+- [x] Use action-specific confirmation labels and “Refuse request” for posting approval; manual recovery remains a separate bounded-retry/stop flow. Missing action context disables confirmation. Expiry, changed facts, stale updates and response loss remain locked to the current server intervention.
 
 ```ts
 await page.getByRole('button', {name: 'Confirm transfer', exact: true}).dblclick();
