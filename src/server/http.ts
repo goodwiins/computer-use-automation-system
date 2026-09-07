@@ -20,6 +20,24 @@ const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVIS
 const hash = (value: string) => createHash('sha256').update(value).digest();
 const asyncRoute = (handler: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: NextFunction) => { void handler(req, res).catch(next); };
+
+export type ServerStorageConfiguration = {
+  mode: 'filesystem' | 'postgres';
+  databaseUrl?: string;
+  subjectTokens?: SubjectCredential[];
+  enableConversations: boolean;
+};
+
+export function resolveServerStorageConfiguration(env: NodeJS.ProcessEnv = process.env): ServerStorageConfiguration {
+  const mode = env.RUN_JOURNAL ?? 'filesystem';
+  if (mode !== 'filesystem' && mode !== 'postgres') throw new Error('RUN_JOURNAL must be filesystem or postgres');
+  const subjectTokens = parseSubjectCredentials(env.SUBJECT_API_TOKENS);
+  const databaseUrl = env.DATABASE_URL || undefined;
+  if (databaseUrl && !subjectTokens && mode !== 'postgres') throw new Error('Conversation storage configuration is invalid');
+  if (mode === 'postgres' && !databaseUrl) throw new Error('PostgreSQL journal requires DATABASE_URL');
+  return { mode, databaseUrl, subjectTokens, enableConversations: Boolean(databaseUrl && subjectTokens) };
+}
+
 export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
   const authenticate = createAuthenticator(config);
   const localTellerLogin = config.subjectTokens ? undefined : config.localTellerLogin;
@@ -115,19 +133,19 @@ export async function serve(profileName = 'meridian') {
     if (failure) throw failure;
   })();
   try {
-    const subjectTokens = parseSubjectCredentials(process.env.SUBJECT_API_TOKENS);
-    const databaseUrl = process.env.DATABASE_URL;
-    if (databaseUrl && !subjectTokens) throw new Error('Conversation storage configuration is invalid');
-    const mode = process.env.RUN_JOURNAL ?? 'filesystem';
-    postgresJournal = mode === 'postgres';
+    const storage = resolveServerStorageConfiguration();
+    const { subjectTokens, databaseUrl } = storage;
+    postgresJournal = storage.mode === 'postgres';
     let conversations: ConversationStore | undefined;
     let shutdownOnDatabaseError: (() => void) | undefined;
     if (databaseUrl) {
       try {
         pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
         pool.on('error', () => { process.exitCode = 1; shutdownOnDatabaseError?.(); });
-        conversations = new ConversationStore(pool);
-        await conversations.migrate();
+        if (storage.enableConversations) {
+          conversations = new ConversationStore(pool);
+          await conversations.migrate();
+        }
       } catch { throw new Error('Conversation storage startup failed'); }
     }
     if (postgresJournal && !pool) throw new Error('PostgreSQL journal requires DATABASE_URL');

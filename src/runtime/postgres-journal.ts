@@ -54,6 +54,13 @@ type AuthorityRow = { import_id: string | null; source_digest: string | null; ow
 const ACTIVE_STATES = ['reserved', 'running', 'dispatching'] as const;
 const POISON_MESSAGE = 'Journal storage outcome uncertain; restart or recover required';
 const CLOSED_MESSAGE = 'Journal is closed';
+export const POSTGRES_LOCK_TIMEOUT_MS = 2_000;
+export const POSTGRES_STATEMENT_TIMEOUT_MS = 5_000;
+
+async function configureTransactionTimeouts(client: PoolClient): Promise<void> {
+  await client.query(`SET LOCAL lock_timeout = '${POSTGRES_LOCK_TIMEOUT_MS}ms'`);
+  await client.query(`SET LOCAL statement_timeout = '${POSTGRES_STATEMENT_TIMEOUT_MS}ms'`);
+}
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, message = 'Journal request does not match the contract'): T {
   const result = schema.safeParse(value);
@@ -135,7 +142,10 @@ async function staticTransaction<T>(pool: Pool, work: (client: PoolClient) => Pr
   catch { throw new Error('Journal operation failed'); }
   let discard = false;
   try {
-    try { await client.query('BEGIN'); }
+    try {
+      await client.query('BEGIN');
+      await configureTransactionTimeouts(client);
+    }
     catch { discard = true; throw new Error('Journal operation failed'); }
     let commitAttempted = false;
     try {
@@ -542,7 +552,10 @@ export class PostgresJournal implements RunJournal {
     try {
       try { client = await this.pool.connect(); }
       catch { throw this.poison(); }
-      try { await client.query('BEGIN'); }
+      try {
+        await client.query('BEGIN');
+        await configureTransactionTimeouts(client);
+      }
       catch { discard = true; throw this.poison(); }
       try {
         const result = await work(client);
