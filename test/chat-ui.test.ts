@@ -793,6 +793,20 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(invokes).toHaveLength(1);
   await page.getByRole('button', { name: 'Start a separate request', exact: true }).click();
   expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await invokeButton.isDisabled()).toBe(true);
+  await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.waitForTimeout(100);
+  expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('available', 'available');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
   await invokeButton.click();
   await visible(page, '#runs', runId);
   invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
