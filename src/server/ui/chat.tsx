@@ -11,29 +11,17 @@ import {
   AuiIf,
 } from '@assistant-ui/react';
 import { AssistantChatTransport, useChatRuntime } from '@assistant-ui/ai-sdk';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import { ChatRequestError, chatRequest } from './transport';
+import type { UIMessage } from 'ai';
+import {
+  ChatRequestError,
+  chatRequest,
+  observeGuardedChatStream,
+  type ChatLifecycle,
+  type ChatLifecycleCallbacks,
+} from './transport';
 import { pending, useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
 
-type ChatLifecycle = {
-  key: string;
-  guardKey?: string;
-  intent: 'action' | 'status';
-  sawTool: boolean;
-  sawStatusTool: boolean;
-  sawOtherTool: boolean;
-  finishReason?: string;
-  finishSeen: boolean;
-  postFinishFailure: boolean;
-  failed: boolean;
-  settled: boolean;
-  toolNames: Map<string, string>;
-};
-type ChatLifecycleCallbacks = {
-  complete: (lifecycle: ChatLifecycle) => void;
-  uncertain: (key: string) => void;
-};
 type ChatRunBinding = { runId: string; capability: string; state: string };
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const capabilityIdPattern = /^[a-z0-9][a-z0-9-]*$/;
@@ -57,6 +45,7 @@ function parseChatRunBinding(value: unknown): ChatRunBinding {
   }
   return { runId: result.runId, capability: result.capability, state: result.state };
 }
+
 class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
   private readonly initOptions: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0];
   constructor(
@@ -78,73 +67,7 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
       const stream = await super.sendMessages(options);
       const lifecycle = key ? this.lifecycles.get(key) : undefined;
       if (!lifecycle) return stream;
-      const reader = stream.getReader();
-      const callbacks = this.callbacks;
-      const lifecycles = this.lifecycles;
-      const settle = () => {
-        if (lifecycle.settled) return;
-        lifecycle.settled = true;
-        lifecycles.delete(lifecycle.key);
-        if (lifecycle.intent !== 'action') return;
-        if (lifecycle.finishSeen && !lifecycle.failed && !lifecycle.postFinishFailure) callbacks.complete(lifecycle);
-        else callbacks.uncertain(lifecycle.key);
-      };
-      return new ReadableStream<UIMessageChunk>({
-        async pull(controller) {
-          try {
-            const next = await reader.read();
-            if (next.done) {
-              settle();
-              controller.close();
-              return;
-            }
-            const chunk = next.value;
-            if (lifecycle.finishSeen) lifecycle.postFinishFailure = true;
-            if (chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available') {
-              lifecycle.sawTool = true;
-              lifecycle.toolNames.set(chunk.toolCallId, chunk.toolName);
-              if (chunk.toolName === 'run_status') lifecycle.sawStatusTool = true;
-              else lifecycle.sawOtherTool = true;
-            } else if (chunk.type === 'tool-output-available') {
-              lifecycle.sawTool = true;
-              if (lifecycle.toolNames.get(chunk.toolCallId) === 'run_status') lifecycle.sawStatusTool = true;
-              else lifecycle.sawOtherTool = true;
-            } else if (chunk.type === 'tool-input-error' || chunk.type === 'tool-output-error'
-              || chunk.type === 'tool-output-denied' || chunk.type === 'error' || chunk.type === 'abort') {
-              lifecycle.sawTool = true;
-              lifecycle.failed = true;
-            } else if (chunk.type === 'finish') {
-              if (lifecycle.finishSeen) lifecycle.failed = true;
-              else {
-                lifecycle.finishSeen = true;
-                lifecycle.finishReason = chunk.finishReason;
-              }
-            }
-            controller.enqueue(chunk);
-          } catch (error) {
-            if (lifecycle.intent === 'action' && !lifecycle.settled) {
-              lifecycle.settled = true;
-              lifecycles.delete(lifecycle.key);
-              callbacks.uncertain(lifecycle.key);
-            } else if (!lifecycle.settled) {
-              lifecycle.settled = true;
-              lifecycles.delete(lifecycle.key);
-            }
-            controller.error(error);
-          }
-        },
-        cancel(reason) {
-          if (lifecycle.intent === 'action' && !lifecycle.settled) {
-            lifecycle.settled = true;
-            lifecycles.delete(lifecycle.key);
-            callbacks.uncertain(lifecycle.key);
-          } else if (!lifecycle.settled) {
-            lifecycle.settled = true;
-            lifecycles.delete(lifecycle.key);
-          }
-          return reader.cancel(reason);
-        },
-      });
+      return observeGuardedChatStream(stream, lifecycle, this.lifecycles, this.callbacks);
     } catch (error) {
       const lifecycle = key ? this.lifecycles.get(key) : undefined;
       if (lifecycle?.intent === 'action') this.callbacks.uncertain(lifecycle.key);

@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from 'playwright';
 import { MockLanguageModelV3 } from 'ai/test';
-import { simulateReadableStream, type UIMessage } from 'ai';
+import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createApp } from '../src/server/http.js';
 import { RequestError } from '../src/runtime/journal.js';
 import type { InvocationService } from '../src/server/service.js';
-import { chatRequest } from '../src/server/ui/transport.js';
+import { chatRequest, observeGuardedChatStream } from '../src/server/ui/transport.js';
 import { publicIntervention } from '../src/runtime/approval.js';
 
 // All browser/model/run fixtures in this suite are offline. No target is invoked.
@@ -28,6 +28,206 @@ const readinessLabels = [
   ['meridian-update-member', 'Update contact'],
   ['meridian-place-hold', 'Supervisor hold'],
 ] as const;
+
+function nativeLifecycle(key: string, intent: 'action' | 'status' = 'action') {
+  return {
+    key,
+    intent,
+    sawTool: false,
+    sawStatusTool: false,
+    sawOtherTool: false,
+    finishReason: undefined as string | undefined,
+    finishSeen: false,
+    postFinishFailure: false,
+    failed: false,
+    settled: false,
+    toolNames: new Map<string, string>(),
+  };
+}
+
+function heldNativeStream(chunks: UIMessageChunk[]) {
+  let controller!: ReadableStreamDefaultController<UIMessageChunk>;
+  let release!: (ending: 'error' | 'close' | 'error-chunk' | 'abort' | 'second-finish') => void;
+  let resolvePull!: () => void;
+  let index = 0;
+  const waiting = new Promise<void>(resolve => { resolvePull = resolve; });
+  const stream = new ReadableStream<UIMessageChunk>({
+    start(next) { controller = next; },
+    pull(next) {
+      if (index < chunks.length) {
+        next.enqueue(chunks[index++]);
+        return;
+      }
+      return waiting;
+    },
+    cancel() { resolvePull(); },
+  });
+  release = ending => {
+    if (ending === 'error') controller.error(new Error('native reader failed'));
+    else if (ending === 'close') controller.close();
+    else if (ending === 'error-chunk') {
+      controller.enqueue({ type: 'error', errorText: 'native parsed error' });
+      controller.close();
+    } else if (ending === 'abort') {
+      controller.enqueue({ type: 'abort', reason: 'native abort' });
+      controller.close();
+    } else {
+      controller.enqueue({ type: 'finish', finishReason: 'error' });
+      controller.close();
+    }
+    resolvePull();
+  };
+  return { stream, release };
+}
+
+function readNativeLifecycleStream(
+  source: ReadableStream<UIMessageChunk>,
+  lifecycle: ReturnType<typeof nativeLifecycle>,
+  lifecycles: Map<string, ReturnType<typeof nativeLifecycle>>,
+) {
+  const complete: string[] = [];
+  const uncertain: string[] = [];
+  const observed = observeGuardedChatStream(source, lifecycle, lifecycles, {
+    complete: current => complete.push(current.key),
+    uncertain: key => uncertain.push(key),
+  });
+  return { observed, complete, uncertain };
+}
+
+it.each([
+  ['no-tool stop', false],
+  ['action-tool tool-calls', true],
+] as const)('does not settle a parsed %s lifecycle before a reader error or cancellation', async (_label, withActionTool) => {
+  for (const ending of ['error', 'cancel'] as const) {
+    const key = `native-${ending}-${withActionTool ? 'action' : 'stop'}`;
+    const lifecycle = nativeLifecycle(key);
+    const lifecycles = new Map([[key, lifecycle]]);
+    const chunks: UIMessageChunk[] = withActionTool ? [
+      { type: 'tool-input-available', toolCallId: 'action-call', toolName: 'meridian-member-record', input: { member: 'offline-member' } },
+      { type: 'finish', finishReason: 'tool-calls' },
+    ] : [{ type: 'finish', finishReason: 'stop' }];
+    const source = heldNativeStream(chunks);
+    const result = readNativeLifecycleStream(source.stream, lifecycle, lifecycles);
+    const reader = result.observed.getReader();
+    if (withActionTool) {
+      expect((await reader.read()).value?.type).toBe('tool-input-available');
+    }
+    expect((await reader.read()).value?.type).toBe('finish');
+    await vi.waitFor(() => expect(source.release).toBeTypeOf('function'));
+    expect(result.complete).toEqual([]);
+    expect(result.uncertain).toEqual([]);
+    expect(lifecycles.get(key)).toBe(lifecycle);
+    if (ending === 'error') {
+      source.release('error');
+      await expect(reader.read()).rejects.toThrow('native reader failed');
+    } else {
+      await reader.cancel('consumer stopped');
+    }
+    expect(result.complete).toEqual([]);
+    expect(result.uncertain).toEqual([key]);
+    expect(lifecycles.has(key)).toBe(false);
+  }
+});
+
+it.each([
+  ['no-tool stop', false],
+  ['action-tool tool-calls', true],
+] as const)('settles a clean parsed %s lifecycle only at EOF', async (_label, withActionTool) => {
+  const key = `native-eof-${withActionTool ? 'action' : 'stop'}`;
+  const lifecycle = nativeLifecycle(key);
+  const lifecycles = new Map([[key, lifecycle]]);
+  const chunks: UIMessageChunk[] = withActionTool ? [
+    { type: 'tool-input-available', toolCallId: 'action-call', toolName: 'meridian-member-record', input: { member: 'offline-member' } },
+    { type: 'finish', finishReason: 'tool-calls' },
+  ] : [{ type: 'finish', finishReason: 'stop' }];
+  const source = heldNativeStream(chunks);
+  const result = readNativeLifecycleStream(source.stream, lifecycle, lifecycles);
+  const reader = result.observed.getReader();
+  if (withActionTool) expect((await reader.read()).value?.type).toBe('tool-input-available');
+  expect((await reader.read()).value?.type).toBe('finish');
+  expect(result.complete).toEqual([]);
+  expect(lifecycles.get(key)).toBe(lifecycle);
+  source.release('close');
+  await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+  expect(result.complete).toEqual([key]);
+  expect(result.uncertain).toEqual([]);
+  expect(lifecycles.has(key)).toBe(false);
+  expect(lifecycle.finishSeen).toBe(true);
+  expect(lifecycle.finishReason).toBe(withActionTool ? 'tool-calls' : 'stop');
+});
+
+it.each([
+  ['parsed error', 'error-chunk'],
+  ['parsed abort', 'abort'],
+  ['conflicting second finish', 'second-finish'],
+] as const)('fails closed for a %s after parsed finish without early completion', async (_label, ending) => {
+  for (const withActionTool of [false, true]) {
+    const key = `native-late-${ending}-${withActionTool ? 'action' : 'stop'}`;
+    const lifecycle = nativeLifecycle(key);
+    const lifecycles = new Map([[key, lifecycle]]);
+    const chunks: UIMessageChunk[] = withActionTool ? [
+      { type: 'tool-input-available', toolCallId: 'action-call', toolName: 'meridian-member-record', input: { member: 'offline-member' } },
+      { type: 'finish', finishReason: 'tool-calls' },
+    ] : [{ type: 'finish', finishReason: 'stop' }];
+    const source = heldNativeStream(chunks);
+    const result = readNativeLifecycleStream(source.stream, lifecycle, lifecycles);
+    const reader = result.observed.getReader();
+    if (withActionTool) expect((await reader.read()).value?.type).toBe('tool-input-available');
+    expect((await reader.read()).value?.type).toBe('finish');
+    expect(result.complete).toEqual([]);
+    expect(lifecycles.get(key)).toBe(lifecycle);
+    source.release(ending);
+    if (ending === 'error-chunk' || ending === 'abort' || ending === 'second-finish') {
+      expect((await reader.read()).value?.type).toBe(ending === 'error-chunk' ? 'error' : ending === 'abort' ? 'abort' : 'finish');
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    }
+    expect(result.complete).toEqual([]);
+    expect(result.uncertain).toEqual([key]);
+    expect(lifecycles.has(key)).toBe(false);
+  }
+});
+
+it('fails an authorized parsed action after delivering its tool chunk before finish', async () => {
+  const key = 'native-pre-finish-action-error';
+  const lifecycle = nativeLifecycle(key);
+  const lifecycles = new Map([[key, lifecycle]]);
+  const source = heldNativeStream([{
+    type: 'tool-input-available', toolCallId: 'action-call', toolName: 'meridian-member-record', input: { member: 'offline-member' },
+  }]);
+  const result = readNativeLifecycleStream(source.stream, lifecycle, lifecycles);
+  const reader = result.observed.getReader();
+  expect((await reader.read()).value?.type).toBe('tool-input-available');
+  expect(lifecycle.sawOtherTool).toBe(true);
+  expect(result.complete).toEqual([]);
+  expect(result.uncertain).toEqual([]);
+  source.release('error');
+  await expect(reader.read()).rejects.toThrow('native reader failed');
+  expect(result.complete).toEqual([]);
+  expect(result.uncertain).toEqual([key]);
+  expect(lifecycles.has(key)).toBe(false);
+});
+
+it('keeps a parsed status-only lifecycle isolated from a pre-existing action key', async () => {
+  const statusKey = 'native-status-key';
+  const actionKey = 'native-action-key';
+  const statusLifecycle = nativeLifecycle(statusKey, 'status');
+  const actionLifecycle = nativeLifecycle(actionKey);
+  const lifecycles = new Map([[statusKey, statusLifecycle], [actionKey, actionLifecycle]]);
+  const source = heldNativeStream([
+    { type: 'tool-input-available', toolCallId: 'status-call', toolName: 'run_status', input: { runId } },
+    { type: 'finish', finishReason: 'tool-calls' },
+  ]);
+  const result = readNativeLifecycleStream(source.stream, statusLifecycle, lifecycles);
+  const reader = result.observed.getReader();
+  expect((await reader.read()).value?.type).toBe('tool-input-available');
+  expect((await reader.read()).value?.type).toBe('finish');
+  source.release('close');
+  await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+  expect(result.complete).toEqual([]);
+  expect(result.uncertain).toEqual([]);
+  expect(lifecycles.has(statusKey)).toBe(false);
+  expect(lifecycles.get(actionKey)).toBe(actionLifecycle);
+});
 function fixtureAvailability(recordState: 'available' | 'temporarily_unavailable', inquiryState: 'not_recorded' | 'available' = 'not_recorded') {
   return readinessLabels.map(([id, label]) => ({
     id,
@@ -757,6 +957,9 @@ it('settles a run_status-only auto response without a lookup after the prior act
   state.runs[0]!.state = 'success';
   service.availability = () => fixtureAvailability('available');
   await page.locator('#refresh').click();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  const admitted = page.getByRole('button', { name: 'Invoke capability', exact: true });
+  await vi.waitFor(async () => expect(await admitted.isDisabled()).toBe(false));
 
   await page.locator('#message').fill('Did that finish?');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
@@ -767,12 +970,11 @@ it('settles a run_status-only auto response without a lookup after the prior act
   expect(state.toolSchemas.at(-1)).toContain('run_status');
   expect(state.toolSchemas.at(-1)).not.toContain(capability.id);
   expect(state.invocations.size).toBe(1);
+  await page.getByText('Using a previously accepted run. No new operation was started.', { exact: true }).last().waitFor();
+  expect(lookupKeys).toEqual([originalKey]);
 
-  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
   await page.locator('#fields input').fill('new-member');
-  const invoke = page.getByRole('button', { name: 'Invoke capability', exact: true });
-  await vi.waitFor(async () => expect(await invoke.isDisabled()).toBe(false));
-  await invoke.click();
+  await admitted.click();
   await vi.waitFor(() => expect(state.invocations.size).toBe(2));
 }, 30000);
 it('keeps a no-tool stop hold active until a later reader error', async () => {
@@ -1806,7 +2008,8 @@ it('keeps a terminal direct hold until exact capability availability is authorit
   await page.locator('#message').fill('Did that finish?');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await vi.waitFor(() => expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(1));
-  expect(state.requests.at(-1)?.body.intent).toBe('status');
+  const statusChat = state.requests.filter(request => request.path === '/api/chat').at(-1);
+  expect(statusChat?.body.intent).toBe('status');
   expect(state.toolSchemas.at(-1)).toContain('run_status');
   expect(state.toolSchemas.at(-1)).not.toContain(capability.id);
   expect(state.invocations.size).toBe(1);
