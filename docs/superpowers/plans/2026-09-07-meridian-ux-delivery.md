@@ -30,9 +30,9 @@
 | 0 | Published [PR95](https://github.com/goodwiins/computer-use-automation-system/pull/95), head `0914e1d` | Independent task/fix/final reviews clear; local 735 tests/typechecks/Next build and exact-head hosted CI 34082993000 passed; PR remains unmerged |
 | 1 | Published [PR93](https://github.com/goodwiins/computer-use-automation-system/pull/93), privacy-fixed head `dcb048c` | Local 749 tests and hosted CI 34083144047 passed; independent final safety review clear. Earlier live read composition passed; privacy fix has not been applied to protected demo. PR remains unmerged |
 | 2 | Published [PR97](https://github.com/goodwiins/computer-use-automation-system/pull/97), final head `cde4760` | Exact-key EOF recovery and parsed-stream lifecycle fixes independently reviewed; local full CI passed 806 tests across 28 files and hosted run 34149156630 passed. Private-inquiry durability/projection is resolved by dependent PR98. |
-| 3 | Published [PR99](https://github.com/goodwiins/computer-use-automation-system/pull/99), integration head `f8314ac` | Plan `2026-09-07-ui-review.md`; explicitly depends on PR98 (and its PR96/PR97 chain). Final integration review approved; local full CI passed 885 tests across 34 files, both typechecks, production build, smoke 19, validation and diff checks. Exact-head hosted CI pending. |
+| 3 | Published [PR99](https://github.com/goodwiins/computer-use-automation-system/pull/99), corrected integration head `9a99d0e` | Plan `2026-09-07-ui-review.md`; explicitly depends on PR98 (and its PR96/PR97 chain). Final integration reviews approved; local full CI passed 895 tests across 35 files, both typechecks, production build, smoke 19, validation and diff checks. Exact-head hosted CI `34162001843` passed; fresh Codex code review reported no major issues. |
 | 4 | Transfer/update/hold live acceptance: external demo/runtime gate | Genuine recording, approved artifact and separately approved replay; no UI simulation can close this |
-| 5 | Honest role workspace and authorized review queue: pending implementation | Unit 3 review navigation; B1 subject contract for individual identity; cross-person grants unavailable |
+| 5 | Published [PR100](https://github.com/goodwiins/computer-use-automation-system/pull/100), implementation/integration head `b0feb94` | Explicitly depends on PR99. Scoped and final reviews approved after a reproduced reconnect-race repair; local full CI passed 907 tests across 35 files, both typechecks, production build, smoke 19, validation and diff checks. Exact-head hosted CI pending. Cross-person grants remain unavailable. |
 | 6 | assistant-ui persistent conversation adapter: ready for deliberate backend integration | [PR96](https://github.com/goodwiins/computer-use-automation-system/pull/96), reviewed head `1e029eb`, source CI782 and exact hosted34084793710 passed; real PG/journal restore30/30 accepted. Unmerged. Safe events only, no replay on restore |
 | 7 | Responsive/accessibility and rehearsal: pending implementation | Completed UI behavior; live success/exception rehearsal by demo owner, writes only with separate authorization |
 
@@ -92,16 +92,16 @@ expect(await page.getByRole('button', {name: 'Confirm transfer', exact: true}).i
 
 **Interfaces:** `/capabilities.principal` remains `caller|operator`; optional `subjectId` identifies the authenticated owner. Target execution role is from the selected direct request or verified action context, never inferred from dashboard login. Unknown branch/target sign-on stays explicitly unavailable. Review queue derives from current authenticated runs, not a second decision cache.
 
-- [ ] Write tests that an operator login still labels chat as teller execution, direct target role is explicit, absent target sign-on is not reported as authenticated, and subject-mode history contains no foreign-owner queue entries.
-- [ ] Replace misleading “Supervisor” login authority copy with actual dashboard permission labels. Give authorized operators a review-first Activity filter, with separate needs-review and history views. Keep the originating run summary and exact review link visible.
+- [x] Write tests that an operator login still labels chat as teller execution, direct target role is explicit, absent target sign-on is not reported as authenticated, and subject-mode history contains no foreign-owner queue entries.
+- [x] Replace misleading “Supervisor” login authority copy with actual dashboard permission labels. Give authorized operators a review-first Activity filter, with separate needs-review and history views. Keep the originating run summary and exact review link visible.
 
 ```ts
 expect(await page.getByText('Chat execution: Teller', {exact: true}).isVisible()).toBe(true);
 expect(await page.getByText('Target session: Not verified', {exact: true}).isVisible()).toBe(true);
 ```
 
-- [ ] Display a supported-access explanation when a caller needs an operator. A cross-person supervisor takeover remains unavailable without backend assignment/grant and live target proof; never relabel a fresh operation as a resumed run.
-- [ ] Verify caller API rejection, operator owner scoping, keyboard filters and stale queue refresh. Publish a separate tested/reviewed PR; report the real grant/live-hold gates separately.
+- [x] Display a supported-access explanation when a caller needs an operator. A cross-person supervisor takeover remains unavailable without backend assignment/grant and live target proof; never relabel a fresh operation as a resumed run.
+- [x] Verify caller API rejection, operator owner scoping, keyboard filters and stale queue refresh. Publish a separate tested/reviewed PR; report the real grant/live-hold gates separately.
 
 ### Task 6: Safe assistant-ui persistent conversations
 
