@@ -312,6 +312,7 @@ async function fixture(
   );
   const state = {
     runs: [] as Record<string, any>[],
+    historyHidden: new Set<string>(),
     requests: [] as { path: string; method?: string; authorization?: string; body?: any; key?: string }[],
     invocations: new Map<string, string>(),
     decisions: [] as string[],
@@ -344,7 +345,7 @@ async function fixture(
       : { id, label, state: 'not_recorded', reason: 'No approved recording' }),
     history: (principal: string) => {
       if (state.offline) throw new RequestError(503, 'Offline fixture disconnected');
-      return state.runs.map((r) =>
+      return state.runs.filter((r) => !state.historyHidden.has(r.runId)).map((r) =>
         principal === 'operator'
           ? r
           : {
@@ -2823,6 +2824,39 @@ it('starts operator Activity in a review-first queue with accurate counts and ke
   state.runs[0]!.state = 'success';
   await page.locator('#refresh').click();
   await vi.waitFor(async () => expect(await needs.innerText()).toContain('(0)'));
+  expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBe(0);
+}, 15000);
+
+it('does not recover an opened review by id after authenticated history deliberately omits it', async () => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({
+    ...initialRun(),
+    state: 'awaiting-human',
+    sensitiveValuesUnavailable: true,
+    intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: {
+      kind: 'replay_stuck', capability: 'meridian-member-inquiry',
+      goal: 'Complete the linked identity check.',
+      reason: 'Linked identity check needs operator attention.', url: '(unavailable)',
+    } },
+  });
+  await connect(operatorToken);
+  await page.locator(`[data-run-id="${runId}"]`).getByRole('button', { name: 'Review request', exact: true }).click();
+  await page.keyboard.press('Escape');
+
+  state.runs[0]!.state = 'failure';
+  delete state.runs[0]!.intervention;
+  state.historyHidden.add(runId);
+  const refresh = async () => {
+    await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/runs')),
+      page.locator('#refresh').click(),
+    ]);
+  };
+  await refresh();
+  await refresh();
+
+  expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
+  await page.getByRole('tab', { name: /All runs/ }).click();
   expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBe(0);
 }, 15000);
 

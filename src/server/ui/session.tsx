@@ -254,8 +254,10 @@ export function RunProvider({
   );
   const openReview = useCallback((runId: string) => {
     setReviewRunId(runId);
-    watched.current.add(runId);
-    if (!runs.some(run => run.runId === runId)) void refresh();
+    if (!runs.some(run => run.runId === runId)) {
+      watched.current.add(runId);
+      void refresh();
+    }
   }, [refresh, runs]);
   const closeReview = useCallback(() => setReviewRunId(undefined), []);
   const getReviewAttempt = useCallback((key: string): ReviewAttempt => reviewAttempts.current.get(key) ?? {

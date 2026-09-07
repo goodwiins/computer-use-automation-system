@@ -120,6 +120,20 @@ it('lookup-only recovery does not reserve or start a missing balance request', a
   expect(f.replay).not.toHaveBeenCalled();
 });
 
+it('projects history from the journal list without reading every record again', async () => {
+  const f = fixture();
+  for (const [key, requestedMember] of [['history-one', '9001'], ['history-two', '9002']] as const) {
+    const record = f.journal.reserve('caller', key, balance, '1.0.0', {
+      mode: 'replay', capability: balance, version: '1.0.0', args: { member: requestedMember }, context: null,
+    });
+    f.journal.update(record.runId, 'success');
+  }
+  const get = vi.spyOn(f.journal, 'get');
+
+  expect((await f.service.history('caller')).map(run => run.runId)).toHaveLength(2);
+  expect(get).not.toHaveBeenCalled();
+});
+
 it('serializes the exact-member read under the same caller and role, with no replay on status or key reuse', async () => {
   const f = fixture();
   const accepted = await f.service.invoke('operator', balance, { member }, 'balance-request', 'SUPERVISOR');
@@ -439,11 +453,14 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
       memberIdentity: { status: 'unavailable' },
     });
     await expect(restored.get({ ...principal, role: 'caller' }, child.runId)).rejects.toMatchObject({ status: 404 });
+    const historyRecordReads = vi.spyOn(restoredJournal, 'get');
     const callerHistory = await restored.history({ ...principal, role: 'caller' });
     expect(callerHistory.map(run => run.runId)).toContain(accepted.runId);
     expect(callerHistory.map(run => run.runId)).toContain(publicInquiry.runId);
     expect(callerHistory.map(run => run.runId)).not.toContain(child.runId);
     expect((await restored.history(principal)).map(run => run.runId)).not.toContain(child.runId);
+    expect(historyRecordReads).not.toHaveBeenCalled();
+    historyRecordReads.mockRestore();
     expect((await restored.get(principal, child.runId)).evidence).toEqual([]);
     await restored.close();
     await restoredJournal.close();
