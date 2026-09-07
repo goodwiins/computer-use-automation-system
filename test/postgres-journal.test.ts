@@ -75,11 +75,16 @@ describe.sequential('PostgresJournal', () => {
   it('recovers by exact owner, fences the stale instance, and permits a new owner', async () => {
     const otherPool = database.openPool();
     const oldOwner = journal.ownerId;
-    await PostgresJournal.recover(otherPool, oldOwner);
-    await expect(journal.list()).rejects.toMatchObject({ status: 409 });
+    const staleRun = await journal.reserve(caller, 'stale-owner-run', capability, version, {});
     const marker = await otherPool.query<{ import_id: string; source_digest: string }>(
       'SELECT import_id, source_digest FROM meridian_journal_authority WHERE singleton = true',
     );
+    await expect(PostgresJournal.open(otherPool, key, marker.rows[0]!.import_id, marker.rows[0]!.source_digest))
+      .rejects.toMatchObject({ status: 409 });
+    await PostgresJournal.recover(otherPool, oldOwner);
+    await expect(journal.list()).rejects.toMatchObject({ status: 409 });
+    await expect(journal.update(staleRun.runId, 'failure')).rejects.toMatchObject({ status: 409 });
+    await expect(journal.bindReference(caller, 'stale-alias', staleRun.runId)).rejects.toMatchObject({ status: 409 });
     const replacement = await PostgresJournal.open(otherPool, key, marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
     expect(replacement.ownerId).not.toBe(oldOwner);
     await expect(PostgresJournal.recover(otherPool, randomUUID())).rejects.toMatchObject({ status: 409 });
@@ -121,11 +126,16 @@ describe.sequential('PostgresJournal', () => {
       }) as typeof client.query;
       return client;
     }) as typeof pool.connect;
-    await expect(journal.reserve(caller, 'uncertain-key', capability, version, { private: 'PRIVATE request payload' }))
-      .rejects.toThrow(/restart|required|storage/i);
-    expect(() => journal.assertHealthy()).toThrow(/restart|required|storage/i);
-    await expect(journal.list()).rejects.toThrow(/restart|required|storage/i);
-    pool.connect = originalConnect;
+    try {
+      await expect(journal.reserve(caller, 'uncertain-key', capability, version, { private: 'PRIVATE request payload' }))
+        .rejects.toThrow(/restart|required|storage/i);
+      expect(() => journal.assertHealthy()).toThrow(/restart|required|storage/i);
+      await expect(journal.list()).rejects.toThrow(/restart|required|storage/i);
+      await expect(journal.reserve(caller, 'after-uncertain-key', capability, version, {}))
+        .rejects.toThrow(/restart|required|storage/i);
+    } finally {
+      pool.connect = originalConnect;
+    }
     const rows = await database.pool.query<{ count: string; owner_id: string | null }>(
       `SELECT (SELECT count(*) FROM meridian_runs) AS count, owner_id::text FROM meridian_journal_authority WHERE singleton = true`,
     );
@@ -147,6 +157,39 @@ describe.sequential('PostgresJournal', () => {
       await expect(PostgresJournal.importSnapshot(uninitialized.pool, key, snapshot, importId, digest, false)).rejects.toMatchObject({ status: 409 });
       expect((await uninitialized.pool.query('SELECT count(*)::int AS count FROM meridian_journal_authority')).rows[0]?.count).toBe(0);
     } finally { await uninitialized.close(); }
+
+    const malformed = await createPostgresFixture();
+    try {
+      await PostgresJournal.migrate(malformed.pool);
+      const duplicateDirect: JournalSnapshot = {
+        records: [source, { ...source, runId: randomUUID() }],
+        aliases: [],
+      };
+      const duplicateAlias: JournalSnapshot = {
+        records: [source],
+        aliases: [alias, { ...alias }],
+      };
+      const mismatchedAlias: JournalSnapshot = {
+        records: [source],
+        aliases: [{ ...alias, caller: 'different-caller' }],
+      };
+      for (const malformedSnapshot of [duplicateDirect, duplicateAlias, mismatchedAlias]) {
+        await expect(PostgresJournal.importSnapshot(
+          malformed.pool,
+          key,
+          malformedSnapshot,
+          randomUUID(),
+          journalDigest(key, malformedSnapshot),
+        )).rejects.toMatchObject({ status: 409 });
+        const counts = await malformed.pool.query<{ runs: number; requests: number; authority: number }>(
+          `SELECT
+             (SELECT count(*)::int FROM meridian_runs) AS runs,
+             (SELECT count(*)::int FROM meridian_run_requests) AS requests,
+             (SELECT count(*)::int FROM meridian_journal_authority) AS authority`,
+        );
+        expect(counts.rows[0]).toEqual({ runs: 0, requests: 0, authority: 0 });
+      }
+    } finally { await malformed.close(); }
 
     const second = await createPostgresFixture();
     try {
@@ -184,6 +227,12 @@ describe.sequential('PostgresJournal', () => {
 
   it('never stores raw request values or exposes them through validation errors', async () => {
     const canary = 'PRIVATE target credential approval request must never persist';
+    const validationCanary = 'PRIVATE validation canary must never appear in an error';
+    const validationError = await journal.reserve(caller, 'bad\nkey', capability, version, { validationCanary })
+      .then(() => undefined, (error: unknown) => error);
+    expect(validationError).toMatchObject({ status: 400 });
+    expect(validationError).toBeInstanceOf(Error);
+    expect((validationError as Error).message).not.toContain(validationCanary);
     await journal.reserve(caller, 'raw-key', capability, version, { canary });
     const values = await database.pool.query<{ value: string }>(
       `SELECT string_agg(value, '|') AS value FROM (
