@@ -29,11 +29,11 @@
 | --- | --- | --- |
 | 0 | Published [PR95](https://github.com/goodwiins/computer-use-automation-system/pull/95), head `0914e1d` | Independent task/fix/final reviews clear; local 735 tests/typechecks/Next build and exact-head hosted CI 34082993000 passed; PR remains unmerged |
 | 1 | Published [PR93](https://github.com/goodwiins/computer-use-automation-system/pull/93), privacy-fixed head `dcb048c` | Local 749 tests and hosted CI 34083144047 passed; independent final safety review clear. Earlier live read composition passed; privacy fix has not been applied to protected demo. PR remains unmerged |
-| 2 | Implementation active in `codex/meridian-ui-readiness` | Plan `2026-09-07-ui-readiness.md`, base `4f9d81c` combines reviewed PR95 and PR93; B1 retains auth/store ownership |
-| 3 | Exact-run review and readable approval facts: pending implementation | Unit 2 labels; existing decision API, one active review surface |
+| 2 | Published [PR97](https://github.com/goodwiins/computer-use-automation-system/pull/97), head `7245196` | Independent task/fix/final integration reviews clear; local771 tests/typechecks/Next build passed, exact-head hosted CI pending. Adds strict lookupOnly request recovery; B1/B2 retain auth/store ownership |
+| 3 | Exact-run review and readable approval facts: implementation active | Plan `2026-09-07-ui-review.md`, reviewed PR97 dependency; existing decision API, one active review surface, per-session decision locks |
 | 4 | Transfer/update/hold live acceptance: external demo/runtime gate | Genuine recording, approved artifact and separately approved replay; no UI simulation can close this |
 | 5 | Honest role workspace and authorized review queue: pending implementation | Unit 3 review navigation; B1 subject contract for individual identity; cross-person grants unavailable |
-| 6 | assistant-ui persistent conversation adapter: pending backend integration | B1 routes/store complete and tested; safe events only, no replay on restore |
+| 6 | assistant-ui persistent conversation adapter: ready for deliberate backend integration | [PR96](https://github.com/goodwiins/computer-use-automation-system/pull/96), reviewed head `1e029eb`, source CI782 and exact hosted34084793710 passed; real PG/journal restore30/30 accepted. Unmerged. Safe events only, no replay on restore |
 | 7 | Responsive/accessibility and rehearsal: pending implementation | Completed UI behavior; live success/exception rehearsal by demo owner, writes only with separate authorization |
 
 ### Task 2: Capability readiness and plain-language results
