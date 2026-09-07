@@ -223,6 +223,7 @@ export function RunProvider({
       }
     } catch (e) {
       if (e instanceof CapabilityAuthorityError) {
+        if (abort.current.signal.aborted) return;
         authorityFailure = true;
         disconnect();
         return;

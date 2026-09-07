@@ -293,7 +293,7 @@ afterEach(async () => {
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
-  options: { subjectTokens?: typeof subjectCaller[] } = {},
+  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean } = {},
 ) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
@@ -322,6 +322,9 @@ async function fixture(
     omitFinishReason: false,
     postFinishMode: '' as '' | 'error' | 'open' | 'error-chunk' | 'second-finish',
     postFinishRelease: undefined as (() => void) | undefined,
+    capabilityReads: 0,
+    capabilityPartial: false,
+    releaseCapabilityBody: undefined as (() => void) | undefined,
     offline: false,
   };
   const service = {
@@ -515,6 +518,26 @@ async function fixture(
       body: undefined as any,
     };
     state.requests.push(record);
+    if (req.url === '/capabilities') {
+      state.capabilityReads++;
+      if (options.holdRefreshCapabilities && state.capabilityReads === 2) {
+        state.capabilityPartial = true;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.write('{"principal":"caller",');
+        let release!: () => void;
+        const held = new Promise<void>(resolve => {
+          release = resolve;
+          state.releaseCapabilityBody = resolve;
+        });
+        req.once('aborted', release);
+        void held.then(() => {
+          state.releaseCapabilityBody = undefined;
+          if (!res.destroyed && !res.writableEnded) res.end('"capabilities":[],"availability":[]}');
+        });
+        return;
+      }
+    }
     let body = '';
     req.on('data', (data) => {
       body += data;
@@ -2676,6 +2699,24 @@ it.each([
   await visible(page, '#status', 'Invalid capability authority');
   expect(await page.locator('#workspace').count()).toBe(0);
   expect(state.requests.filter(request => request.path === '/runs')).toHaveLength(0);
+}, 15000);
+
+it('keeps a replacement session connected when an old capability refresh is aborted during reconnect', async () => {
+  const { page, state, connect } = await fixture(false, undefined, { holdRefreshCapabilities: true });
+  await connect(callerToken);
+  await vi.waitFor(() => expect(state.capabilityPartial).toBe(true));
+  try {
+    await page.locator('#credential').fill(callerToken);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByText('Connected as caller. Credentials remain in page memory.', { exact: true }).waitFor();
+    await page.locator('#workspace').waitFor();
+    await page.waitForTimeout(250);
+    expect(await page.locator('#workspace').count()).toBe(1);
+    expect(await page.locator('#status').innerText()).toBe('Connected as caller. Credentials remain in page memory.');
+    expect(state.capabilityReads).toBeGreaterThanOrEqual(4);
+  } finally {
+    state.releaseCapabilityBody?.();
+  }
 }, 15000);
 
 it.each([
