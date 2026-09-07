@@ -62,14 +62,14 @@ export class InvocationService {
       return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
     });
   }
-  invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
-    return this.invokeRun(principal, id, args, key, role, false);
+  invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
+    return this.invokeRun(principal, id, args, key, role, false, lookupOnly);
   }
   private invokeInternal(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR') {
     return this.invokeRun(principal, id, args, key, role, true);
   }
   private invokeRun(principal: Principal, id: string, args: Record<string, string | number>, key: string,
-    role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean) {
+    role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean, lookupOnly = false) {
     if (principal !== 'operator' && (role !== 'TELLER' || !this.allowlist.includes(id))) throw new RequestError(403, 'Capability or operator context is not authorized');
     const artifact = this.artifacts.get(id);
     if (!artifact) throw new RequestError(404, 'Unknown approved capability');
@@ -91,6 +91,7 @@ export class InvocationService {
       if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
       return { runId: existing.runId, reused: true as const };
     }
+    if (lookupOnly) throw new RequestError(404, 'No accepted request found');
     if (this.closing) throw new RequestError(503, 'Server is shutting down');
     // ponytail: capability-wide unknown block; narrower scope needs an explicit reconciliation contract.
     // Terminal same-key lookups above remain readable across all entry points.

@@ -44,7 +44,7 @@ export function CapabilityCatalog() {
   const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
   const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
   const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
-  async function submitAttempt(retained: InvocationAttempt) {
+  async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     active.current = true;
     setBusy(true);
@@ -53,7 +53,7 @@ export function CapabilityCatalog() {
     try {
       const response = await request(`/capabilities/${segment(retained.capabilityId)}/invoke`, {
         method: 'POST',
-        body: retained.body,
+        body: lookupOnly ? JSON.stringify({ ...JSON.parse(retained.body), lookupOnly: true }) : retained.body,
         headers: { 'Idempotency-Key': retained.key },
       });
       const accepted: { runId: string } = await response.json();
@@ -62,9 +62,12 @@ export function CapabilityCatalog() {
       watch(accepted.runId);
     } catch (e) {
       setRecoveryAvailable(true);
-      setError(
-        `${e instanceof Error ? e.message : 'Request interrupted.'} If the outcome is uncertain, refresh history. Recovering this accepted request uses the same request key; changed requests require a fresh availability check.`,
-      );
+      const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
+      setError(lookupOnly
+        ? message.includes('No accepted request found')
+          ? 'No accepted request was found by this lookup. Acceptance of the original request remains unconfirmed. This lookup did not start an operation; refresh history before making a new request.'
+          : `${message} Acceptance remains unconfirmed. Refresh history before taking further action.`
+        : `${message} Acceptance is unconfirmed. Refresh history before taking further action.`);
     } finally {
       active.current = false;
       setBusy(false);
@@ -113,7 +116,7 @@ export function CapabilityCatalog() {
   async function recover() {
     const retained = attempt.current;
     if (!recoveryAvailable || !retained) return;
-    await submitAttempt(retained);
+    await submitAttempt(retained, true);
   }
   return (
     <section aria-labelledby="catalog-heading">
@@ -185,13 +188,13 @@ export function CapabilityCatalog() {
         {error && <p role="alert">{error}</p>}
         {recoveryAvailable && attempt.current && (
           <p>
-            Response was lost after submission. Recover the accepted run with its original request key; this checks its status without starting a new operation.
+            Acceptance is unconfirmed. Look up the original request with its original request key. This lookup cannot start a new operation.
             <button
               type="button"
               disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}
               onClick={() => void recover()}
             >
-              Recover accepted request
+              Look up original request
             </button>
           </p>
         )}

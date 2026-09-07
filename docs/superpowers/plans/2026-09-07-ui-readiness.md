@@ -18,3 +18,16 @@ Ownership: service.ts and the additive `/capabilities` response in http.ts; UI s
 - [ ] Run focused tests while iterating. Coordinate the heavy full-suite slot; run repository CI once after changes plus diff check. Write scoped commit/report and await independent review; coordinator owns publication and downstream integration.
 
 Implementation boundaries: B1 already owns subject auth and will integrate `principalRole` for this method; do not demote ownership to a role string. The baseline's legacy contract stays intact in this unit. Missing live transfer/update/hold acceptance is external and cannot be claimed through these UI states. Live demo checkout/PID/evidence remain untouched.
+
+### Task 2: Lookup-only recovery for an uncertain request
+
+The final unit1 review exposed a plan defect: ordinary idempotent invoke can create a first operation when an earlier request never arrived. A recovery action advertised as status-only therefore needs a server lookup-only boundary.
+
+Ownership: src/server/service.ts, the existing invoke HTTP schema/route in http.ts, dashboard.tsx recovery request/copy, and focused real-service/API/browser tests. Preserve auth, normalized identity, PR93 privacy, artifacts, journal layout and runtime behavior; no new endpoint/framework/dependency.
+
+- [x] Add strict optional lookupOnly:true to the existing invoke JSON contract. Reuse invoke's existing principal/role/allowlist/argument normalization/request identity checks. Existing exact bound key returns the original run before availability/admission; absent key throws a safe404 before reservation, runtime, linked inquiry or any mutation. Wrong identity remains409; unauthorized callers remain403. Normal invocation and internal inquiry default to existing behavior.
+- [x] UI recovery sends captured original capability/args/role/key plus lookupOnly:true. It never sends the mutable form or regenerates a key. Initial failure says acceptance is unconfirmed, not accepted; absent lookup says no accepted request was found rather than claiming completion/non-posting. New/changed actual submissions still require available authenticated metadata.
+- [x] RED/GREEN tests cover lost-before-delivery and definite pre-reservation rejection, absent key produces no reserve/runtime/identity child, existing active/unknown returns same run, changed args/role/key owner cannot reuse another identity, malformed lookupOnly fails strict HTTP validation. Keep accepted-response-loss and changed-control browser regressions; inspect outgoing bodies and actual service journal count.
+- [x] Run smallest covering tests plus both typechecks/build. Independent review and one combined final pre-push/hosted gate before publication. No live demo edits, real target requests or approval decisions.
+
+Task 2 implementation is complete locally. Focused service/API tests, the focused browser recovery subset, `npm run build`, both typechecks, and `git diff --check` passed; full CI, hosted checks, and publication remain coordinator-owned.

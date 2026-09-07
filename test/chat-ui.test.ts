@@ -134,10 +134,11 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
             intervention: run.intervention ? { kind: 'risk_approval', awaitingOperator: true } : undefined,
           };
     },
-    invoke: vi.fn((_principal: string, id: string, args: unknown, key: string) => {
+    invoke: vi.fn((_principal: string, id: string, args: unknown, key: string, _role = 'TELLER', lookupOnly = false) => {
       const fingerprint = JSON.stringify([id, args]);
       if (state.invocations.has(key) && state.invocations.get(key) !== fingerprint)
         throw new RequestError(409, 'Conflicting idempotency key');
+      if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
         state.runs.push(initialRun());
@@ -772,7 +773,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
     await page.unroute('**/capabilities/*/invoke');
   });
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#invoke + p', 'same request key');
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
   await visible(page, '#runs', runId);
   const invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
@@ -822,7 +823,7 @@ it('recovers a response-lost direct request with its original body and key while
     await route.continue();
   });
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#invoke + p', 'same request key');
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
   await page.locator('#fields input').fill('changed-member');
   service.catalog = () => [capability, inquiry];
   service.availability = () => fixtureAvailability('temporarily_unavailable', 'available');
@@ -831,13 +832,13 @@ it('recovers a response-lost direct request with its original body and key while
   expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
   await page.locator('#capability').selectOption(inquiry.id);
   await page.locator('#operator').selectOption('SUPERVISOR');
-  const recovery = page.getByRole('button', { name: 'Recover accepted request', exact: true });
+  const recovery = page.getByRole('button', { name: 'Look up original request', exact: true });
   await recovery.waitFor();
   await recovery.click();
   await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
   const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
   expect(invokes).toHaveLength(2);
-  expect(invokes[1]?.body).toEqual(invokes[0]?.body);
+  expect(invokes[1]?.body).toEqual({ ...invokes[0]?.body, lookupOnly: true });
   expect(invokes[1]?.key).toBe(invokes[0]?.key);
   expect(invokes[1]?.path).toBe(`/capabilities/${capability.id}/invoke`);
   expect(state.invocations.size).toBe(1);
@@ -858,19 +859,46 @@ it('recovers a terminal unknown response-lost request under its original key wit
     await route.continue();
   });
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#invoke + p', 'same request key');
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
   state.runs[0]!.state = 'POST_OUTCOME_UNKNOWN';
   service.availability = () => fixtureAvailability('temporarily_unavailable');
   await page.locator('#refresh').click();
   await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
-  const recovery = page.getByRole('button', { name: 'Recover accepted request', exact: true });
+  const recovery = page.getByRole('button', { name: 'Look up original request', exact: true });
   await recovery.waitFor();
   await recovery.click();
   await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
   const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
   expect(invokes).toHaveLength(2);
+  expect(invokes[1]?.body).toEqual({ ...invokes[0]?.body, lookupOnly: true });
   expect(invokes[1]?.key).toBe(invokes[0]?.key);
   expect(state.invocations.size).toBe(1);
+});
+it('uses lookup-only recovery after a request is lost before server acceptance', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  await visible(page, '#invoke + p', 'No accepted request was found');
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(1);
+  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, lookupOnly: true });
+  expect(state.invocations.size).toBe(0);
 });
 it('offline refresh requested during an older history read still observes an accepted direct run', async () => {
   const { page, state, connect } = await fixture();

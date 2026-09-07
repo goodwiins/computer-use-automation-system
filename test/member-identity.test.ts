@@ -60,6 +60,15 @@ function fixture(allowlist = [balance, inquiry]) {
   return { service, journal, dir, create, replay, releases, start, settle };
 }
 
+it('lookup-only recovery does not reserve or start a missing balance request', () => {
+  const f = fixture();
+  const before = f.journal.records.size;
+  expect(() => f.service.invoke('caller', balance, { member }, 'missing-request', 'TELLER', true)).toThrow(/No accepted request/);
+  expect(f.journal.records.size).toBe(before);
+  expect(f.create).not.toHaveBeenCalled();
+  expect(f.replay).not.toHaveBeenCalled();
+});
+
 it('serializes the exact-member read under the same caller and role, with no replay on status or key reuse', async () => {
   const f = fixture();
   const accepted = f.service.invoke('operator', balance, { member }, 'balance-request', 'SUPERVISOR');
