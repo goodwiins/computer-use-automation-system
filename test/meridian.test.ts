@@ -234,6 +234,23 @@ it('durable intent await rejects when the approved page changes while pending', 
   expect(run.surface.mutationDispatched).toBe(false);
 });
 
+it('durable intent await rejects when the approved role changes while pending', async () => {
+  let release!: () => void;
+  let enter!: () => void;
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const events: string[] = [];
+  const run = guarded({}, async () => true, { beforeDispatch: async () => { enter(); await durable; } }, event => events.push(event));
+  const pending = run.surface.click(target, 1000, 'read');
+  await entered;
+  run.change({ role: 'TELLER' });
+  release();
+  await expect(pending).rejects.toThrow(/authority|invalidated/i);
+  expect(run.dispatch).not.toHaveBeenCalled();
+  expect(run.surface.mutationDispatched).toBe(false);
+  expect(events).not.toContain('mutation.intent');
+});
+
 it('durable intent await rejects when automation ownership is invalidated while pending', async () => {
   let release!: () => void;
   let enter!: () => void;
