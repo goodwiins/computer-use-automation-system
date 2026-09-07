@@ -5,6 +5,8 @@ import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
+const MERIDIAN_IDS: ReadonlySet<string> = new Set(MERIDIAN_CAPABILITIES.map(([id]) => id));
+const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
 export function OperatorSessionControls() {
   const { session } = useRuns();
   return session.principal === 'operator' ? (
@@ -25,19 +27,27 @@ export function CapabilityCatalog() {
   const [acceptedId, setAcceptedId] = useState('');
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
   const availability = session.availability;
-  const metadataUnavailable = availability === undefined;
-  const meridianAvailability = availability?.length ? availability : MERIDIAN_CAPABILITIES.map(([id, label]) => ({ id, label, state: undefined, reason: '' }));
+  const meridianSession = session.capabilities.some(({ id }) => MERIDIAN_IDS.has(id))
+    || availability?.some(({ id }) => MERIDIAN_IDS.has(id)) === true;
+  const availabilityComplete = Array.isArray(availability)
+    && MERIDIAN_CAPABILITIES.every(([id]) => availability.some(item => item.id === id && AVAILABILITY_STATES.has(item.state)));
+  const metadataUnavailable = meridianSession && !availabilityComplete;
+  const meridianAvailability = meridianSession
+    ? MERIDIAN_CAPABILITIES.map(([id, label]) => availability?.find(item => item.id === id) ?? ({ id, label, state: undefined, reason: '' }))
+    : [];
   const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
   const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
-  const visibleCapabilities = session.capabilities.filter(c => !availability?.length || availability.some(item => item.id === c.id));
+  const visibleCapabilities = session.capabilities.filter(c => !availabilityComplete || availability.some(item => item.id === c.id));
   const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
+  const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
+  const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!capability || active.current || acceptedId || loading || historyError || metadataUnavailable) return;
     const status = availability?.find(item => item.id === capability.id);
-    if (status && status.state !== 'available') {
-      setError(status.reason);
+    if (meridianSession && (!status || status.state !== 'available')) {
+      setError(status?.reason || 'Availability unavailable');
       return;
     }
     if (unknownCapabilities.has(capability.id)) {
@@ -104,7 +114,7 @@ export function CapabilityCatalog() {
           <p className="empty">No approved capabilities are available to this principal.</p>
         ) : (
           <form id="invoke" onSubmit={invoke} autoComplete="off">
-            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError) || metadataUnavailable || Boolean(availability?.find(item => item.id === capability.id && item.state !== 'available'))}>
+            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError) || metadataUnavailable}>
               <label htmlFor="capability">Capability</label>
               <select
                 id="capability"
@@ -126,7 +136,7 @@ export function CapabilityCatalog() {
                   <label key={p.name}>
                     {p.name} — {p.description}
                     {p.enum ? (
-                      <select name={p.name} required={p.required}>
+                      <select name={p.name} required={p.required} disabled={selectedUnavailable}>
                         {p.enum.map((value) => (
                           <option key={value}>{value}</option>
                         ))}
@@ -139,13 +149,14 @@ export function CapabilityCatalog() {
                         step={p.type === 'number' ? 'any' : undefined}
                         inputMode={p.format ? 'decimal' : undefined}
                         autoComplete="off"
+                        disabled={selectedUnavailable}
                       />
                     )}
                   </label>
                 ))}
               </div>
               <OperatorSessionControls />
-              <button>{busy ? 'Submitting…' : 'Invoke capability'}</button>
+              <button disabled={selectedUnavailable}>{busy ? 'Submitting…' : 'Invoke capability'}</button>
             </fieldset>
           </form>
         )}
@@ -185,8 +196,8 @@ export function ResultCard({ run }: { run: Run }) {
   if (result.status === 'business_outcome')
     return (
       <div>
-        <strong>{presentation.label}: {result.outcomeCode}</strong>
-        <p>{result.detail}</p>
+        <strong>{presentation.label}</strong>
+        <p>{presentation.description}</p>
       </div>
     );
   if (result.status === 'failure')
@@ -378,7 +389,6 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
         <span className="badge" role="status" aria-live="polite" aria-atomic="true">
           <span className="sr-only">{run.capability}, run {run.runId}, state {run.state}: </span>
           {runPresentation(run).label}
-          {run.result?.status === 'business_outcome' && <span className="sr-only">: {run.result.outcomeCode}</span>}
         </span>
       </div>
       <p className="muted">

@@ -33,6 +33,11 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
 
 const MONEY_FIELDS = new Set(['amount', 'balance', 'deposit']);
 const READ_CAPABILITIES = new Set(['meridian-sign-on', 'meridian-member-inquiry', 'meridian-member-record']);
+const BUSINESS_OUTCOME_LABELS: Readonly<Record<string, string>> = {
+  INSUFFICIENT_FUNDS: 'Insufficient funds',
+  VALIDATION_REJECTED: 'Validation rejected',
+  NO_SUCH_MEMBER: 'Member not found',
+};
 
 export function capabilityLabel(id: string): string {
   const known = MERIDIAN_CAPABILITY_LABELS.get(id);
@@ -68,8 +73,8 @@ export function runPresentation(run: PresentationRun): { label: string; descript
   if (run.state === 'dispatching') return { label: 'Submitting', description: 'The approved action is being submitted. Wait for authoritative verification.' };
   if (['accepted', 'reserved', 'running'].includes(run.state)) return { label: 'In progress', description: 'The run is still in progress. Tool completion is not run completion.' };
   if (run.state === 'business_outcome' && run.result?.status === 'business_outcome') return {
-    label: 'Business outcome',
-    description: `${run.result.outcomeCode}${run.result.detail ? `: ${run.result.detail}` : ''}`,
+    label: BUSINESS_OUTCOME_LABELS[run.result.outcomeCode ?? ''] ?? 'Business outcome',
+    description: run.result.detail?.trim() || 'The request reached a business outcome. See Details for the exact outcome code.',
   };
   if (run.state === 'interrupted') return { label: 'Interrupted', description: 'The run stopped before completion. Review its current state before starting anything new.' };
   if (run.state === 'failure' || run.result?.status === 'failure') return {

@@ -56,7 +56,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture(localTeller = false) {
+async function fixture(localTeller = false, availabilityOverride?: () => unknown) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -83,7 +83,7 @@ async function fixture(localTeller = false) {
     journal: { findRequest: () => undefined, bindReference: () => {} },
     evidenceDir,
     catalog: () => [capability],
-    availability: () => [
+    availability: () => availabilityOverride ? availabilityOverride() : [
       ['meridian-sign-on', 'Sign on'],
       ['meridian-member-inquiry', 'Member inquiry'],
       ['meridian-member-record', 'Member record'],
@@ -102,7 +102,7 @@ async function fixture(localTeller = false) {
           : {
               ...r,
               intervention: r.intervention ? { kind: 'risk_approval', awaitingOperator: true } : undefined,
-            },
+},
       );
     },
     get: (principal: string, id: string) => {
@@ -1103,6 +1103,82 @@ it('allows a separate direct inquiry after unknown posting without replaying the
   ]);
 }, 15000);
 
+const unusableAvailability: Array<[string, () => unknown]> = [
+  ['empty', (): unknown[] => []],
+  ['partial', (): unknown[] => [{ id: 'meridian-member-record', label: 'Member record', state: 'available', reason: 'Approved recording is ready' }]],
+  ['missing', (): undefined => undefined],
+];
+it.each(unusableAvailability)('fails closed with %s availability metadata and sends no direct invoke POST', async (_kind, availability) => {
+  const { page, state, connect } = await fixture(false, availability);
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  expect(state.requests.filter(request => request.path.endsWith('/invoke'))).toHaveLength(0);
+});
+
+it('keeps the latest capability catalog when refresh metadata omits capabilities', async () => {
+  const { page, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [inquiry];
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
+  await page.route('**/capabilities', async route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ principal: 'caller', availability: [] }),
+  }));
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
+  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  await page.unroute('**/capabilities');
+});
+
+it('keeps capability selection available while a selected capability is blocked', async () => {
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  let inquiryState: 'not_recorded' | 'available' = 'not_recorded';
+  const labels = [
+    ['meridian-sign-on', 'Sign on'],
+    ['meridian-member-inquiry', 'Member inquiry'],
+    ['meridian-member-record', 'Member record'],
+    ['meridian-funds-transfer', 'Funds transfer'],
+    ['meridian-open-share', 'Open share'],
+    ['meridian-update-member', 'Update contact'],
+    ['meridian-place-hold', 'Supervisor hold'],
+  ];
+  const { page, state, service, connect } = await fixture(false, () => labels.map(([id, label]) => ({
+    id,
+    label,
+    state: id === inquiry.id ? inquiryState : id === capability.id ? 'available' : 'not_recorded',
+    reason: id === inquiry.id && inquiryState === 'not_recorded' ? 'No approved recording' : 'Approved recording is ready',
+  })));
+  service.catalog = () => [capability, inquiry];
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#capability').selectOption(inquiry.id);
+  expect(await page.locator('#capability').isDisabled()).toBe(false);
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  inquiryState = 'available';
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(false));
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  expect(state.requests.filter(request => request.path.endsWith('/invoke'))).toHaveLength(1);
+  expect(state.requests.filter(request => request.path.endsWith('/invoke')).at(-1)?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
+});
+
 it.each(['restored', 'chat'] as const)('blocks an unknown %s run after reload and reconnect while allowing a distinct inquiry', async (origin) => {
   const { page, state, service, connect } = await fixture();
   const inquiry = { ...capability, id: 'meridian-member-inquiry' };
@@ -1158,7 +1234,11 @@ it('shows the authoritative step and announces meaningful state changes without 
     state.runs[0]!.result = next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
     await page.locator('#refresh').click();
     await vi.waitFor(async () => expect(await status.textContent()).toContain(next));
-    if (next === 'business_outcome') expect(await status.textContent()).toContain('NO_SUCH_MEMBER');
+    if (next === 'business_outcome') {
+      expect(await status.textContent()).toContain('Member not found');
+      await card.getByText('Run details and evidence', { exact: true }).click();
+      expect(await card.getByLabel('Raw run details').textContent()).toContain('NO_SUCH_MEMBER');
+    }
   }
   await card.getByText('Current step: safe-current-step', { exact: true }).waitFor();
 }, 15000);

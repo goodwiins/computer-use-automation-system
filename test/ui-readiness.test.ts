@@ -6,6 +6,8 @@ import { InvocationService } from '../src/server/service.js';
 import { Journal } from '../src/runtime/journal.js';
 import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
 import { formatMoney, runPresentation } from '../src/server/ui/presentation.js';
+import { Approval } from '../src/runtime/approval.js';
+import { ControlSession } from '../src/escalation/session.js';
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -50,4 +52,48 @@ it('uses investigation language for unknown and does not claim a generic failure
   expect(unknown.description).toContain('do not retry');
   const failure = runPresentation({ state: 'failure', capability: 'meridian-funds-transfer', result: { status: 'failure', failure: { code: 'RUN_FAILED' } } } as never);
   expect(failure.description).not.toMatch(/did not post|no posting/i);
+});
+
+it('uses readable explanations for known business outcomes while preserving raw codes for Details', () => {
+  for (const [code, label] of [
+    ['INSUFFICIENT_FUNDS', 'Insufficient funds'],
+    ['VALIDATION_REJECTED', 'Validation rejected'],
+    ['NO_SUCH_MEMBER', 'Member not found'],
+  ]) {
+    const presentation = runPresentation({ state: 'business_outcome', capability: 'meridian-member-inquiry', result: { status: 'business_outcome', outcomeCode: code, detail: 'safe detail' } });
+    expect(presentation.label).toBe(label);
+    expect(presentation.description).toContain('safe detail');
+  }
+  expect(runPresentation({ state: 'business_outcome', capability: 'meridian-member-inquiry', result: { status: 'business_outcome', outcomeCode: 'NEW_CODE', detail: 'safe detail' } }).label).toBe('Business outcome');
+});
+
+it('reports active and shutdown availability without changing the fixed public catalog', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ui-readiness-')); temporary.push(root);
+  const artifacts = join(root, 'artifacts'); mkdirSync(artifacts);
+  copyFileSync('artifacts/meridian-member-record.v1.0.0.json', join(artifacts, 'member-record.json'));
+  const profile = loadProfile('meridian');
+  const journal = new Journal(join(root, 'journal'), 'k'.repeat(32));
+  const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record'], artifacts);
+  (service as unknown as { active?: string }).active = 'active-run';
+  expect(service.availability('caller').find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
+  expect(service.availability('caller').map(item => item.id)).toHaveLength(7);
+  expect(service.availability('caller').map(item => item.id)).not.toContain('hidden-capability');
+  await service.close();
+  expect(service.availability('caller').find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Server is shutting down' });
+});
+
+it('exposes finishedAt only for live completion, never historical journal records', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ui-readiness-')); temporary.push(root);
+  const artifacts = join(root, 'artifacts'); mkdirSync(artifacts);
+  copyFileSync('artifacts/meridian-member-record.v1.0.0.json', join(artifacts, 'member-record.json'));
+  const profile = loadProfile('meridian');
+  const journal = new Journal(join(root, 'journal'), 'h'.repeat(32));
+  const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record'], artifacts);
+  const record = journal.reserve('caller', 'history-key', 'meridian-member-record', '1.0.0', {});
+  journal.update(record.runId, 'success');
+  service.live.set(record.runId, { state: 'success', inputs: {}, started: 10, finished: 20, approval: new Approval(new ControlSession(), () => {}, Date.now() + 1000) });
+  expect(service.get('caller', record.runId).finishedAt).toBe(new Date(20).toISOString());
+  service.live.delete(record.runId);
+  expect(service.get('caller', record.runId).finishedAt).toBeUndefined();
+  journal.close();
 });

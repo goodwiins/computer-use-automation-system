@@ -45,6 +45,7 @@ export function RunProvider({
 }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [capabilities, setCapabilities] = useState(session.capabilities);
+  const capabilitiesRef = useRef(session.capabilities);
   const [availability, setAvailability] = useState(session.availability);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -82,8 +83,9 @@ export function RunProvider({
       const [historyResponse, capabilitiesResponse] = await Promise.all([request('/runs'), request('/capabilities')]);
       const history: Run[] = await historyResponse.json();
       const metadata = await capabilitiesResponse.json() as { capabilities?: Capability[]; availability?: Availability[] | null };
-      const nextCapabilities = Array.isArray(metadata.capabilities) ? metadata.capabilities : capabilities;
-      const nextAvailability = Array.isArray(metadata.availability) ? metadata.availability : undefined;
+      const hasCapabilities = Array.isArray(metadata.capabilities);
+      const nextCapabilities = hasCapabilities ? metadata.capabilities! : capabilitiesRef.current;
+      const nextAvailability = hasCapabilities && Array.isArray(metadata.availability) ? metadata.availability : undefined;
       const missing = [...watched.current].filter((id) => !history.some((run) => run.runId === id));
       const extra: Run[] = await Promise.all(
         missing.map(async (id) => (await request(`/runs/${segment(id)}`)).json()),
@@ -91,6 +93,7 @@ export function RunProvider({
       if (!abort.current.signal.aborted) {
         setRuns([...history, ...extra]);
         setCapabilities(nextCapabilities);
+        capabilitiesRef.current = nextCapabilities;
         setAvailability(nextAvailability);
         setError('');
       }
