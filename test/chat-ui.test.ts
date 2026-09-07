@@ -19,6 +19,25 @@ const runId = '11111111-1111-4111-8111-111111111111';
 const approvalId = '22222222-2222-4222-8222-222222222222';
 const evidencePath = resolve('evidence/test-runs/assistant-ui');
 const hostile = '<img src=x onerror=alert(1)>';
+const readinessLabels = [
+  ['meridian-sign-on', 'Sign on'],
+  ['meridian-member-inquiry', 'Member inquiry'],
+  ['meridian-member-record', 'Member record'],
+  ['meridian-funds-transfer', 'Funds transfer'],
+  ['meridian-open-share', 'Open share'],
+  ['meridian-update-member', 'Update contact'],
+  ['meridian-place-hold', 'Supervisor hold'],
+] as const;
+function fixtureAvailability(recordState: 'available' | 'temporarily_unavailable', inquiryState: 'not_recorded' | 'available' = 'not_recorded') {
+  return readinessLabels.map(([id, label]) => ({
+    id,
+    label,
+    state: id === 'meridian-member-record' ? recordState : id === 'meridian-member-inquiry' ? inquiryState : 'not_recorded',
+    reason: id === 'meridian-member-record' && recordState === 'temporarily_unavailable'
+      ? 'Another operation is active'
+      : id === 'meridian-member-inquiry' && inquiryState === 'not_recorded' ? 'No approved recording' : 'Approved recording is ready',
+  }));
+}
 const capability = {
   id: 'meridian-member-record',
   version: '1.0.0',
@@ -786,6 +805,73 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
   expect(errors).toEqual([]);
 }, 20000);
+it('recovers a response-lost direct request with its original body and key while availability is unavailable', async () => {
+  const { page, state, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  await connect(operatorToken);
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'same request key');
+  await page.locator('#fields input').fill('changed-member');
+  service.catalog = () => [capability, inquiry];
+  service.availability = () => fixtureAvailability('temporarily_unavailable', 'available');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#operator').selectOption('SUPERVISOR');
+  const recovery = page.getByRole('button', { name: 'Recover accepted request', exact: true });
+  await recovery.waitFor();
+  await recovery.click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[1]?.body).toEqual(invokes[0]?.body);
+  expect(invokes[1]?.key).toBe(invokes[0]?.key);
+  expect(invokes[1]?.path).toBe(`/capabilities/${capability.id}/invoke`);
+  expect(state.invocations.size).toBe(1);
+});
+it('recovers a terminal unknown response-lost request under its original key without a new operation', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'same request key');
+  state.runs[0]!.state = 'POST_OUTCOME_UNKNOWN';
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  const recovery = page.getByRole('button', { name: 'Recover accepted request', exact: true });
+  await recovery.waitFor();
+  await recovery.click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[1]?.key).toBe(invokes[0]?.key);
+  expect(state.invocations.size).toBe(1);
+});
 it('offline refresh requested during an older history read still observes an accepted direct run', async () => {
   const { page, state, connect } = await fixture();
   await connect();

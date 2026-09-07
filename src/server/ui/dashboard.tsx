@@ -7,6 +7,7 @@ import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
 const MERIDIAN_IDS: ReadonlySet<string> = new Set(MERIDIAN_CAPABILITIES.map(([id]) => id));
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
+type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
   const { session } = useRuns();
   return session.principal === 'operator' ? (
@@ -25,6 +26,7 @@ export function CapabilityCatalog() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [acceptedId, setAcceptedId] = useState('');
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
   const availability = session.availability;
   const meridianSession = session.capabilities.some(({ id }) => MERIDIAN_IDS.has(id))
@@ -37,14 +39,40 @@ export function CapabilityCatalog() {
     : [];
   const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
-  const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
+  const attempt = useRef<InvocationAttempt | undefined>(undefined);
   const visibleCapabilities = session.capabilities.filter(c => !availabilityComplete || availability.some(item => item.id === c.id));
   const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
   const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
   const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
+  async function submitAttempt(retained: InvocationAttempt) {
+    if (active.current || acceptedId || loading || historyError) return;
+    active.current = true;
+    setBusy(true);
+    setRecoveryAvailable(false);
+    setError('');
+    try {
+      const response = await request(`/capabilities/${segment(retained.capabilityId)}/invoke`, {
+        method: 'POST',
+        body: retained.body,
+        headers: { 'Idempotency-Key': retained.key },
+      });
+      const accepted: { runId: string } = await response.json();
+      segment(accepted.runId);
+      setAcceptedId(accepted.runId);
+      watch(accepted.runId);
+    } catch (e) {
+      setRecoveryAvailable(true);
+      setError(
+        `${e instanceof Error ? e.message : 'Request interrupted.'} If the outcome is uncertain, refresh history. Recovering this accepted request uses the same request key; changed requests require a fresh availability check.`,
+      );
+    } finally {
+      active.current = false;
+      setBusy(false);
+    }
+  }
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current || acceptedId || loading || historyError || metadataUnavailable) return;
+    if (!capability || active.current || acceptedId || loading || historyError || selectedUnavailable) return;
     const status = availability?.find(item => item.id === capability.id);
     if (meridianSession && (!status || status.state !== 'available')) {
       setError(status?.reason || 'Availability unavailable');
@@ -69,29 +97,23 @@ export function CapabilityCatalog() {
       ...(session.principal === 'operator' ? { operator: data.get('operator') } : {}),
     });
     const fingerprint = capability.id + body;
-    if (attempt.current?.fingerprint !== fingerprint)
-      attempt.current = { fingerprint, key: crypto.randomUUID() };
-    active.current = true;
-    setBusy(true);
-    setError('');
-    try {
-      const response = await request(`/capabilities/${segment(capability.id)}/invoke`, {
-        method: 'POST',
+    if (attempt.current?.fingerprint !== fingerprint) {
+      attempt.current = {
+        capabilityId: capability.id,
         body,
-        headers: { 'Idempotency-Key': attempt.current.key },
-      });
-      const accepted: { runId: string } = await response.json();
-      segment(accepted.runId);
-      setAcceptedId(accepted.runId);
-      watch(accepted.runId);
-    } catch (e) {
-      setError(
-        `${e instanceof Error ? e.message : 'Request interrupted.'} If the outcome is uncertain, refresh history. Resubmitting unchanged inputs uses the same request key.`,
-      );
-    } finally {
-      active.current = false;
-      setBusy(false);
+        role: session.principal === 'operator' ? String(data.get('operator') ?? '') : undefined,
+        fingerprint,
+        key: crypto.randomUUID(),
+      };
     }
+    const nextAttempt = attempt.current;
+    if (!nextAttempt) return;
+    await submitAttempt(nextAttempt);
+  }
+  async function recover() {
+    const retained = attempt.current;
+    if (!recoveryAvailable || !retained) return;
+    await submitAttempt(retained);
   }
   return (
     <section aria-labelledby="catalog-heading">
@@ -161,6 +183,18 @@ export function CapabilityCatalog() {
           </form>
         )}
         {error && <p role="alert">{error}</p>}
+        {recoveryAvailable && attempt.current && (
+          <p>
+            Response was lost after submission. Recover the accepted run with its original request key; this checks its status without starting a new operation.
+            <button
+              type="button"
+              disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}
+              onClick={() => void recover()}
+            >
+              Recover accepted request
+            </button>
+          </p>
+        )}
         {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
         {acceptedRun && !pending(acceptedRun) && (
           <button onClick={() => {
