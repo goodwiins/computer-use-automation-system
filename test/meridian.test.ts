@@ -3756,6 +3756,7 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
     await page.locator('#workspace').waitFor({ state: 'visible' });
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
     await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.getByRole('tab', { name: /All runs/ }).click();
     expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
     expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 2.5 s' }).count()).toBe(1);
