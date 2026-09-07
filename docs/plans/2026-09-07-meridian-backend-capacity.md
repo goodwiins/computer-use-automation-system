@@ -31,6 +31,9 @@ VNC services are active; Caddy is inactive. The API listens on `127.0.0.1:4180` 
 loopback. This is not public HTTPS or authenticated end-to-end acceptance. The application
 cgroup reported 139,300,864 bytes current memory and 166,776,832 peak; these are idle observations,
 not browser-load measurements. Host memory reported 3,834 MiB and no swap.
+Unauthenticated loopback requests returned 401 for `/health` and `/capabilities`; a hostile
+Origin returned 403. These confirm an HTTP response and access rejection, not authenticated
+health or capability execution. The historical README's health-200 result was not reproduced.
 
 The historical deployment README lives outside this branch at
 `/Users/goodwiinz/.codex/worktrees/interface-ai-lightsail/deploy/lightsail/README.md`.
@@ -143,6 +146,21 @@ CPU count and memory fields describe the host, not container limits. Small-sampl
 descriptive statistic, not an SLO; warm OS caches and concurrent machine work affect results.
 Repeated 1/4/4/1 ordering makes some order effects visible; do not infer linear speedup.
 
+The [recorded baseline](../benchmarks/2026-09-07-workers.json) at source `78dc6e5` completed
+100/100 synthetic lookups on an Apple M4 Pro (12 logical CPUs, 24 GiB), Node 22.23.1, headless.
+It includes source/fixture/lockfile hashes and every run timing.
+
+| Batch order | Workers | Completed | p50 / p95 run (ms) | Sampled aggregate process-tree RSS peak (MiB) |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 10/10 | 599.99 / 648.92 | 496.36 |
+| 2 | 4 | 40/40 | 465.23 / 579.12 | 1,911.80 |
+| 3 | 4 | 40/40 | 488.49 / 583.37 | 1,942.44 |
+| 4 | 1 | 10/10 | 599.51 / 654.75 | 498.52 |
+
+Four browser roots were observed simultaneously in each four-worker batch. These results
+establish that the harness exercised concurrent browser processes; they do not establish
+MERIDIAN throughput or a per-worker memory allocation.
+
 The proposed **1 vCPU / 2 GB per worker remains unvalidated**. Docker is installed locally but
 its daemon is unavailable, so this PR does not claim a resource-constrained run. Next measure
 each worker in its own Linux cgroup/container at that allocation, including Node, headed Chromium,
@@ -162,5 +180,12 @@ restarted. Backend storage APIs should preserve authoritative `runId` rendering 
 contracts. No chat UI implementation is included here.
 
 Implemented by this PR: B0 only. PostgreSQL, persistent conversations, shared workers and S3
-are proposed, not deployed. PDF live acceptance remains 4/7. Benchmark results and verification
-are recorded alongside the final PR; passing them does not establish B1–B5 or a live role takeover.
+are proposed, not deployed. PDF live acceptance remains 4/7. Local verification at `78dc6e5`:
+`npm run ci` passed 729 tests / 27 files, both typechecks and UI build. Setup, smoke (19 tests),
+focused checks (99 tests), artifact validation and diff checks also passed. An initial full run
+before the provenance fields were added timed out in three existing CLI tests; the focused
+rerun and the final full suite passed. No application/test-timeout change was made to mask them.
+A missing-browser negative run exited 1 and emitted no success report. The source was reviewed
+for process ownership, cancellation, local-only network scope and metric limitations; this is a
+self-review, not independent approval. Exact-head hosted CI is recorded on the PR. Passing
+these checks does not establish B1–B5 or a live role takeover.
