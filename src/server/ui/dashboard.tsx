@@ -168,6 +168,8 @@ function WithheldFields({ fields }: { fields: NonNullable<RecordedStructure['out
 }
 
 export function ResultCard({ run }: { run: Run }) {
+  const { watched, error } = useRuns();
+  const identity = !error && watched.has(run.runId) && !run.sensitiveValuesUnavailable ? run.memberIdentity : undefined;
   if (run.state === 'POST_OUTCOME_UNKNOWN')
     return (
       <div className="warning">
@@ -199,11 +201,17 @@ export function ResultCard({ run }: { run: Run }) {
       </div>
     );
   if (run.sensitiveValuesUnavailable && !result.outputs) return <div>
+    {run.capability === 'meridian-member-record' && <p>Member identity unavailable.</p>}
     <p>Recorded output structure; values withheld.</p>
     {run.structure?.outputs ? <WithheldFields fields={run.structure.outputs} /> : <p>Output structure was not recorded or is unavailable.</p>}
   </div>;
   return (
     <div className="result">
+      {run.capability === 'meridian-member-record' && <p aria-label="Member identity">
+        {identity?.status === 'verified' && identity.memberNumber === run.inputs?.member
+          ? <><strong>{identity.name}</strong> · Member {identity.memberNumber}</>
+          : identity?.status === 'pending' ? 'Verifying member identity…' : 'Member identity unavailable.'}
+      </p>}
       {Object.entries(result.outputs ?? {}).map(([name, value]) => (
         <div key={name}>
           <h4>{name}</h4>
