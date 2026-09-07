@@ -1,0 +1,27 @@
+{
+  "runId": "80b3c180-4f26-411d-b1e5-e63cb3f11f03",
+  "producerSha": "5d31afd1ae36aea7878497233967805a455be858",
+  "scope": "Actual hosted-target natural absent-member deterministic replay through caller API; not chatbot or write acceptance",
+  "state": "business_outcome",
+  "result": {
+    "status": "business_outcome",
+    "outcomeCode": "NO_SUCH_MEMBER",
+    "detail": "No member records matched the search"
+  },
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "business_outcome",
+    "attempts": 9,
+    "mutationIntents": 0
+  },
+  "liveAcceptedCapabilities": 3,
+  "evidenceHashes": {
+    "log.jsonl": "f53db4823c74a3263d553ad1a3bddcefbb7eb00a63c64a1e9b683c6a45e8907d",
+    "result.json": "6747944d4cbf1f04571573c86a5db8c3134e642dd423baf8558579f2f76e3367"
+  },
+  "terminalJournalSha256": "e349105ecba9eefe8b913a14035756d68d58f8f90a6eace0d083fe1dc4bd9952",
+  "limitations": [
+    "Sanitized metadata summary; raw evidence and authenticated journal retained privately.",
+    "Does not establish new discovery provenance, accepted writes, current chatbot integration, or injected-fault acceptance."
+  ]
+}

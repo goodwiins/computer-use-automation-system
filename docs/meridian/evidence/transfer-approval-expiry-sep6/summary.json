@@ -1,0 +1,28 @@
+{
+  "runId": "14d62781-c672-4dde-9fc9-2aa2ca2a2c53",
+  "producerSha": "a80ac4e48138efd916fad8fe23f94b93767c5d97",
+  "capability": "meridian-funds-transfer",
+  "selectedInputsConfirmedByUser": true,
+  "reviewReached": true,
+  "approvalPendingAt": "2026-09-06T16:33:01.615Z",
+  "abortedAt": "2026-09-06T16:38:01.622Z",
+  "decision": "abort",
+  "code": "RUN_ABORTED",
+  "discoveryStatus": "stopped",
+  "journalState": "failure",
+  "resultStatus": "failure",
+  "cliExitCode": 1,
+  "evaluator": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 17,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "scope": "Genuine selected-input transfer discovery reached native review and personal approval gate. No decision was entered; five-minute approval timeout aborted the run. No post, completion receipt, artifact or replay acceptance is claimed.",
+  "logSha256": "def7b85e2be4d44f043f955c63b473ef6f7ddd665ec3161cd495f82f5b9a8022",
+  "resultSha256": "560dd59a133dba1623c96f298fe268e1335408dc2efed0428883514bca794612",
+  "journalSha256": "fb44c724a2f04f9179617292ecd53e8cc25f404e1cabe4be76481d6496a9f793"
+}

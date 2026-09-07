@@ -50,7 +50,7 @@ it('releases the API slot and finalizes the journal when runtime construction fa
   try {
     expect(() => service.invoke('caller', 'meridian-sign-on', {}, 'first')).toThrow('Injected runtime startup failure');
     const first = [...journal.records.values()][0]!;
-    expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId });
+    expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId, reused: true });
     expect(service.get('caller', first.runId).state).toBe('failure');
     let nextError = '';
     try { service.invoke('caller', 'meridian-sign-on', {}, 'second'); } catch (e) { nextError = (e as Error).message; }
@@ -132,7 +132,7 @@ it('closes a constructed runtime before releasing the slot after setup fails', a
     expect(close).toHaveBeenCalledOnce();
     expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('One run is active');
     release();
-    await service.close();
+    await vi.waitFor(() => expect([...service.live.values()][0]?.finished).toBeDefined());
     construct.mockImplementation(() => { throw new Error('Next setup attempted'); });
     expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('Next setup attempted');
     expect([...journal.records.values()].map(r => r.state)).toEqual(['failure', 'failure']);
@@ -213,9 +213,13 @@ function discoveryConditionFixture() {
 it.each(profile.detectors.filter(d => d.classification !== 'recoverable'))('stops discovery for profile condition $id before model or approval', async detector => {
   const f = discoveryConditionFixture(); f.show(detector.id);
   expect(await checkDetectors(f.surface, { detectors: profile.detectors })).toEqual(detector);
+  f.deps.detectors = profile.detectors.map(d => ({ ...d, description: 'PRIVATE detector description' }));
   const result = await f.run();
-  expect(result).toMatchObject({ status: 'stopped', stopReason: detector.outcomeCode });
+  expect(result).toMatchObject({ status: detector.classification === 'business_outcome' ? 'business_outcome' : 'stopped', stopReason: detector.outcomeCode });
+  if (detector.classification === 'business_outcome') expect(result).toMatchObject({ outcomeCode: detector.outcomeCode });
+  else expect(result).not.toHaveProperty('outcomeCode');
   expect(result.trace).toEqual([]);
+  expect(JSON.stringify(result) + readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8')).not.toContain('PRIVATE');
   expect(f.create).not.toHaveBeenCalled(); expect(f.escalate).not.toHaveBeenCalled();
 });
 
@@ -229,13 +233,16 @@ it.each(profile.detectors.filter(d => d.classification !== 'recoverable').flatMa
     if (stage === 'model-failure') throw new Error('PRIVATE model failed');
     return { choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: { name: stage === 'done' ? 'done' : 'click', arguments: JSON.stringify({ text: 'Continue', reason: 'fixture' }) } }] } }] };
   });
-  expect(await f.run()).toMatchObject({ status: 'stopped', stopReason: detector.outcomeCode });
+  const result = await f.run();
+  expect(result).toMatchObject({ status: detector.classification === 'business_outcome' ? 'business_outcome' : 'stopped', stopReason: detector.outcomeCode });
+  if (detector.classification === 'business_outcome') expect(result).toMatchObject({ outcomeCode: detector.outcomeCode });
+  else expect(result).not.toHaveProperty('outcomeCode');
   expect(f.create).toHaveBeenCalledTimes(stage === 'observe-failure' ? 0 : 1);
   expect(click).toHaveBeenCalledTimes(stage === 'action-failure' ? 1 : 0);
   expect(f.escalate).not.toHaveBeenCalled();
 });
 
-it.each(['cleared', 'persistent', 'another-condition', 'same-route', 'throws', 'abort'] as const)('bounds guarded discovery recovery and refuses continuation: %s', async mode => {
+it.each(['cleared', 'persistent', 'another-condition', 'business-condition', 'same-route', 'throws', 'abort'] as const)('bounds guarded discovery recovery and refuses continuation: %s', async mode => {
   const f = discoveryConditionFixture(); f.show('maintenance');
   const click = vi.spyOn(f.surface, 'recoverClick');
   const dispatch = vi.spyOn(f.inner, 'click').mockImplementation(async () => {
@@ -243,11 +250,13 @@ it.each(['cleared', 'persistent', 'another-condition', 'same-route', 'throws', '
     if (mode === 'throws') throw new Error('PRIVATE recovery failure');
     if (mode !== 'persistent') f.clear();
     if (mode === 'another-condition') f.show('server');
+    if (mode === 'business-condition') f.show('notfound');
     if (mode !== 'same-route') f.inner.currentUrl = () => `${origin}/menu`;
     return report;
   });
   const result = await f.run();
-  expect(result).toMatchObject({ status: 'stopped', stopReason: mode === 'abort' ? 'RUN_ABORTED' : mode === 'another-condition' ? 'APPLICATION_ERROR' : ['persistent', 'throws'].includes(mode) ? 'RECOVERY_FAILED' : 'RECOVERY_CHECKPOINT_REQUIRED' });
+  expect(result).toMatchObject({ status: mode === 'business-condition' ? 'business_outcome' : 'stopped', stopReason: mode === 'abort' ? 'RUN_ABORTED' : mode === 'another-condition' ? 'APPLICATION_ERROR' : mode === 'business-condition' ? 'NO_SUCH_MEMBER' : ['persistent', 'throws'].includes(mode) ? 'RECOVERY_FAILED' : 'RECOVERY_CHECKPOINT_REQUIRED' });
+  if (mode === 'business-condition') expect(result.outcomeCode).toBe('NO_SUCH_MEMBER');
   expect(click).toHaveBeenCalledExactlyOnceWith(profile.detectors.find(d => d.id === 'maintenance')!.recovery!.target);
   expect(dispatch).toHaveBeenCalledOnce(); expect(result.trace).toEqual([]);
   expect(f.surface.effectiveRisk).toBe('reversible_write');
@@ -256,7 +265,7 @@ it.each(['cleared', 'persistent', 'another-condition', 'same-route', 'throws', '
   expect(events).toContain('detector.recovering'); expect(events).not.toContain('PRIVATE');
 });
 
-it.each(['validation-injected', 'permission', 'maintenance'])('keeps post-intent condition %s unknown without another model call or recovery', async id => {
+it.each(['insufficient-funds', 'notfound', 'validation-injected', 'permission', 'maintenance'])('keeps post-intent condition %s unknown without another model call or recovery', async id => {
   const f = discoveryConditionFixture();
   f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: { name: 'click', arguments: JSON.stringify({ text: 'Post', reason: 'fixture' }) } }] } }] });
   const click = vi.spyOn(f.inner, 'click').mockImplementation(async () => { f.surface.mutationDispatched = true; f.show(id); return report; });
@@ -399,11 +408,75 @@ it.each(['business', 'abort', 'unknown'] as const)('retains typed discovery term
   expect(f.create).toHaveBeenCalledOnce(); expect(f.escalate).not.toHaveBeenCalled();
 });
 
+it.each(['escalate', 'completion'] as const)('distinguishes post-intent discovery %s in strict metadata without retry', async mode => {
+  const f = discoveryConditionFixture();
+  const call = (name: string) => ({ choices: [{ message: { content: 'PRIVATE model text', tool_calls: [{
+    id: 'PRIVATE tool id', type: 'function', function: { name, arguments: JSON.stringify({ text: 'Post', reason: 'PRIVATE reason', summary: 'PRIVATE summary' }) },
+  }] } }] });
+  f.create.mockResolvedValueOnce(call('click')).mockResolvedValueOnce(call(mode === 'escalate' ? 'escalate' : 'done'));
+  const click = vi.spyOn(f.inner, 'click').mockImplementation(async () => { f.surface.mutationDispatched = true; return report; });
+  const validateCompletion = vi.fn(async () => { throw new Error('PRIVATE completion values'); });
+  f.deps.validateCompletion = validateCompletion;
+  const result = await f.run();
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' });
+  expect(f.create).toHaveBeenCalledTimes(2); expect(click).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'completion' ? 1 : 0);
+  expect(f.escalate).not.toHaveBeenCalled();
+  const log = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  const events = log.trim().split('\n').map(line => JSON.parse(line));
+  const diagnostic = events.filter(event => ['discovery.escalate', 'discovery.completion'].includes(event.event));
+  expect(diagnostic.map(({ ts, seq, ...metadata }) => metadata)).toEqual(mode === 'escalate'
+    ? [{ event: 'discovery.escalate' }] : [{ event: 'discovery.completion', status: 'failure' }]);
+  expect(diagnostic[0].seq).toBeLessThan(events.find(event => event.event === 'discovery.finish').seq);
+  f.logger.writeResult(result);
+  const saved = readFileSync(join(f.logger.dir, 'result.json'), 'utf8');
+  expect(log + saved).not.toContain('PRIVATE');
+  expect(JSON.parse(saved)).not.toHaveProperty('trace');
+  expect(log).not.toContain('detector.recovering');
+});
+
+it.each(['business', 'abort'] as const)('retains the original typed completion error before intent: %s', async mode => {
+  const f = discoveryConditionFixture();
+  f.deps.validateCompletion = vi.fn(async () => { throw mode === 'business' ? new InsufficientFundsError() : new RunAbortedError('PRIVATE completion'); });
+  expect(await f.run()).toMatchObject(mode === 'business'
+    ? { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' }
+    : { status: 'stopped', stopReason: 'RUN_ABORTED' });
+  expect(f.create).toHaveBeenCalledOnce(); expect(f.escalate).not.toHaveBeenCalled();
+  const log = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  expect(log).toContain('discovery.completion'); expect(log).not.toContain('PRIVATE');
+});
+
+it.each(['business', 'abort', 'escalate'].flatMap(mode => [false, true].map(dispatched => ({ mode, dispatched }))))('preserves discovery terminal handling when diagnostic logging fails: $mode dispatched=$dispatched', async ({ mode, dispatched }) => {
+  const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
+  f.create.mockResolvedValue({ choices: [{ message: { tool_calls: [{ id: 'fixture', type: 'function', function: {
+    name: mode === 'escalate' ? 'escalate' : 'done', arguments: '{}',
+  } }] } }] });
+  const validateCompletion = vi.fn(async () => { throw mode === 'business' ? new InsufficientFundsError() : new RunAbortedError('PRIVATE completion'); });
+  const escalate = vi.fn(async () => 'abort' as const);
+  f.deps.validateCompletion = validateCompletion; f.deps.escalate = escalate;
+  const log = f.logger.log.bind(f.logger);
+  vi.spyOn(f.logger, 'log').mockImplementation((event, data) => {
+    if (event === (mode === 'escalate' ? 'discovery.escalate' : 'discovery.completion')) throw new Error('PRIVATE diagnostic write failure');
+    log(event, data);
+  });
+  expect(await f.run()).toMatchObject(dispatched ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
+    : mode === 'business' ? { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' }
+    : mode === 'abort' ? { status: 'stopped', stopReason: 'RUN_ABORTED' } : { status: 'escalated' });
+  expect(f.create).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'escalate' ? 0 : 1);
+  expect(escalate).toHaveBeenCalledTimes(mode === 'escalate' && !dispatched ? 1 : 0);
+  const persisted = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
+  expect(persisted).not.toContain('PRIVATE');
+  expect(persisted).not.toContain('discovery.action_error');
+  expect(persisted).not.toContain('detector.recovering');
+});
+
 it.each([false, true])('keeps condition-free verified discovery success: dispatched=%s', async dispatched => {
   const f = discoveryConditionFixture(); f.surface.mutationDispatched = dispatched;
   const validateCompletion = vi.fn(); f.deps.validateCompletion = validateCompletion;
   expect(await f.run()).toMatchObject({ status: 'success' });
   expect(validateCompletion).toHaveBeenCalledOnce(); expect(f.create).toHaveBeenCalledOnce();
+  expect(readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8')).not.toContain('discovery.completion');
 });
 
 it('keeps discovery without strict profile integration generic', async () => {
@@ -442,6 +515,17 @@ it.each(['discovery', 'replay'] as const)('refuses standalone recovery for stric
   }
 });
 
+
+it.each(['PRIVATE-DYNAMIC-CODE', 'PERMISSION_DENIED', undefined])('rejects a business detector outside the outcome allowlist: %s', async outcomeCode => {
+  const f = discoveryConditionFixture(); f.show('notfound');
+  f.deps.detectors = profile.detectors.map(d => d.id === 'notfound' ? { ...d, outcomeCode, description: 'PRIVATE detector description' } : d);
+  const result = await f.run();
+  expect(result).toMatchObject({ status: 'stopped', stopReason: outcomeCode === 'PERMISSION_DENIED' ? outcomeCode : 'DISCOVERY_FAILED' });
+  expect(result).not.toHaveProperty('outcomeCode');
+  expect(result).not.toHaveProperty('detail');
+  expect(f.create).not.toHaveBeenCalled(); expect(f.escalate).not.toHaveBeenCalled();
+  expect(JSON.stringify(result) + readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8')).not.toContain('PRIVATE');
+});
 
 it.each(['check-error', 'untrusted-code'] as const)('fails closed with safe discovery evidence: %s', async mode => {
   const f = discoveryConditionFixture();

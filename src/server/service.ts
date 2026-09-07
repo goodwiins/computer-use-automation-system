@@ -12,12 +12,14 @@ import { type AppProfile } from '../runtime/profile.js';
 import { closeRuntime, createRuntime, executeReplay, operatorContext } from '../runtime/run.js';
 import { Redactor } from '../safety/redact.js';
 import type { Policy } from '../safety/policy.js';
+import { safeResult as persistedResult, type RecordedStructure } from '../evidence/safe-event.js';
 
 export type Principal = 'caller' | 'operator';
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private active?: string;
+  private closing = false;
   private completion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
@@ -51,8 +53,16 @@ export class InvocationService {
     }
     // Secrets are excluded from identity. The configured operator/branch/role are included.
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
-    const { existing } = this.journal.lookup(principal, key, request);
-    if (existing) return { runId: existing.runId };
+    const { existing, identity } = this.journal.lookup(principal, key, request);
+    if (existing) {
+      if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
+      return { runId: existing.runId, reused: true as const };
+    }
+    if (this.closing) throw new RequestError(503, 'Server is shutting down');
+    // ponytail: capability-wide unknown block; narrower scope needs an explicit reconciliation contract.
+    // Terminal same-key lookups above remain readable across all entry points.
+    if ([...this.journal.records.values()].some(run => run.capability === id && run.state === 'POST_OUTCOME_UNKNOWN'))
+      throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
     const record = this.journal.reserve(principal, key, id, artifact.version, request);
     this.active = record.runId;
@@ -122,13 +132,22 @@ export class InvocationService {
     const live = this.live.get(runId);
     const dir = join(this.evidenceDir, runId);
     const evidence = existsSync(dir) ? readdirSync(dir).filter(f => /^[a-zA-Z0-9._-]+\.(png|json|jsonl)$/.test(f)) : [];
-    const historyResult = !live && existsSync(join(dir, 'result.json')) ? JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8')) : undefined;
+    let historyResult;
+    let structure: RecordedStructure | undefined;
+    if (!live && existsSync(join(dir, 'result.json'))) {
+      try {
+        const saved = JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8'));
+        historyResult = this.profile.appId === 'meridian' ? persistedResult(saved) : saved;
+        if (this.profile.appId === 'meridian' && historyResult.structure?.capability === record.capability) structure = historyResult.structure;
+        if (this.profile.appId === 'meridian') historyResult = { ...historyResult, structure };
+      } catch { historyResult = undefined; }
+    }
     const result = live?.result;
     const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       intervention: principal === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
-      result: safeResult, sensitiveValuesUnavailable: !live, evidence };
+      result: safeResult, structure, sensitiveValuesUnavailable: !live, evidence };
   }
   history(principal: Principal) { return [...this.journal.records.values()].filter(r => principal === 'operator' || r.caller === principal).map(r => this.get(principal, r.runId)); }
   decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
@@ -139,6 +158,7 @@ export class InvocationService {
     live.approval.decide(id, decision);
   }
   async close() {
+    this.closing = true;
     for (const live of this.live.values()) { live.approval.cancel(); await live.close?.(); }
     await this.completion;
   }
