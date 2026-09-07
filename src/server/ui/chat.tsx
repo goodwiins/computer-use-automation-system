@@ -138,12 +138,12 @@ export function Chat() {
                     <ComposerPrimitive.Send aria-label="Send" className="send-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg></ComposerPrimitive.Send>
                   </AuiIf>
                   <AuiIf condition={(s) => s.thread.isRunning}>
-                    <ComposerPrimitive.Cancel aria-label="Stop response" className="send-button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg></ComposerPrimitive.Cancel>
+                    <ComposerPrimitive.Cancel aria-label="Stop response" className="send-button stop-button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg><span>Stop response</span></ComposerPrimitive.Cancel>
                   </AuiIf>
                 </div>
               </ComposerPrimitive.Root>
               <p className="composer-note">Transactions require operator approval.</p>
-              <p className="sr-only">Stopping the response does not cancel a run or undo a transaction.</p>
+              <p className="composer-note">Stopping the response does not cancel a run or undo a transaction.</p>
             </ThreadPrimitive.ViewportFooter>
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
