@@ -756,6 +756,9 @@ it('recovers a real PostgreSQL chat action after the browser loses its response 
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await vi.waitFor(() => expect(state.actionToolCalls).toBe(2));
     await vi.waitFor(async () => expect((await journal.list())).toHaveLength(2));
+    const secondRunId = (await journal.list()).find(record => record.runId !== originalRunId)?.runId;
+    expect(secondRunId).toBeTruthy();
+    await vi.waitFor(async () => expect((await journal.get(secondRunId!))?.state).toBe('success'));
     const actionPosts = state.requests.filter(request => request.path === '/api/chat' && (request.body as { intent?: string } | undefined)?.intent === 'auto');
     expect(actionPosts).toHaveLength(2);
     expect(actionPosts[1]?.key).not.toBe(originalKey);
