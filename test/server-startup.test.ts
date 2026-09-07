@@ -6,8 +6,13 @@ import { createServer, connect, type AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { Journal } from '../src/runtime/journal.js';
+import { importJournal, readAuthorityMarker } from '../src/runtime/journal-maintenance.js';
+import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import { InvocationService } from '../src/server/service.js';
 import { serve } from '../src/server/http.js';
+import * as runtime from '../src/runtime/run.js';
+import { RunLogger } from '../src/evidence/logger.js';
+import { Redactor } from '../src/safety/redact.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
 const { copy } = vi.hoisted(() => ({ copy: vi.fn() }));
@@ -147,6 +152,128 @@ it('migrates PostgreSQL before listening and ends the pool during shutdown', asy
     await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
     const replacement = new Journal(join(dir, 'journal'), 'h'.repeat(64));
     replacement.close();
+  } finally {
+    end.mockRestore();
+    await database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('keeps PostgreSQL authority exclusive across shutdown and restart', async () => {
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'server-postgres-authority-'));
+  const key = 'h'.repeat(64);
+  const journalDir = join(dir, 'journal');
+  await importJournal(journalDir, database.pool, key);
+  vi.stubEnv('DATABASE_URL', database.connectionString);
+  vi.stubEnv('SUBJECT_API_TOKENS', subjects);
+  vi.stubEnv('EVIDENCE_DIR', dir);
+  vi.stubEnv('JOURNAL_HMAC_KEY', key);
+  vi.stubEnv('RUN_JOURNAL', 'postgres');
+  vi.stubEnv('PORT', String(await freePort()));
+  successfulSnapshot();
+  let server: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const marker = readAuthorityMarker(journalDir, key);
+    server = await serve('cu-nexus');
+    const contenderPool = database.openPool();
+    try {
+      await expect(PostgresJournal.open(contenderPool, key, marker.importId, marker.digest))
+        .rejects.toThrow('Journal is already owned');
+    } finally { await database.closePool(contenderPool); }
+
+    await new Promise<void>(resolve => server!.close(() => resolve()));
+    server = undefined;
+    vi.stubEnv('PORT', String(await freePort()));
+    server = await serve('cu-nexus');
+    await new Promise<void>(resolve => server!.close(() => resolve()));
+    server = undefined;
+
+    const replacementPool = database.openPool();
+    try {
+      const replacement = await PostgresJournal.open(replacementPool, key, marker.importId, marker.digest);
+      await replacement.close();
+    } finally { await database.closePool(replacementPool); }
+  } finally {
+    if (server?.listening) await new Promise<void>(resolve => server!.close(() => resolve()));
+    await database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('retains the PostgreSQL owner when replay cleanup is uncertain', async () => {
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'server-postgres-cleanup-'));
+  const key = 'h'.repeat(64);
+  const journalDir = join(dir, 'journal');
+  await importJournal(journalDir, database.pool, key);
+  vi.stubEnv('DATABASE_URL', database.connectionString);
+  vi.stubEnv('SUBJECT_API_TOKENS', subjects);
+  vi.stubEnv('CALLER_CAPABILITIES', 'lookup-member-balance');
+  vi.stubEnv('EVIDENCE_DIR', dir);
+  vi.stubEnv('JOURNAL_HMAC_KEY', key);
+  vi.stubEnv('RUN_JOURNAL', 'postgres');
+  vi.stubEnv('PORT', String(await freePort()));
+  successfulSnapshot();
+  const create = vi.spyOn(runtime, 'createRuntime').mockImplementation(options => ({
+    surface: { mutationDispatched: false }, promptRedactor: new Redactor(),
+    logger: new RunLogger('replay', new Redactor(), dir, true, options.runId),
+    close: async () => { throw new Error('PRIVATE browser cleanup failure'); },
+  } as unknown as ReturnType<typeof runtime.createRuntime>));
+  const execute = vi.spyOn(runtime, 'executeReplay').mockImplementation(async (_artifact, _params, candidate) => {
+    await runtime.closeRuntime(candidate);
+    return { status: 'success', outputs: {}, runId: candidate.logger.runId, evidenceDir: dir, recoveries: [] };
+  });
+  let server: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    const marker = readAuthorityMarker(journalDir, key);
+    server = await serve('cu-nexus');
+    const address = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${address.port}/capabilities/lookup-member-balance/invoke`, {
+      method: 'POST', headers: {
+        Authorization: 'Bearer startup-subject-token-0000000000001',
+        'Content-Type': 'application/json', 'Idempotency-Key': 'cleanup-owner-key',
+      }, body: JSON.stringify({ args: { memberId: '123' } }),
+    });
+    expect(response.status).toBe(202);
+    expect(create).toHaveBeenCalledOnce();
+    await vi.waitFor(async () => {
+      const state = await database.pool.query<{ state: string }>('SELECT state FROM meridian_runs');
+      expect(state.rows[0]?.state).toBe('success');
+    });
+    await new Promise<void>(resolve => server!.close(() => resolve()));
+    server = undefined;
+
+    const contenderPool = database.openPool();
+    try {
+      await expect(PostgresJournal.open(contenderPool, key, marker.importId, marker.digest))
+        .rejects.toThrow('Journal is already owned');
+    } finally { await database.closePool(contenderPool); }
+  } finally {
+    if (server?.listening) await new Promise<void>(resolve => server!.close(() => resolve()));
+    create.mockRestore();
+    execute.mockRestore();
+    await database.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('keeps PostgreSQL journal startup errors generic and releases the configured pool', async () => {
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'server-postgres-journal-failure-'));
+  const end = vi.spyOn(Pool.prototype, 'end');
+  vi.stubEnv('DATABASE_URL', database.connectionString);
+  vi.stubEnv('SUBJECT_API_TOKENS', subjects);
+  vi.stubEnv('EVIDENCE_DIR', dir);
+  vi.stubEnv('JOURNAL_HMAC_KEY', 'h'.repeat(64));
+  vi.stubEnv('RUN_JOURNAL', 'postgres');
+  vi.stubEnv('PORT', String(await freePort()));
+  successfulSnapshot();
+  try {
+    const error = await rejection(serve('cu-nexus'));
+    expect(error.message).toBe('Authoritative journal startup failed');
+    expect(error.message).not.toContain(dir);
+    await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
   } finally {
     end.mockRestore();
     await database.close();

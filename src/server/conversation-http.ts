@@ -49,20 +49,20 @@ export function conversationRouter(service: InvocationService, store?: Conversat
   });
 
   const subject = (res: Response) => res.locals.principal as SubjectPrincipal;
-  const projectRun = (principal: SubjectPrincipal, runId: string) => {
-    const record = service.journal.records.get(runId);
+  const projectRun = async (principal: SubjectPrincipal, runId: string) => {
+    const record = await service.journal.get(runId);
     if (!record || record.caller !== principalKey(principal)) throw new RequestError(404, 'Unknown run');
-    const run = service.get(principal, runId);
+    const run = await service.get(principal, runId);
     const result = run.result === undefined ? undefined : safeResult({
       ...(run.result && typeof run.result === 'object' ? run.result : {}),
       ...(run.structure === undefined ? {} : { structure: run.structure }),
     });
     return { runId: run.runId, capability: run.capability, version: run.version, state: run.state, result };
   };
-  const projectEvent = (principal: SubjectPrincipal, event: ConversationEvent) => ({
+  const projectEvent = async (principal: SubjectPrincipal, event: ConversationEvent) => ({
     ...event,
     content: event.kind === 'message_omitted' ? 'Message text was not saved.' : 'Linked run.',
-    ...(event.runId === undefined ? {} : { run: projectRun(principal, event.runId) }),
+    ...(event.runId === undefined ? {} : { run: await projectRun(principal, event.runId) }),
   });
 
   router.post('/', asyncRoute(async (req, res) => {
@@ -89,14 +89,14 @@ export function conversationRouter(service: InvocationService, store?: Conversat
     const principal = subject(res);
     const id = parse(idParams, req.params).id;
     const body = parse(appendBody, req.body);
-    if (body.runId !== undefined) projectRun(principal, body.runId);
+    if (body.runId !== undefined) await projectRun(principal, body.runId);
     const event = await store!.append(principal.subjectId, id, body);
-    res.status(201).json(projectEvent(principal, event));
+    res.status(201).json(await projectEvent(principal, event));
   }));
   router.get('/:id/events', asyncRoute(async (req, res) => {
     const principal = subject(res);
     const page = await store!.events(principal.subjectId, parse(idParams, req.params).id, parse(eventQuery, req.query));
-    res.json({ ...page, events: page.events.map(event => projectEvent(principal, event)) });
+    res.json({ ...page, events: await Promise.all(page.events.map(event => projectEvent(principal, event))) });
   }));
   return router;
 }

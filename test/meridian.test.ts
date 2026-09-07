@@ -325,33 +325,35 @@ describe('durable request identity', () => {
     expect(() => new Journal(dir, key)).toThrow(/authentication failed/);
   });
 
-  it('returns an existing service run before creating another runtime', () => {
+  it('returns an existing service run before creating another runtime', async () => {
     const names = ['MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
     const previous = new Map(names.map(name => [name, process.env[name]]));
     const dir = temp();
     const journal = new Journal(join(dir, 'journal'), key);
     const createRuntime = vi.spyOn(runtime, 'createRuntime');
+    let service: InvocationService | undefined;
     process.env.MERIDIAN_TELLER_OPERATOR = 'TELLER-ONE';
     process.env.MERIDIAN_TELLER_PASSWORD = 'TELLER-PASSWORD';
     process.env.MERIDIAN_SUPERVISOR_OPERATOR = 'SUPERVISOR-ONE';
     process.env.MERIDIAN_SUPERVISOR_PASSWORD = 'SUPERVISOR-PASSWORD';
     process.env.MERIDIAN_BRANCH = 'MAIN-001';
     try {
-      const service = new InvocationService(journal, policy, profile, temp(), ['meridian-member-record'], 'artifacts');
+      service = new InvocationService(journal, policy, profile, temp(), ['meridian-member-record'], 'artifacts');
       const request = { mode: 'replay', capability: 'meridian-member-record', version: '1.0.0', args: { member: '123' }, context: { operator: 'TELLER-ONE', branch: 'MAIN-001', role: 'TELLER' } };
       const record = journal.reserve('operator', 'same-key', 'meridian-member-record', '1.0.0', request);
       journal.update(record.runId, 'dispatching');
       journal.update(record.runId, 'failure');
-      expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER', true)).toEqual({ runId: record.runId, reused: true });
+      expect(await service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER', true)).toEqual({ runId: record.runId, reused: true });
       expect(createRuntime).not.toHaveBeenCalled();
-      expect(() => service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER', true)).toThrow(/another request/);
-      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).toThrow(/another request/);
-      expect(() => service.invoke('caller', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).toThrow(/not authorized/);
+      await expect(service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER', true)).rejects.toThrow(/another request/);
+      await expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).rejects.toThrow(/another request/);
+      await expect(service.invoke('caller', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).rejects.toThrow(/not authorized/);
       const before = journal.records.size;
-      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'missing-key', 'TELLER', true)).toThrow(/No accepted request/);
+      await expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'missing-key', 'TELLER', true)).rejects.toThrow(/No accepted request/);
       expect(journal.records.size).toBe(before);
       expect(createRuntime).not.toHaveBeenCalled();
     } finally {
+      await service?.close();
       journal.close();
       for (const name of names) {
         const value = previous.get(name);
@@ -570,6 +572,14 @@ describe('single-use interventions and live controls', () => {
     const escalate = vi.fn(async () => 'retry' as const);
     const result = await runReplay(artifact, {}, { surface: run.surface, logger: new RunLogger('replay', new Redactor(), temp()), policy, escalate });
     expect(result.status === 'failure' && result.failure.code).toBe('POST_OUTCOME_UNKNOWN'); expect(escalate).not.toHaveBeenCalled();
+  });
+  it('rejects a poisoned journal after the final awaited inspection before native dispatch', async () => {
+    const assertDispatchAllowed = vi.fn(() => { throw new Error('Journal storage outcome uncertain'); });
+    const run = guarded({}, async () => true, { assertDispatchAllowed });
+    await expect(run.surface.click(target)).rejects.toThrow('Journal storage outcome uncertain');
+    expect(run.beforeDispatch).toHaveBeenCalledOnce();
+    expect(assertDispatchAllowed).toHaveBeenCalledOnce();
+    expect(run.dispatch).not.toHaveBeenCalled();
   });
 });
 
@@ -1519,8 +1529,8 @@ describe('MERIDIAN guarded transfer path', () => {
           const record = journal.reserve('caller', 'projection-test', 'transfer', '1', {});
           const service = new InvocationService(journal, policy, profile, temp(), [], temp());
           service.live.set(record.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval, redactor: secrets });
-          const api = service.get('operator', record.runId).intervention as ReturnType<typeof publicIntervention>;
-          expect(service.get('caller', record.runId).intervention).toEqual({ kind: 'risk_approval', awaitingOperator: true });
+          const api = (await service.get('operator', record.runId)).intervention as ReturnType<typeof publicIntervention>;
+          expect((await service.get('caller', record.runId)).intervention).toEqual({ kind: 'risk_approval', awaitingOperator: true });
           journal.close();
           expect(socket).toEqual({ ok: true, pending: prompt });
           expect(api.action).toEqual(prompt.action);
@@ -3069,7 +3079,7 @@ it('reports assert-only and fatal-detector steps through the service API', async
     const journal = new Journal(join(dir, 'journal'), key);
     const service = new InvocationService(journal, policy, profile, dir, ['meridian-member-record'], artifactDir);
     try {
-      const runId = service.invoke('caller', 'meridian-member-record', { member: '1' }, keyName).runId;
+      const runId = (await service.invoke('caller', 'meridian-member-record', { member: '1' }, keyName)).runId;
       await service.close();
       return service.get('caller', runId);
     } finally { journal.close(); }
@@ -3814,7 +3824,7 @@ it.each([false, true])('evaluates real runtime attempts with observer failure an
     const service = new InvocationService(journal, policy, profile, dir, [], temp());
     // A stale in-memory presentation must never override terminal journal truth.
     service.live.set(record.runId, { state: 'failure', inputs: {}, started: 0, approval: new Approval(new ControlSession(), () => {}, Date.now() + 1000) });
-    expect(service.get('operator', record.runId).state).toBe(uncertain ? 'POST_OUTCOME_UNKNOWN' : 'success');
+    expect((await service.get('operator', record.runId)).state).toBe(uncertain ? 'POST_OUTCOME_UNKNOWN' : 'success');
   } finally { journal.close(); }
 });
 

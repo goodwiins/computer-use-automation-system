@@ -27,6 +27,7 @@ export function createRuntime(options: {
   fault?: FaultScenario; profile?: AppProfile; params: Record<string, string | number>; sensitive: string[];
   operator?: OperatorContext; headful?: boolean; runId?: string; evidenceDir?: string;
   session?: ControlSession; gate: HumanGate; beforeDispatch?: (context: ActionContext) => void | Promise<void>;
+  assertDispatchAllowed?: () => void;
   onEvent?: (event: string, data: Record<string, unknown>) => void; onClose?: () => void;
 }) {
   const strict = options.profile?.appId === 'meridian';
@@ -60,9 +61,10 @@ export function createRuntime(options: {
       memberUpdate: memberUpdate ? { expected: memberUpdate, contactTable: meridianMemberContactTable } : undefined,
       hold: hold ? { expected: hold, memberTable: meridianTransferMemberTable, contactTable: meridianMemberContactTable } : undefined,
       beforeDispatch: context => { if (!options.beforeDispatch) throw new Error('Durable dispatch journal required'); return options.beforeDispatch(context); },
+      assertDispatchAllowed: options.assertDispatchAllowed,
     } : undefined, (event, data) => logger.log(event, data));
   let timer: ReturnType<typeof setTimeout>;
-  const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline,
+  const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline, cleanupFailed: false as boolean,
     validateCompletion: openShare ? surface.validateOpenShareCompletion.bind(surface)
       : memberUpdate ? surface.validateMemberUpdateCompletion.bind(surface)
         : hold ? surface.validateHoldCompletion.bind(surface) : undefined,
@@ -82,6 +84,7 @@ export async function executeReplay(artifact: CapabilityArtifact, params: Record
 export async function closeRuntime(runtime: ReturnType<typeof createRuntime>) {
   try { await runtime.close(); }
   catch {
+    runtime.cleanupFailed = true;
     // Cleanup and its diagnostics must not replace a verified result or the original error.
     try { runtime.logger.log('evidence.warning', { code: 'RUNTIME_CLEANUP_FAILED' }); } catch { /* evidence unavailable */ }
   }

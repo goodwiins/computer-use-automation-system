@@ -167,6 +167,7 @@ export class GuardedSurface implements Surface {
       profile: AppProfile; session: ControlSession; deadline: number;
       runId: string; artifact: string; version: string; operator: string; branch: string; role: string;
       beforeDispatch: (context: ActionContext) => void | Promise<void>;
+      assertDispatchAllowed?: () => void;
       fault?: FaultScenario;
       transfer?: TransferBinding;
       openShare?: OpenShareBinding;
@@ -1092,6 +1093,7 @@ export class GuardedSurface implements Surface {
           await revalidateApprovedControl();
           await this.runtime.beforeDispatch(context);
           const validated = await revalidateApprovedControl();
+          this.runtime.assertDispatchAllowed?.();
           if (memberUpdatePost) this.memberUpdateOrigin = new URL(validated.destination).origin;
           this.mutationDispatched = true;
           // Intent is durable before dispatch starts; this is NOT proof a POST reached the server.

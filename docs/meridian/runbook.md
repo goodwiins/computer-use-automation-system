@@ -208,6 +208,8 @@ cu replay --profile meridian \
 
 The signed journal lives under `EVIDENCE_DIR/journal`. On restart, incomplete undispatched runs become interrupted and dispatching runs become `POST_OUTCOME_UNKNOWN`; no browser action resumes. Do not delete records, replace the HMAC key or clear a lock owned by a live process.
 
+The default `RUN_JOURNAL` mode is the signed filesystem journal. PostgreSQL authority is opt-in: set `RUN_JOURNAL=postgres`, `DATABASE_URL`, `JOURNAL_HMAC_KEY`, and any non-default `EVIDENCE_DIR` only after the cutover marker below has reached its authenticated `complete` phase. `cu serve` migrates the configured database and opens the matching marker before it snapshots the UI or constructs the invocation service; a marker mismatch, pending import or unavailable database fails startup without a filesystem fallback. PostgreSQL admits one owner UUID at a time. On shutdown, the service drains admitted setup, replay completion and browser cleanup before releasing the owner; an uncertain browser cleanup keeps that owner held for operator recovery.
+
 ## One-way filesystem journal cutover
 
 Stop the filesystem service and verify that no process owns the journal before importing. Inspect `EVIDENCE_DIR/journal/server.lock` and `startup.lock` with read-only filesystem tools; a stale lock requires operator investigation and is never removed automatically. The importer takes `startup.lock`, rejects any `server.lock`, authenticates every signed record and alias, and writes `postgres-authority.json` with a signed `pending` phase before the database attempt.

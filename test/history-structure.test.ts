@@ -68,7 +68,7 @@ it('preserves legacy non-MERIDIAN result behavior', async () => {
   const service = new InvocationService(journal, profilePolicy(profile), profile, dir, [], temp());
   try {
     expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toEqual(completed);
-    expect(service.get('caller', record.runId).result).toEqual(completed);
+    expect((await service.get('caller', record.runId)).result).toEqual(completed);
     expect(recordedStructure('legacy', {}, result)).toBeUndefined();
   } finally { await service.close(); journal.close(); }
 });
@@ -91,9 +91,9 @@ it('restores recorded discovery/replay structure through the real service and br
   let server: ReturnType<typeof createServer> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
-    const replay = service.invoke('caller', capability, { member: '12345' }, 'replay');
-    await vi.waitFor(() => expect(service.get('caller', replay.runId).state).toBe('success'));
-    expect(service.get('caller', replay.runId).inputs).toEqual({ member: '12345' });
+    const replay = await service.invoke('caller', capability, { member: '12345' }, 'replay');
+    await vi.waitFor(async () => expect((await service.get('caller', replay.runId)).state).toBe('success'));
+    expect((await service.get('caller', replay.runId)).inputs).toEqual({ member: '12345' });
     await service.close();
     const discovery = journal.reserve('operator', 'discovery', capability, '1.0.0', { private: 'PRIVATE' }, 'discovery');
     const run = runtime.createRuntime({ kind: 'discovery', artifact: capability, version: '1.0.0', policy, profile, params, sensitive: ['member'], operator: { operator: params.operator, password: params.password, branch: params.branch, role: 'TELLER' }, gate: async () => false, runId: discovery.runId, evidenceDir: dir });
@@ -106,14 +106,14 @@ it('restores recorded discovery/replay structure through the real service and br
     journal = new Journal(join(dir, 'journal'), key);
     service = new InvocationService(journal, policy, profile, dir, [capability]);
     for (const id of [discovery.runId, replay.runId]) {
-      const view = service.get('operator', id);
+      const view = await service.get('operator', id);
       expect(view.inputs).toBeUndefined();
       expect(view.structure?.inputs).toEqual([{ name: 'member', type: 'string', value: 'withheld' }]);
       expect(view.structure?.outputs?.[0]?.columns).toHaveLength(4);
       const source = readFileSync(join(dir, id, 'result.json'), 'utf8');
       expect(source).not.toContain('PRIVATE'); expect(source).not.toContain('12345'); expect(source).not.toContain('9999.12');
     }
-    expect(service.get('operator', old.runId).structure).toBeUndefined();
+    expect((await service.get('operator', old.runId)).structure).toBeUndefined();
     // A changed current catalog must not manufacture fields for old evidence.
     service.artifacts.clear();
     const callerToken = 'c'.repeat(32), operatorToken = 'o'.repeat(32);
@@ -147,13 +147,13 @@ it('restores recorded discovery/replay structure through the real service and br
     const path = join(dir, replay.runId, 'result.json');
     const saved = JSON.parse(readFileSync(path, 'utf8'));
     writeFileSync(path, JSON.stringify({ ...saved, outputs: { private: 'PRIVATE' }, structure: { ...saved.structure, inputs: [{ name: 'PRIVATE-KEY', type: 'string', value: 'withheld' }] } }));
-    const invalid = service.get('operator', replay.runId);
+    const invalid = await service.get('operator', replay.runId);
     expect(invalid.structure).toBeUndefined(); expect(JSON.stringify(invalid.result)).not.toContain('PRIVATE');
     writeFileSync(path, JSON.stringify({ ...saved, structure: recordedStructure('meridian-sign-on', {}, { status: 'success', outputs: { operator: 'PRIVATE', branch: 'PRIVATE', role: 'PRIVATE' } }) }));
-    const mismatched = service.get('operator', replay.runId);
+    const mismatched = await service.get('operator', replay.runId);
     expect(mismatched.structure).toBeUndefined(); expect(mismatched.result.structure).toBeUndefined();
     writeFileSync(path, '{');
-    expect(service.get('operator', replay.runId)).toMatchObject({ state: 'success', structure: undefined, result: undefined });
+    expect(await service.get('operator', replay.runId)).toMatchObject({ state: 'success', structure: undefined, result: undefined });
   } finally {
     await browser?.close();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }

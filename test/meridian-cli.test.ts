@@ -678,7 +678,7 @@ it.each([
     const policy = Policy.parse({ allowedOrigins: [ORIGIN], allowedActions: ['navigate'], riskHandling: { read: 'allow', reversible_write: 'block', irreversible: 'block' } });
     const service = new InvocationService(journal, policy, loadProfile('meridian'), dir, [], dir);
     try {
-      expect(service.history('operator')).toMatchObject([{ kind: 'discovery', state, result: expectedResult, sensitiveValuesUnavailable: true }]);
+      expect(await service.history('operator')).toMatchObject([{ kind: 'discovery', state, result: expectedResult, sensitiveValuesUnavailable: true }]);
       expect(service.live.size).toBe(0);
     } finally { await service.close(); journal.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

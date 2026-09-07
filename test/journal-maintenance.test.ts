@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPostgresFixture } from './fixtures/postgres.js';
 import { Journal, journalDigest, readJournalSnapshot, type JournalRecord, type JournalSnapshot } from '../src/runtime/journal.js';
 import { importJournal, readAuthorityMarker } from '../src/runtime/journal-maintenance.js';
+import { openRunJournal } from '../src/runtime/open-journal.js';
 import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 
 const key = 'journal-maintenance-test-key-0123456789abcdef0123456789abcdef';
@@ -249,5 +250,19 @@ describe.sequential('filesystem journal maintenance', () => {
     }
   });
 
-  it.todo('Task4 runtime opener rejects a target whose PostgreSQL marker identity does not match');
+  it('runtime opener rejects a target whose PostgreSQL marker identity does not match', async () => {
+    const dir = tempDir();
+    const { snapshot } = fixtureSnapshot(dir);
+    const journalDir = join(dir, 'journal');
+    const database = await createPostgresFixture();
+    try {
+      await PostgresJournal.migrate(database.pool);
+      await importJournal(journalDir, database.pool, key);
+      const marker = readAuthorityMarker(journalDir, key);
+      signed(join(journalDir, 'postgres-authority.json'), { ...marker, importId: randomUUID(), phase: 'complete' });
+      vi.stubEnv('RUN_JOURNAL', 'postgres');
+      await expect(openRunJournal(journalDir, key, database.pool)).rejects.toThrow(/does not match/);
+      expect(journalDigest(key, snapshot)).toBe(marker.digest);
+    } finally { await database.close(); }
+  });
 });

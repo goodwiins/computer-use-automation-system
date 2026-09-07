@@ -42,18 +42,18 @@ function canonicalOpenShareArtifact(click = false, schemaVersion: 1 | 2 = 2) {
   });
 }
 
-it('releases the API slot and finalizes the journal when runtime construction fails', () => {
+it('releases the API slot and finalizes the journal when runtime construction fails', async () => {
   vi.stubEnv('MERIDIAN_TELLER_OPERATOR', 'fixture'); vi.stubEnv('MERIDIAN_TELLER_PASSWORD', 'fixture'); vi.stubEnv('MERIDIAN_BRANCH', 'MAIN-001');
   const dir = temp(); const journal = new Journal(join(dir, 'journal'), 'review-journal-key-at-least-32-characters');
   const service = new InvocationService(journal, policy, profile, dir, ['meridian-sign-on']);
   const construct = vi.spyOn(runtime, 'createRuntime').mockImplementation(() => { throw new Error('Injected runtime startup failure'); });
   try {
-    expect(() => service.invoke('caller', 'meridian-sign-on', {}, 'first')).toThrow('Injected runtime startup failure');
+    await expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).rejects.toThrow('Injected runtime startup failure');
     const first = [...journal.records.values()][0]!;
-    expect(service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId, reused: true });
-    expect(service.get('caller', first.runId).state).toBe('failure');
+    expect(await service.invoke('caller', 'meridian-sign-on', {}, 'first')).toEqual({ runId: first.runId, reused: true });
+    expect((await service.get('caller', first.runId)).state).toBe('failure');
     let nextError = '';
-    try { service.invoke('caller', 'meridian-sign-on', {}, 'second'); } catch (e) { nextError = (e as Error).message; }
+    try { await service.invoke('caller', 'meridian-sign-on', {}, 'second'); } catch (e) { nextError = (e as Error).message; }
     const actual = { states: [...journal.records.values()].map(r => r.state), constructs: construct.mock.calls.length, nextError };
     expect(actual).toEqual({ states: ['failure', 'failure'], constructs: 2, nextError: 'Injected runtime startup failure' });
   } finally { journal.close(); }
@@ -127,14 +127,15 @@ it('closes a constructed runtime before releasing the slot after setup fails', a
   const construct = vi.spyOn(runtime, 'createRuntime').mockReturnValue({ close, logger: new RunLogger('replay', new Redactor(), dir, true) } as unknown as ReturnType<typeof runtime.createRuntime>);
   vi.spyOn(journal, 'update').mockImplementationOnce(() => { throw new Error('Setup journal write failed'); });
   try {
-    expect(() => service.invoke('caller', 'hold', {}, 'first')).toThrow('Setup journal write failed');
+    const first = service.invoke('caller', 'hold', {}, 'first');
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
     expect([...journal.records.values()].map(r => r.state)).toEqual(['failure']);
-    expect(close).toHaveBeenCalledOnce();
-    expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('One run is active');
-    release();
-    await vi.waitFor(() => expect([...service.live.values()][0]?.finished).toBeDefined());
+    const second = service.invoke('caller', 'hold', {}, 'second');
     construct.mockImplementation(() => { throw new Error('Next setup attempted'); });
-    expect(() => service.invoke('caller', 'hold', {}, 'second')).toThrow('Next setup attempted');
+    release();
+    await expect(first).rejects.toThrow('Setup journal write failed');
+    await expect(second).rejects.toThrow('Next setup attempted');
+    await vi.waitFor(() => expect([...service.live.values()][0]?.finished).toBeDefined());
     expect([...journal.records.values()].map(r => r.state)).toEqual(['failure', 'failure']);
   } finally { release(); await service.close(); journal.close(); }
 });
@@ -180,13 +181,17 @@ it.each([false, true])('keeps API journal and saved result consistent after veri
     } as unknown as ReturnType<typeof runtime.createRuntime>;
   });
   try {
-    const { runId } = service.invoke('caller', 'hold', {}, 'cleanup-api');
+    const { runId } = await service.invoke('caller', 'hold', {}, 'cleanup-api');
     await vi.waitFor(() => expect(journal.records.get(runId)?.state).not.toBe('dispatching'));
     const saved = JSON.parse(readFileSync(join(dir, runId, 'result.json'), 'utf8'));
-    const view = service.get('caller', runId);
+    const view = await service.get('caller', runId);
     expect(saved.status).toBe('success');
     expect(view.state).toBe('success');
     expect(view.result).toMatchObject({ status: 'success' });
+    if (cleanupFails) {
+      await vi.waitFor(() => expect(service.cleanupFailedState).toBe(true));
+      await expect(service.invoke('caller', 'hold', {}, 'cleanup-api-after-failure')).rejects.toMatchObject({ status: 503 });
+    }
   } finally { await service.close().catch(() => {}); journal.close(); }
 });
 
