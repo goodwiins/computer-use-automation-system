@@ -1,0 +1,22 @@
+{
+  "kind": "replay",
+  "runId": "9d5bfdf3-a64e-4af2-9af0-04f2c760d838",
+  "producerSha": "d878e0744f5a10b765f7cde848e7a532c3e35d2f",
+  "resultStatus": "success",
+  "personalApprovalReceived": true,
+  "mutationIntents": 1,
+  "completion": "Runtime verified exactly one new share for the bound member, matching selected type, deposit and extracted shareId.",
+  "logSha256": "d2a9995facf7759c3eb059c11549cb009420f82a1545e2147b0605eafb6a01f8",
+  "resultSha256": "87df587f08f6a63f79b042c837ad994d4a5b78e7fa4529d05f27d1a71e58e064",
+  "journalSha256": "e7e30fc44ce00b7b8dfc0e33b7437a5a3071f232e65c886720e84b68857fea54",
+  "artifactSha256": "4ab3c4553c354960659460e96c5c8045471971c3cfd6794e57fa605350c3e9c2",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 17,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  }
+}

@@ -232,3 +232,13 @@ At producer `476f8ca`, transfer discovery [1dd93dd5](evidence/write-attempts-sep
 Open-share discovery [592430d3](evidence/write-attempts-sep6/open-share-validation.json) returned `business_outcome / VALIDATION_REJECTED` after native review submission, with signed evaluation PASS, thirteen actions and zero mutation intents. A separate guarded inspection with final posting disabled established the target's minimum opening deposit as `5.00`; the user delegated demo input selection. This rejected request and inspection do not create an artifact or write acceptance.
 
 The diagnostic follow-up adds fixed markers for model escalation and completion-validator failure. It does not recover omitted details from these historical runs or alter their outcomes. Live acceptance remains **3/7**.
+
+## Accepted open-share recording and replay
+
+[Discovery `4e737aae`](evidence/open-share-pair-sep6/discovery.json) at `10fbfdc` and [deterministic replay `9d5bfdf3`](evidence/open-share-pair-sep6/replay.json) at `d878e07` each received personal approval and completed a distinct opening. Both signed evaluations passed with seventeen actions and one mutation intent. Completion validation independently required exactly one new share for the bound member, matching type, deposit and the extracted identifier. No earlier unknown operation was resumed.
+
+Artifact review removed only original checkpoint `s8`, which embedded private member text and a stale share count. No replacement action, selector or provenance was invented. The remaining recorded steps retain the native review/post, completion assertion and receipt extraction; runtime member and result binding stay authoritative. Discovery used the observed fresh inquiry default; a changed default can stop replay and does not authorize a different member. The curated artifact was independently reviewed, promoted, and replayed successfully.
+
+[Restored HTTP catalog/history and exact-key verification](evidence/open-share-pair-sep6/service.json) at integrated source `9f23e2e` passed: open share is available to the configured caller, server credential fields stay out of public parameters, and authenticated history reports success. Reusing the CLI replay key returned the same run with unchanged journal; these checks started no live runtime. The first inspection harness used incorrect environment variable names, failed before HTTP checks and was corrected; its private result remains retained.
+
+Live capability acceptance is now **4/7**: sign-on, inquiry, member record and open share. Transfer, member update and supervisor hold remain incomplete. A running dashboard must load this artifact at startup and permit it in its caller allowlist; a successful source check does not update a separate deployment.

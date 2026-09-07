@@ -1,0 +1,586 @@
+{
+  "schemaVersion": 2,
+  "id": "meridian-open-share",
+  "name": "meridian-open-share",
+  "description": "Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result and open that member record. Enter Open New Share from this record. Verify shareType exists among the observed options; use only the provided shareType and deposit. Inspect the native review and request the native Open Share posting control for personal approval. After the runner posts, assert the observed completion and extract the new share identifier as sensitive shareId using a selector and any extraction pattern supported by this recording. The runtime independently verifies this ID is new for the exact member and its type and balance match the selected deposit. Stop if completion or its selector cannot be established; never retry a final post.",
+  "version": "1.0.0",
+  "status": "approved",
+  "app": {
+    "appId": "meridian",
+    "entryUrl": "https://web-sample.interface-hiring.com/signon",
+    "allowedOrigins": [
+      "https://web-sample.interface-hiring.com"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "member",
+      "type": "string",
+      "description": "Member number",
+      "required": true,
+      "sensitive": true,
+      "pattern": "^[0-9]{1,12}$"
+    },
+    {
+      "name": "shareType",
+      "type": "string",
+      "description": "New share type",
+      "required": true,
+      "sensitive": false,
+      "enum": [
+        "S0001",
+        "S0070",
+        "MMKT",
+        "CERT"
+      ]
+    },
+    {
+      "name": "deposit",
+      "type": "string",
+      "description": "Decimal initial deposit",
+      "required": true,
+      "sensitive": true,
+      "format": "positiveMoney"
+    },
+    {
+      "name": "operator",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "shareId",
+      "type": "string",
+      "description": "Extracted during the flow at step s16",
+      "sensitive": true
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Fill the required operator ID before Sign On.",
+      "action": "fill",
+      "target": {
+        "description": "Fill the required operator ID before Sign On.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "operator"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{operator}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s2",
+      "intent": "Fill the password field using its password input type after the obscured nameAttr could not be resolved.",
+      "action": "fill",
+      "target": {
+        "description": "Fill the password field using its password input type after the obscured nameAttr could not be resolved.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "password"
+          },
+          {
+            "kind": "css",
+            "selector": "input[type=\"password\"]"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{password}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s3",
+      "intent": "Explicitly select the required branch before Sign On, even though the current selection already matches.",
+      "action": "select",
+      "target": {
+        "description": "Explicitly select the required branch before Sign On, even though the current selection already matches.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "branch"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{branch}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s4",
+      "intent": "Submit the completed operator sign-on form to enter Meridian Core.",
+      "action": "click",
+      "target": {
+        "description": "Submit the completed operator sign-on form to enter Meridian Core.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Sign On"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Sign On"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s5",
+      "intent": "Open Member Inquiry to resolve member {{member}} before accessing the member record.",
+      "action": "click",
+      "target": {
+        "description": "Open Member Inquiry to resolve member {{member}} before accessing the member record.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Member Inquiry"
+          },
+          {
+            "kind": "text",
+            "text": "Member Inquiry",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1) > font:nth-of-type(1) > a:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Member Inquiry"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s6",
+      "intent": "Enter the exact requested member number for inquiry.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the exact requested member number for inquiry.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "q"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{member}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s7",
+      "intent": "Search the member inquiry for the exact requested member number.",
+      "action": "click",
+      "target": {
+        "description": "Search the member inquiry for the exact requested member number.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Search"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s9",
+      "intent": "Open the uniquely resolved member {{member}} record.",
+      "action": "click",
+      "target": {
+        "description": "Open the uniquely resolved member {{member}} record.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Select"
+          },
+          {
+            "kind": "text",
+            "text": "Select",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(4) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Select"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s10",
+      "intent": "Enter the Open New Share workflow from the resolved member {{member}} record.",
+      "action": "click",
+      "target": {
+        "description": "Enter the Open New Share workflow from the resolved member {{member}} record.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Open New Share"
+          },
+          {
+            "kind": "text",
+            "text": "Open New Share",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > a:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Open New Share"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s11",
+      "intent": "Select the provided and observed share type {{shareType}} - Regular Shares.",
+      "action": "select",
+      "target": {
+        "description": "Select the provided and observed share type {{shareType}} - Regular Shares.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "type"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{shareType}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s12",
+      "intent": "Enter the provided initial deposit of ${{deposit}} for the selected {{shareType}} share type.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the provided initial deposit of ${{deposit}} for the selected {{shareType}} share type.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "deposit"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{deposit}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s13",
+      "intent": "Submit the selected share type and deposit to reach the native review screen.",
+      "action": "click",
+      "target": {
+        "description": "Submit the selected share type and deposit to reach the native review screen.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Continue"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Continue"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s14",
+      "intent": "Request the native final Open Share posting control for personal approval; do not post until the runtime approval is granted.",
+      "action": "click",
+      "target": {
+        "description": "Request the native final Open Share posting control for personal approval; do not post until the runtime approval is granted.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Open Share"
+          },
+          {
+            "kind": "css",
+            "selector": "tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(4)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Open Share"
+        }
+      },
+      "risk": "irreversible",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s15",
+      "intent": "Verify the native completion screen is present before extracting the new share identifier.",
+      "action": "assert",
+      "assert": {
+        "kind": "textVisible",
+        "text": "SHARE OPENED"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s16",
+      "intent": "Extract the new share identifier from the verified native completion receipt.",
+      "action": "extract",
+      "target": {
+        "description": "Extract the new share identifier from the verified native completion receipt.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > div:nth-of-type(1) > table:nth-of-type(1)"
+          },
+          {
+            "kind": "css",
+            "selector": "tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > div:nth-of-type(1) > table:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "table"
+        }
+      },
+      "extract": {
+        "output": "shareId",
+        "pattern": "New Share ID:\\s*([A-Za-z0-9-]+)"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    }
+  ],
+  "successCondition": {
+    "kind": "urlMatches",
+    "pattern": "/members/{{member}}/open-share/post$"
+  },
+  "detectors": [
+    {
+      "id": "insufficient-funds",
+      "description": "Available funds are insufficient",
+      "match": {
+        "kind": "textVisible",
+        "text": "Insufficient available balance in the source share."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "id": "validation",
+      "description": "Input rejected by the application",
+      "match": {
+        "kind": "textVisible",
+        "text": "could not be validated"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "validation-injected",
+      "description": "Transaction rejected",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANSACTION REJECTED"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "no-matches",
+      "description": "No member records matched the search",
+      "match": {
+        "kind": "textVisible",
+        "text": "No member records matched your search."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "notfound",
+      "description": "No matching member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "RECORD NOT FOUND"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "permission",
+      "description": "Operator lacks required supervisor authority",
+      "match": {
+        "kind": "textVisible",
+        "text": "SUPERVISOR OVERRIDE REQUIRED"
+      },
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED"
+    },
+    {
+      "id": "timeout",
+      "description": "Session expired; invoke a new run",
+      "match": {
+        "kind": "textVisible",
+        "text": "YOUR SESSION HAS TIMED OUT"
+      },
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED"
+    },
+    {
+      "id": "maintenance",
+      "description": "Maintenance notice; safe Continue link returns to the member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE IN PROGRESS"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue to member record",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue"
+            }
+          ]
+        },
+        "resume": "open-share-member-entry"
+      }
+    },
+    {
+      "id": "server",
+      "description": "Application error; no automatic transaction retry",
+      "match": {
+        "kind": "textVisible",
+        "text": "APPLICATION ERROR"
+      },
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR"
+    }
+  ],
+  "provenance": {
+    "discoveredAt": "2026-09-06T23:08:36.404Z",
+    "model": "gpt-5.6-luna",
+    "discoveryRunId": "4e737aae-27d8-4ad7-8a35-64b6bfbfc120",
+    "goal": "Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result and open that member record. Enter Open New Share from this record. Verify shareType exists among the observed options; use only the provided shareType and deposit. Inspect the native review and request the native Open Share posting control for personal approval. After the runner posts, assert the observed completion and extract the new share identifier as sensitive shareId using a selector and any extraction pattern supported by this recording. The runtime independently verifies this ID is new for the exact member and its type and balance match the selected deposit. Stop if completion or its selector cannot be established; never retry a final post."
+  }
+}

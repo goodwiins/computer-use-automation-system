@@ -1,0 +1,29 @@
+{
+  "runId": "9d5bfdf3-a64e-4af2-9af0-04f2c760d838",
+  "producerSha": "9f23e2eee3d899a1301ed6207c6451f9e9550b04",
+  "scope": "CLI exact-key dedupe and authenticated restored HTTP catalog/history; no new live invocation",
+  "exactKeyDedupe": true,
+  "journalUnchangedAfterDedupe": true,
+  "catalogHTTP": 200,
+  "callerCatalogIds": [
+    "meridian-member-inquiry",
+    "meridian-member-record",
+    "meridian-open-share",
+    "meridian-sign-on"
+  ],
+  "openShareAvailable": true,
+  "historyHTTP": 200,
+  "restoredSuccess": true,
+  "liveRuntimeCount": 0,
+  "journalUnchangedAfterHTTP": true,
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 17,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "acceptancePassed": true
+}
