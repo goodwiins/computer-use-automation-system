@@ -111,6 +111,9 @@ it('keeps a subject owner on the linked member-identity inquiry', async () => {
   expect(() => f.service.get({ ...principal, subjectId: '22222222-2222-4222-8222-222222222222' }, lookup.runId)).toThrow('another principal');
   f.releases[1]!(identity());
   await vi.waitFor(() => expect(f.service.get(principal, runId).memberIdentity?.status).toBe('verified'));
+  const child = f.service.get(principal, lookup.runId);
+  expect(child).toMatchObject({ inputs: undefined, result: { status: 'success' } });
+  expect(child.result).not.toHaveProperty('outputs');
 });
 
 it('keeps an explicitly requested name inquiry public', async () => {

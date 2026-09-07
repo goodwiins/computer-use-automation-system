@@ -57,9 +57,9 @@ function makeService(withArtifact = false, allowlist = withArtifact ? ['hand-loo
   return { dir, journal, service };
 }
 
-async function start(service: InvocationService, model?: MockLanguageModelV3) {
+async function start(service: InvocationService, model?: MockLanguageModelV3, localTellerLogin?: { teller: string; supervisor: string }) {
   const app = createApp(service, {
-    callerToken: '', operatorToken: '', subjectTokens: credentials, port: 4180, chatModel: model,
+    callerToken: '', operatorToken: '', subjectTokens: credentials, localTellerLogin, port: 4180, chatModel: model,
   });
   const server = app.listen(0, '127.0.0.1');
   servers.push(server);
@@ -224,6 +224,16 @@ it('authenticates subject HTTP requests and enforces ownership for history, deta
     await vi.waitFor(() => expect(journal.records.get(response.json.runId)?.state).toBe('success'));
     expect(journal.records.get(response.json.runId)?.caller).toBe(owner);
   }
+});
+
+it('disables local teller login when subject credentials are configured', async () => {
+  const { service } = makeService();
+  const request = await start(service, undefined, { teller: 'TELLER1', supervisor: 'SUPER1' });
+  expect(await request('/session/options', aToken)).toMatchObject({ status: 200, json: { localTellerLogin: null } });
+  expect(await request('/session/teller', aToken, { method: 'POST', body: {} })).toMatchObject({
+    status: 404, json: { error: 'Local teller login is disabled' },
+  });
+  expect((await request('/capabilities', aToken)).status).toBe(200);
 });
 
 it.each(['/chat', '/api/chat'])('keeps operator subject ownership with caller-only authority in %s', async route => {

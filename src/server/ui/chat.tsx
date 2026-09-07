@@ -42,12 +42,12 @@ function Message() {
   return (
     <MessagePrimitive.Root className="message">
       <MessagePrimitive.If user>
-        <p className="eyebrow">YOU</p>
+        <p className="sr-only message-user-label">YOU</p>
       </MessagePrimitive.If>
       <MessagePrimitive.If assistant>
-        <p className="eyebrow">ASSISTANT</p>
+        <p className="message-author">MERIDIAN</p>
       </MessagePrimitive.If>
-      <MessagePrimitive.Parts
+      <div className="message-body"><MessagePrimitive.Parts
         components={{
           Text: () => (
             <p className="message-text">
@@ -60,32 +60,30 @@ function Message() {
           Reasoning: () => null,
           tools: { Fallback: RunTool },
         }}
-      />
+      /></div>
     </MessagePrimitive.Root>
   );
 }
 export function Chat() {
   const { session, refresh, request } = useRuns();
   const [error, setError] = useState('');
-  const [intent, setIntent] = useState<'invoke' | 'status'>('status');
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: '/api/chat',
         prepareSendMessagesRequest: ({ messages, id }) => {
-          const prepared = chatRequest(messages, id, intent);
+          const prepared = chatRequest(messages, id, 'auto');
           setError('');
           return prepared;
         },
         fetch: (input, init) => request(String(input), init),
       }),
-    [request, intent],
+    [request],
   );
   const runtime = useChatRuntime({
     transport,
     generateId: () => crypto.randomUUID(),
     onError: (error) => {
-      setIntent('status');
       setError(
         error instanceof ChatRequestError
           ? error.message
@@ -93,10 +91,7 @@ export function Chat() {
       );
       void refresh();
     },
-    onFinish: ({ message, isAbort, isDisconnect, isError }) => {
-      if (isAbort || isDisconnect || isError || message.parts.some(part => 'output' in part && part.output && typeof part.output === 'object' && 'kind' in part.output && (part.output.kind === 'run' || part.output.kind === 'error'))) setIntent('status');
-      void refresh();
-    },
+    onFinish: () => { void refresh(); },
   });
   const toolkit = useMemo(
     () =>
@@ -112,41 +107,45 @@ export function Chat() {
   );
   const config = AuiConfig({ tools: Tools({ toolkit }) });
   return (
-    <section aria-labelledby="chat-heading">
-      <h2 id="chat-heading">Assistant</h2>
-      <p>Chat uses caller permissions. Transaction approval belongs to the operator.</p>
+    <section aria-labelledby="chat-heading" className="chat">
+      <h2 id="chat-heading" className="sr-only">Assistant</h2>
       <AssistantRuntimeProvider runtime={runtime} config={config}>
-        <ThreadPrimitive.Root>
+        <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">
-            <ThreadPrimitive.Empty>
-              <p className="empty">Check an existing run, or select New operation and supply its exact inputs.</p>
-            </ThreadPrimitive.Empty>
-            <ThreadPrimitive.Messages components={{ Message }} />
-          </ThreadPrimitive.Viewport>
-          {error && <p role="alert">{error}</p>}
-          <ComposerPrimitive.Root>
-            <label htmlFor="chat-intent">Request type</label>
-            <select id="chat-intent" value={intent} onChange={event => setIntent(event.target.value as 'invoke' | 'status')}>
-              <option value="invoke">New operation</option>
-              <option value="status">Check run status</option>
-            </select>
-            <p className="muted">Check run status cannot start an operation. New operation can repeat earlier inputs.</p>
-            <label htmlFor="message">Your request</label>
-            <ComposerPrimitive.Input
-              id="message"
-              placeholder={intent === 'status' ? 'Ask about an existing run…' : 'Ask for an available capability…'}
-              maxLength={4000}
-            />
-            <div className="actions">
-              <AuiIf condition={(s) => !s.thread.isRunning}>
-                <ComposerPrimitive.Send>Send</ComposerPrimitive.Send>
-              </AuiIf>
-              <AuiIf condition={(s) => s.thread.isRunning}>
-                <ComposerPrimitive.Cancel>Stop response</ComposerPrimitive.Cancel>
-              </AuiIf>
+            <div className="conversation">
+              <ThreadPrimitive.Empty>
+                <div className="chat-welcome">
+                  <span className="welcome-mark" aria-hidden="true">M</span>
+                  <h3>How can I help you today?</h3>
+                  <p>Ask a question, find a member, or check on an operation.</p>
+                </div>
+              </ThreadPrimitive.Empty>
+              <ThreadPrimitive.Messages components={{ Message }} />
+              <AuiIf condition={s => s.thread.isRunning}><p className="thinking" role="status">Working…</p></AuiIf>
             </div>
-          </ComposerPrimitive.Root>
-          <p className="muted">Stopping the response does not cancel a run or undo a transaction.</p>
+            <ThreadPrimitive.ViewportFooter className="composer-footer">
+              <ThreadPrimitive.ScrollToBottom className="scroll-bottom secondary" aria-label="Scroll to bottom">↓</ThreadPrimitive.ScrollToBottom>
+              {error && <p role="alert">{error}</p>}
+              <ComposerPrimitive.Root className="composer">
+                <label htmlFor="message" className="sr-only">Your request</label>
+                <ComposerPrimitive.Input
+                  id="message"
+                  placeholder="Message the assistant…"
+                  maxLength={4000}
+                />
+                <div className="actions">
+                  <AuiIf condition={(s) => !s.thread.isRunning}>
+                    <ComposerPrimitive.Send aria-label="Send" className="send-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg></ComposerPrimitive.Send>
+                  </AuiIf>
+                  <AuiIf condition={(s) => s.thread.isRunning}>
+                    <ComposerPrimitive.Cancel aria-label="Stop response" className="send-button stop-button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg><span>Stop response</span></ComposerPrimitive.Cancel>
+                  </AuiIf>
+                </div>
+              </ComposerPrimitive.Root>
+              <p className="composer-note">Transactions require operator approval.</p>
+              <p className="composer-note">Stopping the response does not cancel a run or undo a transaction.</p>
+            </ThreadPrimitive.ViewportFooter>
+          </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </AssistantRuntimeProvider>
     </section>
