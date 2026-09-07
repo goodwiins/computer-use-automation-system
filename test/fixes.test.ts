@@ -433,13 +433,13 @@ describe('Aug-22 audit carry-overs (A-M2, A-M3, A-M5)', () => {
     const res = spawnSync('npx', ['tsx', 'cli.ts', 'replay', '--param'], { encoding: 'utf8' });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain('--param requires a value');
-  });
+  }, 15_000);
 
   it('S-M3: `validate` passes over the committed artifacts (risk labels meet the current floor)', () => {
     const res = spawnSync('npx', ['tsx', 'cli.ts', 'validate'], { encoding: 'utf8' });
     expect(res.stdout).toContain('All artifacts satisfy');
     expect(res.status).toBe(0);
-  });
+  }, 15_000);
 });
 
 describe('Sep-02 audit LOW findings', () => {

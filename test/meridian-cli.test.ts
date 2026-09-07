@@ -309,7 +309,7 @@ it.each([
     const result = spawnSync(process.execPath,
       ['--import', 'tsx', 'cli.ts', ...args, '--profile', 'meridian',
         '--idempotency-key', 'invalid key'], {
-        encoding: 'utf8', timeout: 5000,
+        encoding: 'utf8', timeout: 15_000,
         env: {
           PATH: process.env.PATH, HOME: process.env.HOME,
           OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir,

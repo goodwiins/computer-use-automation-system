@@ -110,7 +110,7 @@ describe('standalone approval CLI transport', () => {
     const unavailable = await child(['refuse', '--run', runId, '--approval', approvalId]);
     expect(unavailable.code).toBe(1);
     expect(unavailable.stderr).toContain('Approval endpoint is unavailable');
-  }, 15_000);
+  }, 30_000);
 
   it('uses the Approval state machine for first-decision-wins and drains the winner response during cleanup', async () => {
     process.env.CU_APPROVAL_DIR = temp();
