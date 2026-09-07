@@ -21,7 +21,20 @@ export function OperatorSessionControls() {
   ) : null;
 }
 export function CapabilityCatalog() {
-  const { session, request, runs, watch, loading, error: historyError } = useRuns();
+  const {
+    session,
+    request,
+    runs,
+    watch,
+    loading,
+    error: historyError,
+    actionHold,
+    beginAction,
+    markActionUncertain,
+    bindAction,
+    clearAction,
+    abandonAction,
+  } = useRuns();
   const [selected, setSelected] = useState(session.capabilities[0]?.id ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,9 +58,14 @@ export function CapabilityCatalog() {
   const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
   const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
   const recoveryPending = recoveryAvailable && Boolean(attempt.current);
-  const ordinarySubmitBlocked = active.current || Boolean(acceptedId) || loading || Boolean(historyError) || recoveryPending;
+  const ordinarySubmitBlocked = active.current || Boolean(acceptedId) || loading || Boolean(historyError)
+    || recoveryPending || Boolean(actionHold);
+  const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
+    && acceptedRun.capability === attempt.current.capabilityId
+    && availability?.some(item => item.id === acceptedRun.capability && item.state === 'available'));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
+    if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;
     active.current = true;
     setBusy(true);
     setRecoveryAvailable(false);
@@ -61,8 +79,10 @@ export function CapabilityCatalog() {
       const accepted: { runId: string } = await response.json();
       segment(accepted.runId);
       setAcceptedId(accepted.runId);
+      bindAction(retained.key, accepted.runId, retained.capabilityId);
       watch(accepted.runId);
     } catch (e) {
+      markActionUncertain(retained.key);
       setRecoveryAvailable(true);
       const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
       setError(lookupOnly
@@ -123,6 +143,7 @@ export function CapabilityCatalog() {
   function startSeparateRequest() {
     if (busy || loading || historyError) return;
     setRecoveryAvailable(false);
+    if (attempt.current) abandonAction(attempt.current.key);
     attempt.current = undefined;
     setError('');
   }
@@ -214,8 +235,10 @@ export function CapabilityCatalog() {
           </p>
         )}
         {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
-        {acceptedRun && !pending(acceptedRun) && (
+        {acceptedRun && !pending(acceptedRun) && (acceptedRun.state === 'POST_OUTCOME_UNKNOWN' || acceptedCapabilityReady) && (
           <button onClick={() => {
+            if (acceptedRun.state !== 'POST_OUTCOME_UNKNOWN' && !acceptedCapabilityReady) return;
+            if (attempt.current) clearAction(attempt.current.key);
             setAcceptedId('');
             attempt.current = undefined;
           }}>{acceptedRun.state === 'POST_OUTCOME_UNKNOWN' ? 'Choose a separate inquiry' : 'Start another invocation'}</button>
