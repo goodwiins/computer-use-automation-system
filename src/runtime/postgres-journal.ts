@@ -16,6 +16,7 @@ import {
   type RunJournal,
   validateReservationScope,
   validateIdempotencyKey,
+  validateRunBatch,
 } from './journal.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -328,6 +329,28 @@ export class PostgresJournal implements RunJournal {
         [id],
       );
       return result.rows[0] ? recordFromRow(result.rows[0]) : undefined;
+    });
+  }
+
+  async getMany(runIds: readonly string[]): Promise<Map<string, JournalRecord>> {
+    this.assertHealthy();
+    const ids = validateRunBatch(runIds);
+    if (ids.length === 0) return new Map();
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const result = await client.query<RunRow>(
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+         FROM meridian_runs WHERE run_id = ANY($1::uuid[])`,
+        [ids],
+      );
+      const records = new Map(result.rows.map(row => {
+        const record = recordFromRow(row);
+        return [record.runId, record] as const;
+      }));
+      return new Map(ids.flatMap(runId => {
+        const record = records.get(runId);
+        return record ? [[runId, record] as const] : [];
+      }));
     });
   }
 

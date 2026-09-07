@@ -25,6 +25,7 @@ export type JournalLookup = { existing?: JournalRecord; identity: string; digest
 export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean; direct: boolean };
 export interface RunJournal {
   get(runId: string): Awaitable<JournalRecord | undefined>;
+  getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
@@ -44,6 +45,13 @@ export function validateIdempotencyKey(key: string): void {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) {
     throw new RequestError(400, 'A valid Idempotency-Key is required');
   }
+}
+export const MAX_RUN_BATCH = 100;
+const BatchRunIds = z.array(z.string().uuid().refine(value => value === value.toLowerCase())).max(MAX_RUN_BATCH);
+export function validateRunBatch(runIds: readonly string[]): string[] {
+  const parsed = BatchRunIds.safeParse(runIds);
+  if (!parsed.success) throw new RequestError(400, 'Journal run batch does not match the contract');
+  return [...new Set(parsed.data)];
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -205,6 +213,14 @@ export class Journal implements RunJournal {
     if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
   get(runId: string) { this.assertHealthy(); return this.records.get(runId); }
+  getMany(runIds: readonly string[]) {
+    this.assertHealthy();
+    const ids = validateRunBatch(runIds);
+    return new Map(ids.flatMap(runId => {
+      const record = this.records.get(runId);
+      return record ? [[runId, record] as const] : [];
+    }));
+  }
   list() { this.assertHealthy(); return [...this.records.values()]; }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }

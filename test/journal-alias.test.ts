@@ -85,6 +85,27 @@ it('quarantines a business outcome after durable dispatch intent but preserves o
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('reads one bounded, deduplicated run batch without changing journal state', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-batch-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    const first = journal.reserve('caller', 'batch-first', 'read', '1.0.0', {});
+    journal.update(first.runId, 'success');
+    const second = journal.reserve('caller', 'batch-second', 'read', '1.0.0', {});
+    journal.update(second.runId, 'failure');
+    const missing = randomUUID();
+    const before = [...journal.records.values()];
+
+    expect([...journal.getMany([second.runId, first.runId, second.runId, missing])]).toEqual([
+      [second.runId, { ...second, state: 'failure' }],
+      [first.runId, { ...first, state: 'success' }],
+    ]);
+    expect([...journal.records.values()]).toEqual(before);
+    expect(() => journal.getMany(Array.from({ length: 101 }, () => first.runId))).toThrow('batch');
+    expect(() => journal.getMany(['AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'])).toThrow('run');
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('ignores an orphan alias publication temp during an authenticated snapshot read', () => {
   const dir = mkdtempSync(join(tmpdir(), 'journal-alias-snapshot-temp-'));
   const key = 'h'.repeat(64);

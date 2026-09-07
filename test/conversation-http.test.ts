@@ -227,6 +227,144 @@ describe.sequential('conversation HTTP API', () => {
     expect(journal.records.size).toBe(beforeCount);
   });
 
+  it('batches duplicate linked-run event pages while preserving sequence and pagination', async () => {
+    const runs = [];
+    for (const key of ['page-first', 'page-second', 'page-third']) {
+      const run = journal.reserve(`subject:${ownerId}`, key, 'meridian-open-share', '1.0.0', {});
+      journal.update(run.runId, 'success');
+      runs.push(run);
+    }
+    const conversationId = randomUUID();
+    await store.create(ownerId, conversationId);
+    const linkedRunIds: string[] = [];
+    for (let index = 0; index < 106; index += 1) {
+      const runId = (index < 100 ? runs[0] : runs[(index - 100) % runs.length])!.runId;
+      linkedRunIds.push(runId);
+      await store.append(ownerId, conversationId, {
+        id: `40000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        kind: 'run_linked', role: 'assistant', runId, expectedRevision: index,
+      });
+    }
+    const before = [...journal.records.values()];
+    const getMany = vi.spyOn(journal, 'getMany');
+    const get = vi.spyOn(journal, 'get');
+    const origin = await listen();
+
+    const first = await request(origin, `/conversations/${conversationId}/events?limit=100`);
+    expect(first.status).toBe(200);
+    expect(first.body.events.map((event: { sequence: number }) => event.sequence)).toEqual(
+      Array.from({ length: 100 }, (_, index) => index + 1),
+    );
+    expect(first.body.events.map((event: { runId: string }) => event.runId)).toEqual(linkedRunIds.slice(0, 100));
+    expect(first.body.events.map((event: { run: { runId: string } }) => event.run.runId)).toEqual(linkedRunIds.slice(0, 100));
+    expect(first.body.nextCursor).toBe(100);
+    expect(getMany).toHaveBeenCalledTimes(1);
+    expect(getMany).toHaveBeenLastCalledWith([runs[0]!.runId]);
+    expect(get).not.toHaveBeenCalled();
+
+    const second = await request(origin, `/conversations/${conversationId}/events?limit=100&after=100`);
+    expect(second.status).toBe(200);
+    expect(second.body.events.map((event: { sequence: number }) => event.sequence)).toEqual([101, 102, 103, 104, 105, 106]);
+    expect(second.body.events.map((event: { runId: string }) => event.runId)).toEqual(linkedRunIds.slice(100));
+    expect(second.body.events.map((event: { run: { runId: string } }) => event.run.runId)).toEqual(linkedRunIds.slice(100));
+    expect(second.body).not.toHaveProperty('nextCursor');
+    expect(getMany).toHaveBeenCalledTimes(2);
+    expect(getMany).toHaveBeenLastCalledWith(runs.map(run => run.runId));
+    expect(get).not.toHaveBeenCalled();
+    expect([...journal.records.values()]).toEqual(before);
+  });
+
+  it('fails closed for foreign, caller-private, and missing run links without raw disclosure', async () => {
+    const foreign = journal.reserve(`subject:${otherId}`, 'foreign-page-run', 'meridian-open-share', '1.0.0', {});
+    journal.update(foreign.runId, 'success');
+    const privateRun = journal.reserve(`subject:${otherId}`, 'private-page-run', 'meridian-member-inquiry', '1.0.0', {},
+      'replay', { invocationScope: 'member-identity' });
+    journal.update(privateRun.runId, 'success');
+    service.live.set(privateRun.runId, {
+      state: 'success', inputs: { searchValue: 'PRIVATE_INPUT_CANARY' }, started: 1, finished: 2,
+      result: { status: 'success', outputs: { members: [{ memberNumber: 'PRIVATE_MEMBER_CANARY', name: 'PRIVATE_NAME_CANARY' }] } },
+      memberIdentity: { status: 'verified', inquiryRunId: privateRun.runId, memberNumber: 'PRIVATE_MEMBER_CANARY', name: 'PRIVATE_NAME_CANARY' },
+      approval: { pending: undefined, cancel() {} },
+    } as never);
+    const missing = randomUUID();
+    const cases = [
+      { owner: ownerId, token: ownerToken, runId: foreign.runId },
+      { owner: otherId, token: otherToken, runId: privateRun.runId },
+      { owner: ownerId, token: ownerToken, runId: missing },
+    ].map((item, index) => ({
+      ...item, conversationId: `50000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    }));
+    for (const [index, item] of cases.entries()) {
+      await store.create(item.owner, item.conversationId);
+      await store.append(item.owner, item.conversationId, {
+        id: `51000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        kind: 'run_linked', role: 'assistant', runId: item.runId, expectedRevision: 0,
+      });
+    }
+    const before = [...journal.records.values()];
+    const getMany = vi.spyOn(journal, 'getMany');
+    const get = vi.spyOn(journal, 'get');
+    const origin = await listen();
+
+    const responses = [];
+    for (const item of cases) responses.push(await request(
+      origin, `/conversations/${item.conversationId}/events`, { token: item.token },
+    ));
+
+    expect(responses).toEqual(Array.from({ length: 3 }, () => ({ status: 404, body: { error: 'Unknown run' } })));
+    expect(JSON.stringify(responses)).not.toMatch(/PRIVATE_(?:INPUT|MEMBER|NAME)_CANARY/);
+    expect(getMany).toHaveBeenCalledTimes(3);
+    expect(get).not.toHaveBeenCalled();
+    expect([...journal.records.values()]).toEqual(before);
+  });
+
+  it('rejects overlapping linked-run pages per subject without queuing or poisoning the journal', async () => {
+    const ownerRun = journal.reserve(`subject:${ownerId}`, 'backpressure-owner', 'meridian-open-share', '1.0.0', {});
+    journal.update(ownerRun.runId, 'success');
+    const otherRun = journal.reserve(`subject:${otherId}`, 'backpressure-other', 'meridian-open-share', '1.0.0', {});
+    journal.update(otherRun.runId, 'success');
+    const ownerConversations = [randomUUID(), randomUUID()];
+    const otherConversation = randomUUID();
+    for (const [index, conversationId] of [...ownerConversations, otherConversation].entries()) {
+      const owner = index < ownerConversations.length ? ownerId : otherId;
+      const runId = index < ownerConversations.length ? ownerRun.runId : otherRun.runId;
+      await store.create(owner, conversationId);
+      await store.append(owner, conversationId, {
+        id: randomUUID(), kind: 'run_linked', role: 'assistant', runId, expectedRevision: 0,
+      });
+    }
+    const originalGetMany = journal.getMany.bind(journal);
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let hold = true;
+    const getMany = vi.spyOn(journal, 'getMany').mockImplementation((async (runIds: readonly string[]) => {
+      const result = originalGetMany(runIds);
+      if (hold) {
+        hold = false;
+        enter();
+        await blocked;
+      }
+      return result;
+    }) as unknown as typeof journal.getMany);
+    const origin = await listen();
+
+    const first = request(origin, `/conversations/${ownerConversations[0]}/events`);
+    await entered;
+    expect(await request(origin, `/conversations/${ownerConversations[1]}/events`)).toEqual({
+      status: 429, body: { error: 'Linked-run projection is busy' },
+    });
+    expect((await request(origin, `/conversations/${otherConversation}/events`, { token: otherToken })).status).toBe(200);
+    release();
+    expect((await first).status).toBe(200);
+    expect((await request(origin, `/conversations/${ownerConversations[1]}/events`)).status).toBe(200);
+
+    expect(getMany).toHaveBeenCalledTimes(3);
+    expect(journal.get(ownerRun.runId)?.state).toBe('success');
+    expect(journal.list()).toHaveLength(2);
+  });
+
   it('rejects foreign runs, legacy principals, malformed inputs, and unexpected database errors without disclosure', async () => {
     const ownerRun = journal.reserve(`subject:${ownerId}`, 'owner-run', 'meridian-member-inquiry', '1.0.0', {});
     const otherRun = journal.reserve(`subject:${otherId}`, 'other-run', 'meridian-member-inquiry', '1.0.0', {});

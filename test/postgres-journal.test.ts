@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import { journalDigest, journalRecoveryDigest, type JournalSnapshot } from '../src/runtime/journal.js';
 import { POSTGRES_LOCK_TIMEOUT_MS, PostgresJournal } from '../src/runtime/postgres-journal.js';
@@ -139,6 +139,27 @@ describe.sequential('PostgresJournal', () => {
       [publicRun.runId, privateRun.runId],
     );
     expect(rows.rows.map(row => row.invocation_scope).sort()).toEqual([null, 'public']);
+  });
+
+  it('reads one bounded, deduplicated run batch in one authority transaction', async () => {
+    const first = await journal.reserve(caller, 'pg-batch-first', capability, version, {});
+    await journal.update(first.runId, 'success');
+    const second = await journal.reserve(caller, 'pg-batch-second', capability, version, {});
+    await journal.update(second.runId, 'failure');
+    const transaction = vi.spyOn(journal as unknown as {
+      transaction<T>(work: (client: unknown) => Promise<T>): Promise<T>;
+    }, 'transaction');
+
+    const records = await journal.getMany([second.runId, first.runId, second.runId, randomUUID()]);
+
+    expect([...records]).toEqual([
+      [second.runId, { ...second, state: 'failure' }],
+      [first.runId, { ...first, state: 'success' }],
+    ]);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    await expect(journal.getMany(Array.from({ length: 101 }, () => first.runId))).rejects.toMatchObject({ status: 400 });
+    await expect(journal.getMany(['AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'])).rejects.toMatchObject({ status: 400 });
+    expect(transaction).toHaveBeenCalledTimes(1);
   });
 
   it('adds nullable scope and recovery columns to an existing journal and keeps migration idempotent', async () => {

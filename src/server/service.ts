@@ -266,6 +266,21 @@ export class InvocationService {
     if (!record) throw new RequestError(404, 'Unknown run');
     return this.projectRun(principal, record);
   }
+  async getOwnedMany(principal: Principal, runIds: readonly string[]) {
+    const records = await this.journal.getMany(runIds);
+    const owner = principalKey(principal);
+    return new Map([...new Set(runIds)].map(runId => {
+      const record = records.get(runId);
+      if (!record || record.caller !== owner) throw new RequestError(404, 'Unknown run');
+      try { return [runId, this.projectRun(principal, record)] as const; }
+      catch (error) {
+        if (error instanceof RequestError && (error.status === 403 || error.status === 404)) {
+          throw new RequestError(404, 'Unknown run');
+        }
+        throw error;
+      }
+    }));
+  }
   private projectRun(principal: Principal, record: JournalRecord) {
     const runId = record.runId;
     if (!canAccessRun(principal, record.caller)) throw new RequestError(403, 'Run belongs to another principal');
