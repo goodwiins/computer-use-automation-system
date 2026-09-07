@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Journal } from '../src/runtime/journal.js';
@@ -8,6 +8,7 @@ import * as runtime from '../src/runtime/run.js';
 import { loadProfile } from '../src/runtime/profile.js';
 import { Policy } from '../src/safety/policy.js';
 import { Redactor } from '../src/safety/redact.js';
+import { recordedStructure } from '../src/evidence/safe-event.js';
 import type { ReplayResult } from '../src/replay/outcomes.js';
 
 const balance = 'meridian-member-record', inquiry = 'meridian-member-inquiry';
@@ -56,7 +57,7 @@ function fixture(allowlist = [balance, inquiry]) {
     await vi.waitFor(() => expect(service.get('operator', runId).memberIdentity?.status).not.toBe('pending'));
     return service.get('operator', runId);
   }
-  return { service, journal, create, replay, releases, start, settle };
+  return { service, journal, dir, create, replay, releases, start, settle };
 }
 
 it('serializes the exact-member read under the same caller and role, with no replay on status or key reuse', async () => {
@@ -98,13 +99,41 @@ it('serializes the exact-member read under the same caller and role, with no rep
 
 it('keeps an explicitly requested name inquiry public', async () => {
   const f = fixture();
-  const accepted = f.service.invoke('caller', inquiry, { searchMode: 'name', searchValue: name }, 'explicit-name');
+  const accepted = f.service.invoke('caller', inquiry, { searchMode: 'name', searchValue: name }, 'member-identity:client-controlled');
   f.releases[0]!(identity());
   await vi.waitFor(() => expect(f.service.get('caller', accepted.runId).state).toBe('success'));
   expect(f.service.get('caller', accepted.runId)).toMatchObject({
     inputs: { searchMode: 'name', searchValue: name }, result: { status: 'success', outputs: { members: [{ memberNumber: member, name }] } },
   });
+  expect(f.service.get('caller', accepted.runId).sensitiveValuesUnavailable).toBe(false);
   expect(f.service.history('caller').map(run => run.runId)).toEqual([accepted.runId]);
+});
+
+it('withholds restored internal inquiry values on a fresh service', async () => {
+  const f = fixture();
+  const { runId, lookup } = await f.start();
+  f.releases[1]!(identity());
+  await f.settle(runId);
+  const rawName = 'SYNTHETIC_RESTORED_MEMBER';
+  const rawResult = { status: 'success', outputs: { members: [{ memberNumber: '9002', name: rawName }] },
+    structure: recordedStructure(inquiry, { searchMode: 'number', searchValue: member }, identity()) };
+  mkdirSync(join(f.dir, lookup.runId), { recursive: true });
+  writeFileSync(join(f.dir, lookup.runId, 'result.json'), JSON.stringify(rawResult));
+  await f.service.close();
+  f.journal.close();
+  const restoredJournal = new Journal(join(f.dir, 'journal'), 'member-identity-fixture-hmac-key-32-characters');
+  const restored = new InvocationService(restoredJournal, f.service.policy, f.service.profile, f.dir, [balance, inquiry]);
+  try {
+    const run = restored.get('caller', lookup.runId);
+    expect(run).toMatchObject({ inputs: undefined, result: { status: 'success', sensitiveValuesUnavailable: true, structure: { capability: inquiry } } });
+    expect(JSON.stringify(run)).not.toContain(member);
+    expect(JSON.stringify(run)).not.toContain(rawName);
+    expect(JSON.stringify(run)).not.toContain('9002');
+    expect(restored.history('caller').find(item => item.runId === lookup.runId)).toMatchObject({ inputs: undefined });
+  } finally {
+    await restored.close();
+    restoredJournal.close();
+  }
 });
 
 it.each([
@@ -126,11 +155,23 @@ it.each([
   if (change === 'name') live.inputs.searchMode = 'name';
   if (change === 'member') live.inputs.searchValue = 'another-member';
   if (change === 'caller') f.journal.records.set(lookup.runId, { ...lookup, caller: 'operator' });
+  const authorizedViews = change === 'caller' ? (['operator'] as const) : (['caller', 'operator'] as const);
+  for (const principal of authorizedViews) {
+    expect(f.service.history(principal).map(run => run.runId)).not.toContain(lookup.runId);
+    expect(f.service.get(principal, lookup.runId)).toMatchObject({ inputs: undefined, result: undefined });
+  }
   f.releases[1]!(result);
   if (change === 'withheld') f.service.live.delete(lookup.runId);
   const run = await f.settle(runId);
   expect(run.memberIdentity).toEqual({ status: 'unavailable', inquiryRunId: lookup.runId });
   expect(run.result).toEqual(publicShares);
+  for (const principal of authorizedViews) {
+    const child = f.service.get(principal, lookup.runId);
+    expect(f.service.history(principal).map(item => item.runId)).not.toContain(lookup.runId);
+    expect(child.inputs).toBeUndefined();
+    expect(child.result ? 'outputs' in child.result : false).toBe(false);
+    expect(JSON.stringify(child)).not.toContain(name);
+  }
 });
 
 it.each(['unauthorized', 'missing', 'failed balance', 'shutdown', 'unknown', 'lookup setup failure'] as const)('does not execute a lookup when %s', async reason => {

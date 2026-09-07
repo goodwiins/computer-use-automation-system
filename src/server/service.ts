@@ -20,7 +20,7 @@ export type MemberIdentity =
   | { status: 'verified'; inquiryRunId: string; memberNumber: string; name: string };
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
-  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; privateInvocation?: true; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
+  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private readonly privateInvocations = new Set<string>();
   private active?: string;
   private closing = false;
@@ -83,7 +83,7 @@ export class InvocationService {
       const live = this.live.get(record.runId);
       if (live) live.state = approval.pending ? 'awaiting-human' : 'running';
     }, Date.now() + 600_000);
-    const state = { state: 'running', inputs: normalized, ...(privateInvocation ? { privateInvocation: true as const } : {}), started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
+    const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
     this.live.set(record.runId, state);
     if (privateInvocation) this.privateInvocations.add(record.runId);
     const finish = () => { state.finished = Date.now(); this.active = undefined; };
@@ -183,8 +183,7 @@ export class InvocationService {
       } catch { historyResult = undefined; }
     }
     const result = live?.result;
-    const privateSafeResult = result ? result.status === 'success' ? { status: result.status, sensitiveValuesUnavailable: true } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, sensitiveValuesUnavailable: true } : { status: 'failure', failure: { code: result.failure.code ?? 'RUN_FAILED' }, sensitiveValuesUnavailable: true } : historyResult;
-    const safeResult = this.privateInvocations.has(runId) ? privateSafeResult
+    const safeResult = this.privateInvocations.has(runId) ? result ? persistedResult(result) : historyResult
       : result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     return { runId, kind: record.kind, inputs: this.privateInvocations.has(runId) ? undefined : live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
