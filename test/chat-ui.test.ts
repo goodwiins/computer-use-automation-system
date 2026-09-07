@@ -16,7 +16,9 @@ import { publicIntervention } from '../src/runtime/approval.js';
 const callerToken = 'c'.repeat(32),
   operatorToken = 'o'.repeat(32);
 const runId = '11111111-1111-4111-8111-111111111111';
+const secondRunId = '11111111-1111-4111-8111-222222222222';
 const approvalId = '22222222-2222-4222-8222-222222222222';
+const secondApprovalId = '22222222-2222-4222-8222-333333333333';
 const evidencePath = resolve('evidence/test-runs/assistant-ui');
 const hostile = '<img src=x onerror=alert(1)>';
 const readinessLabels = [
@@ -1200,54 +1202,76 @@ it('retains an accepted direct run through a history outage without a second inv
   expect(state.requests.filter(r => r.path.endsWith('/invoke'))).toHaveLength(1);
 }, 15000);
 
-it('unlocks a failed decision only after fresh authoritative confirmation and never resends it automatically', async () => {
+it('keeps exact-run locks through switch-away and unlocks only after fresh confirmation', async () => {
   const { page, state, connect } = await fixture();
   state.runs.push({ ...initialRun(), state: 'awaiting-human', intervention: {
     id: approvalId, expiresAt: Date.now() + 60000,
     request: { kind: 'locator_failed', reason: 'Repair fixture' },
   } });
+  state.runs.push({ ...initialRun(), runId: secondRunId, state: 'awaiting-human', intervention: {
+    id: secondApprovalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'locator_failed', reason: 'Second repair fixture' },
+  } });
   await connect(operatorToken);
-  const review = page.getByRole('button', { name: 'Review request', exact: true }).first();
-  await review.focus();
-  await review.click();
-  const retry = page.getByRole('button', { name: 'Retry after repair' });
-  await retry.waitFor();
+  const firstCard = page.locator(`[data-run-id="${runId}"]`);
+  const secondCard = page.locator(`[data-run-id="${secondRunId}"]`);
+  const firstReview = firstCard.getByRole('button', { name: 'Review request', exact: true });
+  const secondReview = secondCard.getByRole('button', { name: 'Review request', exact: true });
+  await firstReview.focus();
+  await firstReview.click();
+  const firstRetry = page.getByRole('button', { name: 'Retry after repair' });
+  await firstRetry.waitFor();
   let posts = 0;
-  await page.route('**/decision', async route => { posts++; state.offline = true; await route.abort(); });
-  await retry.click();
+  let firstDecisionPath = '';
+  let firstDecisionApproval = '';
+  await page.route('**/decision', async route => {
+    const body = JSON.parse(route.request().postData() ?? '{}') as { approvalId?: string };
+    posts++;
+    if (body.approvalId === approvalId) {
+      firstDecisionPath = route.request().url();
+      firstDecisionApproval = body.approvalId;
+      state.offline = true;
+      await route.abort();
+    } else await route.continue();
+  });
+  await firstRetry.click();
   await page.getByText('Refresh to inspect authoritative state.', { exact: false }).waitFor();
-  expect(await retry.isDisabled()).toBe(true);
+  expect(await firstRetry.isDisabled()).toBe(true);
   await page.keyboard.press('Escape');
   expect(await page.locator('dialog').isVisible()).toBe(false);
-  await review.click();
-  expect(await retry.isDisabled()).toBe(true);
-  await page.keyboard.press('Escape');
-  expect(await page.locator('dialog').isVisible()).toBe(false);
+  state.offline = false;
   await page.locator('#refresh').click();
+  await secondReview.click();
+  const secondRetry = page.getByRole('button', { name: 'Retry after repair' });
+  await secondRetry.waitFor();
+  expect(await secondRetry.isDisabled()).toBe(false);
+  expect(posts).toBe(1);
+  await page.keyboard.press('Escape');
   let releaseProbe!: () => void;
   const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
   let probes = 0;
   await page.route(`**/runs/${runId}`, async route => { probes++; await heldProbe; await route.continue(); });
-  state.offline = false;
   await page.locator('#refresh').click();
-  await review.click();
+  await firstReview.click();
   await vi.waitFor(() => expect(probes).toBe(1));
-  expect(await retry.isDisabled()).toBe(true);
+  expect(await firstRetry.isDisabled()).toBe(true);
   await page.keyboard.press('Escape');
   expect(await page.locator('dialog').isVisible()).toBe(false);
-  const reads = state.requests.filter(r => r.path === '/runs').length;
-  await page.locator('#refresh').click();
-  await vi.waitFor(() => expect(state.requests.filter(r => r.path === '/runs').length).toBeGreaterThan(reads));
-  await review.click();
-  expect(await retry.isDisabled()).toBe(true);
+  await secondReview.click();
+  expect(await secondRetry.isDisabled()).toBe(false);
   releaseProbe();
+  expect(await secondRetry.isDisabled()).toBe(false);
+  await page.keyboard.press('Escape');
+  await firstReview.click();
   await page.getByText('The server confirms this intervention is still pending.', { exact: false }).waitFor();
   expect(probes).toBe(1);
-  await vi.waitFor(async () => expect(await retry.isDisabled()).toBe(false));
+  await vi.waitFor(async () => expect(await firstRetry.isDisabled()).toBe(false));
   expect(posts).toBe(1);
   expect(state.decisions).toEqual([]);
+  expect(firstDecisionPath).toContain(`/runs/${runId}/decision`);
+  expect(firstDecisionApproval).toBe(approvalId);
   await page.unroute('**/decision');
-  await retry.click();
+  await firstRetry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['retry']));
 }, 15000);
 
