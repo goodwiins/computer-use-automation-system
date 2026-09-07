@@ -7,9 +7,12 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Pool } from 'pg';
 import { makeLLMClient } from './src/agent/client.js';
 import { createRuntime, operatorContext } from './src/runtime/run.js';
 import { Journal, RequestError, validateIdempotencyKey, type JournalRecord } from './src/runtime/journal.js';
+import { importJournal } from './src/runtime/journal-maintenance.js';
+import { PostgresJournal } from './src/runtime/postgres-journal.js';
 import { loadProfile, profilePolicy, FaultScenario } from './src/runtime/profile.js';
 import { applyMeridianContract, assertTransferOutputs, meridianContracts, transferFactsFromParams } from './src/runtime/contracts.js';
 import { serve } from './src/server/http.js';
@@ -434,17 +437,46 @@ async function approvalCommand(command: 'approval' | 'approve' | 'refuse', argv:
     : 'Refusal recorded; the run will abort.');
 }
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) fatal(`${name} is required`);
+  return value;
+}
+
+async function journalImport(argv: string[]): Promise<void> {
+  const { flags } = parseArgs(argv);
+  if (Object.keys(flags).length) fatal('journal-import takes no flags');
+  const databaseUrl = requiredEnv('DATABASE_URL');
+  const key = requiredEnv('JOURNAL_HMAC_KEY');
+  const pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
+  try { await PostgresJournal.migrate(pool); await importJournal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), pool, key); }
+  finally { await pool.end().catch(() => undefined); }
+}
+
+async function journalRecover(argv: string[]): Promise<void> {
+  const { flags } = parseArgs(argv);
+  if (Object.keys(flags).some(flag => !['owner', 'confirm-fenced'].includes(flag)) || flags['confirm-fenced'] !== true) {
+    fatal('journal-recover requires --owner <uuid> --confirm-fenced');
+  }
+  const owner = requireUuid(flags.owner, '--owner');
+  const pool = new Pool({ connectionString: requiredEnv('DATABASE_URL'), connectionTimeoutMillis: 5_000 });
+  try { await PostgresJournal.recover(pool, owner); }
+  finally { await pool.end().catch(() => undefined); }
+}
+
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const [cmd, ...rest] = argv;
   try {
-    if (cmd === 'serve') { const { flags } = parseArgs(rest); await serve(typeof flags.profile === 'string' ? flags.profile : 'meridian'); }
+    if (cmd === 'journal-import') await journalImport(rest);
+    else if (cmd === 'journal-recover') await journalRecover(rest);
+    else if (cmd === 'serve') { const { flags } = parseArgs(rest); await serve(typeof flags.profile === 'string' ? flags.profile : 'meridian'); }
     else if (cmd === 'discover') await discover(rest);
     else if (cmd === 'replay') await replay(rest);
     else if (cmd === 'list') list();
     else if (cmd === 'validate') validate();
     else if (cmd === 'approval' || cmd === 'approve' || cmd === 'refuse') await approvalCommand(cmd, rest);
     else {
-      console.log('usage: cli.ts <discover|replay|approval|approve|refuse|list|validate|serve> [flags]');
+      console.log('usage: cli.ts <discover|replay|approval|approve|refuse|list|validate|serve|journal-import|journal-recover> [flags]');
       process.exit(1);
     }
   } catch (error) {

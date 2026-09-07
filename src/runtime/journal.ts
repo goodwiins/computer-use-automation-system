@@ -48,7 +48,7 @@ export function journalDigest(key: string, value: unknown): string {
   return createHmac('sha256', key).update(canonical(value)).digest('hex');
 }
 
-function readEnvelope(path: string, key: string): unknown {
+export function readSignedEnvelope(path: string, key: string): unknown {
   if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
   const envelope = JSON.parse(readFileSync(path, 'utf8'));
   const actual = Buffer.from(createHmac('sha256', key).update(canonical(envelope.record)).digest('hex'));
@@ -57,12 +57,58 @@ function readEnvelope(path: string, key: string): unknown {
   return envelope.record;
 }
 
+const AUTHORITY_MARKER = 'postgres-authority.json';
+export const AuthorityMarkerSchema = z.object({
+  importId: z.string().uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/),
+  phase: z.enum(['pending', 'complete']),
+}).strict();
+export type AuthorityMarker = z.infer<typeof AuthorityMarkerSchema>;
+
+function readEnvelope(path: string, key: string): unknown { return readSignedEnvelope(path, key); }
+
 /** Authenticate a snapshot without acquiring a lock or recovering/mutating it. */
 export function readJournalRecord(dir: string, runId: string, key: string): JournalRecord {
   z.string().uuid().parse(runId);
   const record = RecordSchema.parse(readEnvelope(join(dir, `${runId}.json`), key));
   if (record.runId !== runId) throw new Error('Journal filename mismatch');
   return record;
+}
+
+const tempName = (name: string) => /^(?:[0-9a-f-]{36}\.json|postgres-authority\.json)\.[0-9a-f-]{36}\.tmp$/.test(name);
+
+/** Authenticate and normalize the complete filesystem journal without opening it. */
+export function readJournalSnapshot(dir: string, key: string): JournalSnapshot {
+  journalDigest(key, { records: [], aliases: [] });
+  const files = readdirSync(dir);
+  const records: JournalRecord[] = [];
+  for (const file of files) {
+    if (file === 'startup.lock' || file === 'server.lock' || file === AUTHORITY_MARKER || tempName(file)) continue;
+    if (file === 'aliases') continue;
+    if (!file.endsWith('.json')) throw new Error('Invalid journal snapshot entry');
+    records.push(readJournalRecord(dir, file.slice(0, -5), key));
+  }
+  const byRun = new Set<string>(), identities = new Set<string>();
+  for (const record of records) {
+    if (byRun.has(record.runId) || identities.has(record.identity)) throw new Error('Journal snapshot contains duplicate identities');
+    byRun.add(record.runId); identities.add(record.identity);
+  }
+  const aliases: RequestAlias[] = [];
+  const recordsByRun = new Map(records.map(record => [record.runId, record]));
+  const aliasesDir = join(dir, 'aliases');
+  if (existsSync(aliasesDir)) {
+    for (const file of readdirSync(aliasesDir)) {
+      if (tempName(file)) continue;
+      if (!file.endsWith('.json')) throw new Error('Invalid journal snapshot entry');
+      const alias = AliasSchema.parse(readSignedEnvelope(join(aliasesDir, file), key));
+      const target = recordsByRun.get(alias.runId);
+      if (file !== `${alias.identity}.json` || !target || target.caller !== alias.caller || target.request !== alias.request
+        || identities.has(alias.identity)) throw new Error('Invalid journal request alias');
+      identities.add(alias.identity); aliases.push(alias);
+    }
+  }
+  records.sort((a, b) => a.runId.localeCompare(b.runId));
+  aliases.sort((a, b) => a.identity.localeCompare(b.identity));
+  return { records, aliases };
 }
 
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
@@ -82,6 +128,7 @@ export class Journal implements RunJournal {
     const startup = join(dir, 'startup.lock');
     const startupFd = openSync(startup, 'wx', 0o600);
     try {
+      if (existsSync(join(dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
       if (existsSync(this.lock)) {
         const pid = Number(readFileSync(this.lock, 'utf8'));
         if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid journal lock; operator inspection required');
@@ -118,6 +165,7 @@ export class Journal implements RunJournal {
   private persistEnvelope(path: string, record: unknown) {
     if (this.closed) throw new Error('Journal is closed');
     if (this.writeFailure) throw this.writeFailure;
+    if (existsSync(join(this.dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
     const tmp = `${path}.${randomUUID()}.tmp`;
     const fd = openSync(tmp, 'wx', 0o600);
     try { writeFileSync(fd, JSON.stringify({ record, signature: this.mac(record) })); fsyncSync(fd); } finally { closeSync(fd); }
@@ -141,6 +189,7 @@ export class Journal implements RunJournal {
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
     validateIdempotencyKey(key);
+    if (existsSync(join(this.dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
     const target = this.records.get(runId);
     if (!target || target.caller !== caller) throw new RequestError(403, 'Run belongs to another principal');
     const existing = this.findRequest(caller, key);
