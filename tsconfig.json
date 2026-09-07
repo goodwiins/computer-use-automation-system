@@ -11,5 +11,5 @@
     "types": ["node"]
   },
   "include": ["src", "target-app", "cli.ts", "test", "scripts/evaluate-run.ts", "scripts/benchmark-journal.ts", "scripts/benchmark-safe-event.ts"],
-  "exclude": ["src/server/ui"]
+  "exclude": ["src/server/ui", "src/app"]
 }

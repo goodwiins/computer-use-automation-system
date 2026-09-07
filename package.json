@@ -17,9 +17,10 @@
     "test:smoke": "vitest run test/browser-inspection-tsx.test.ts test/evidence-eval.test.ts",
     "ci": "npm run typecheck && npm run typecheck:ui && npm test",
     "typecheck": "tsc --noEmit",
-    "build": "vite build --config vite.config.ts",
-    "typecheck:ui": "tsc --project tsconfig.ui.json",
-    "pretest": "npm run build"
+    "build": "next build",
+    "typecheck:ui": "next typegen && tsc --project tsconfig.ui.json",
+    "pretest": "npm run build",
+    "preserve": "npm run build"
   },
   "dependencies": {
     "@ai-sdk/azure": "4.0.62",
@@ -28,6 +29,7 @@
     "@assistant-ui/react": "0.15.18",
     "ai": "7.0.93",
     "express": "^4.19.2",
+    "next": "16.3.4",
     "openai": "^4.77.0",
     "playwright": "^1.49.0",
     "react": "19.2.8",
@@ -41,7 +43,6 @@
     "@types/react-dom": "19.2.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "8.2.2",
     "vitest": "^4.1.11"
   },
   "overrides": {
