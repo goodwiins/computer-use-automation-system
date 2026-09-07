@@ -14,7 +14,22 @@ const AliasSchema = z.object({
   caller: z.string(), identity: z.string().regex(/^[a-f0-9]{64}$/),
   request: z.string().regex(/^[a-f0-9]{64}$/), runId: z.string().uuid(),
 }).strict();
-type RequestAlias = z.infer<typeof AliasSchema>;
+export type RequestAlias = z.infer<typeof AliasSchema>;
+export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[] };
+export type Awaitable<T> = T | Promise<T>;
+export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
+export interface RunJournal {
+  get(runId: string): Awaitable<JournalRecord | undefined>;
+  list(): Awaitable<JournalRecord[]>;
+  hasUnknown(capability: string): Awaitable<boolean>;
+  lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
+  findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown, kind?: 'discovery' | 'replay'): Awaitable<JournalRecord>;
+  bindReference(caller: string, key: string, runId: string): Awaitable<void>;
+  update(runId: string, state: JournalRecord['state']): Awaitable<void>;
+  assertHealthy(): void;
+  close(): Awaitable<void>;
+}
 export class RequestError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
@@ -27,6 +42,10 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
   return JSON.stringify(value);
+}
+export function journalDigest(key: string, value: unknown): string {
+  if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
+  return createHmac('sha256', key).update(canonical(value)).digest('hex');
 }
 
 function readEnvelope(path: string, key: string): unknown {
@@ -47,7 +66,7 @@ export function readJournalRecord(dir: string, runId: string, key: string): Jour
 }
 
 /** One process per journal; all writes and decisions serialize on the JS event loop. */
-export class Journal {
+export class Journal implements RunJournal {
   readonly records = new Map<string, JournalRecord>();
   private readonly runIdsByIdentity = new Map<string, string>();
   private readonly aliases = new Map<string, RequestAlias>();
@@ -94,7 +113,7 @@ export class Journal {
       }
     } catch (error) { this.close(); throw error; }
   }
-  private mac(value: unknown) { return createHmac('sha256', this.key).update(canonical(value)).digest('hex'); }
+  private mac(value: unknown) { return journalDigest(this.key, value); }
   private syncDir(dir = this.dir) { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } }
   private persistEnvelope(path: string, record: unknown) {
     if (this.closed) throw new Error('Journal is closed');
@@ -116,6 +135,10 @@ export class Journal {
     this.records.set(record.runId, record);
     if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
+  get(runId: string) { this.assertHealthy(); return this.records.get(runId); }
+  list() { this.assertHealthy(); return [...this.records.values()]; }
+  hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
+  assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
     validateIdempotencyKey(key);
     const target = this.records.get(runId);
@@ -134,7 +157,7 @@ export class Journal {
     this.aliases.set(identity, alias);
   }
   findRequest(caller: string, key: string) {
-    if (this.writeFailure) throw this.writeFailure;
+    this.assertHealthy();
     const identity = this.mac({ caller, key });
     const runId = this.runIdsByIdentity.get(identity);
     const direct = runId === undefined ? undefined : this.records.get(runId);
