@@ -15,12 +15,16 @@ import type { Policy } from '../safety/policy.js';
 import { safeResult as persistedResult, type RecordedStructure } from '../evidence/safe-event.js';
 
 export type Principal = 'caller' | 'operator';
+export type MemberIdentity =
+  | { status: 'pending' | 'unavailable'; inquiryRunId?: string }
+  | { status: 'verified'; inquiryRunId: string; memberNumber: string; name: string };
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
-  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
+  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
   private active?: string;
   private closing = false;
   private completion?: Promise<void>;
+  private identityCompletion?: Promise<void>;
   constructor(readonly journal: Journal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
     for (const file of readdirSync(artifactDir).filter(f => f.endsWith('.json'))) {
@@ -113,6 +117,33 @@ export class InvocationService {
         state.state = runtime.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure';
         this.journal.update(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
       }).finally(finish);
+      if (this.profile.appId === 'meridian' && id === 'meridian-member-record') {
+        state.memberIdentity = { status: 'pending' };
+        // Only this fresh balance request can start its linked approved read. Status and key reuse cannot.
+        this.identityCompletion = this.completion.then(async () => {
+          let inquiryRunId: string | undefined;
+          try {
+            const member = state.inputs.member;
+            if (this.closing || state.state !== 'success' || typeof member !== 'string' || !member.trim()) return;
+            const inquiry = this.invoke(principal, 'meridian-member-inquiry',
+              { searchMode: 'number', searchValue: member }, `member-identity:${record.runId}`, role);
+            inquiryRunId = inquiry.runId;
+            state.memberIdentity = { status: 'pending', inquiryRunId };
+            await this.completion;
+            const lookup = this.live.get(inquiryRunId);
+            const rows = lookup?.result?.status === 'success' ? lookup.result.outputs.members : undefined;
+            const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+            if (!inquiry.reused && this.journal.records.get(inquiryRunId)?.caller === record.caller
+              && lookup?.state === 'success' && lookup.inputs.searchMode === 'number' && lookup.inputs.searchValue === member
+              && row && typeof row === 'object' && row.memberNumber === member && typeof row.name === 'string' && row.name.trim()) {
+              state.memberIdentity = { status: 'verified', inquiryRunId, memberNumber: member, name: row.name };
+            }
+          } catch { /* Preserve the successful balance even if its identity read is unavailable. */ }
+          finally {
+            if (state.memberIdentity?.status === 'pending') state.memberIdentity = { status: 'unavailable', inquiryRunId };
+          }
+        });
+      }
     } catch (error) {
       approval.cancel();
       state.state = 'failure';
@@ -147,7 +178,8 @@ export class InvocationService {
     return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       intervention: principal === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
-      result: safeResult, structure, sensitiveValuesUnavailable: !live, evidence };
+      result: safeResult, structure, sensitiveValuesUnavailable: !live, evidence,
+      memberIdentity: record.capability === 'meridian-member-record' ? live?.memberIdentity ?? { status: 'unavailable' as const } : undefined };
   }
   history(principal: Principal) { return [...this.journal.records.values()].filter(r => principal === 'operator' || r.caller === principal).map(r => this.get(principal, r.runId)); }
   decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
@@ -161,5 +193,6 @@ export class InvocationService {
     this.closing = true;
     for (const live of this.live.values()) { live.approval.cancel(); await live.close?.(); }
     await this.completion;
+    await this.identityCompletion;
   }
 }
