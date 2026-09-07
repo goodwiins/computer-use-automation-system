@@ -1,0 +1,266 @@
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import type { Server } from 'node:http';
+import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Journal } from '../src/runtime/journal.js';
+import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
+import type { SubjectCredential } from '../src/server/auth.js';
+import { ConversationStore } from '../src/server/conversations.js';
+import { createApp } from '../src/server/http.js';
+import { InvocationService } from '../src/server/service.js';
+import { createPostgresFixture } from './fixtures/postgres.js';
+
+const ownerId = '11111111-1111-4111-8111-111111111111';
+const otherId = '22222222-2222-4222-8222-222222222222';
+const ownerToken = 'owner-operator-token-000000000000001';
+const otherToken = 'other-caller-token-0000000000000002';
+const credentials: SubjectCredential[] = [
+  { subjectId: ownerId, role: 'operator', token: ownerToken },
+  { subjectId: otherId, role: 'caller', token: otherToken },
+];
+
+describe.sequential('conversation HTTP API', () => {
+  let database: Awaited<ReturnType<typeof createPostgresFixture>>;
+  let store: ConversationStore;
+  let evidenceDir: string;
+  let journal: Journal;
+  let service: InvocationService;
+  const servers: Server[] = [];
+
+  const newService = (dir = evidenceDir) => {
+    const profile = loadProfile('meridian');
+    journal = new Journal(join(dir, 'journal'), 'h'.repeat(64));
+    service = new InvocationService(journal, profilePolicy(profile), profile, dir, ['meridian-member-inquiry']);
+    return service;
+  };
+
+  const listen = async (conversations: ConversationStore | null | undefined = store, subjectTokens: SubjectCredential[] | null | undefined = credentials) => {
+    const app = createApp(service, {
+      callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), subjectTokens: subjectTokens ?? undefined,
+      conversations: conversations ?? undefined, port: 4180,
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('HTTP test server did not bind');
+    return `http://127.0.0.1:${address.port}`;
+  };
+
+  const request = async (origin: string, path: string, options: {
+    token?: string; method?: string; body?: unknown;
+  } = {}) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const url = new URL(path, origin);
+    const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+    const request = httpRequest({
+      hostname: url.hostname, port: url.port, path: `${url.pathname}${url.search}`,
+      method: options.method ?? 'GET',
+      headers: {
+        Host: '127.0.0.1:4180', Authorization: `Bearer ${options.token ?? ownerToken}`,
+        ...(payload === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }),
+      },
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let body: unknown;
+        try { body = JSON.parse(text); } catch { body = undefined; }
+        resolve({ status: response.statusCode!, body });
+      });
+    });
+    request.on('error', reject);
+    request.end(payload);
+  });
+
+  beforeEach(async () => {
+    database = await createPostgresFixture();
+    store = new ConversationStore(database.pool);
+    await store.migrate();
+    evidenceDir = mkdtempSync(join(tmpdir(), 'conversation-http-'));
+    newService();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+    await service.close().catch(() => {});
+    journal.close();
+    await database.close();
+    rmSync(evidenceDir, { recursive: true, force: true });
+  });
+
+  it('creates, pages, archives, appends, reloads, and deletes owner-scoped conversations without changing run state', async () => {
+    const unknown = journal.reserve(`subject:${ownerId}`, 'unknown-key', 'meridian-open-share', '1.0.0', {});
+    journal.update(unknown.runId, 'dispatching');
+    journal.close();
+    newService();
+    expect(journal.records.get(unknown.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');
+
+    const origin = await listen();
+    const ids = [
+      '10000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000003',
+    ];
+    for (const id of ids) expect((await request(origin, '/conversations', { method: 'POST', body: { id } })).status).toBe(201);
+    const retry = await request(origin, '/conversations', { method: 'POST', body: { id: ids[0] } });
+    expect(retry).toMatchObject({ status: 201, body: { id: ids[0], archived: false, revision: 0 } });
+
+    const page1 = await request(origin, '/conversations?limit=2');
+    expect(page1.body.conversations.map((item: { id: string }) => item.id)).toEqual(ids.slice(0, 2));
+    expect(page1.body.nextCursor).toBe(ids[1]);
+    const page2 = await request(origin, `/conversations?limit=2&after=${ids[1]}`);
+    expect(page2.body.conversations.map((item: { id: string }) => item.id)).toEqual([ids[2]]);
+    expect(await request(origin, `/conversations/${ids[0]}`)).toMatchObject({ status: 200, body: { id: ids[0] } });
+
+    const firstEventId = randomUUID();
+    const firstEvent = await request(origin, `/conversations/${ids[0]}/events`, {
+      method: 'POST', body: { id: firstEventId, kind: 'message_omitted', role: 'user', expectedRevision: 0 },
+    });
+    expect(firstEvent).toMatchObject({
+      status: 201,
+      body: { id: firstEventId, sequence: 1, kind: 'message_omitted', role: 'user', content: 'Message text was not saved.' },
+    });
+    expect((await request(origin, `/conversations/${ids[0]}`, {
+      method: 'PATCH', body: { archived: true, expectedRevision: 0 },
+    })).status).toBe(409);
+    expect(await request(origin, `/conversations/${ids[0]}`, {
+      method: 'PATCH', body: { archived: true, expectedRevision: 1 },
+    })).toMatchObject({ status: 200, body: { archived: true, revision: 2 } });
+    expect((await request(origin, `/conversations/${ids[0]}/events`, {
+      method: 'POST', body: { id: randomUUID(), kind: 'message_omitted', role: 'assistant', expectedRevision: 2 },
+    })).status).toBe(409);
+    expect(await request(origin, `/conversations/${ids[0]}`, {
+      method: 'PATCH', body: { archived: false, expectedRevision: 2 },
+    })).toMatchObject({ status: 200, body: { archived: false, revision: 3 } });
+    const secondEventId = randomUUID();
+    expect((await request(origin, `/conversations/${ids[0]}/events`, {
+      method: 'POST', body: { id: secondEventId, kind: 'message_omitted', role: 'assistant', expectedRevision: 3 },
+    })).status).toBe(201);
+    const eventPage1 = await request(origin, `/conversations/${ids[0]}/events?limit=1`);
+    expect(eventPage1.body.events).toMatchObject([{ id: firstEventId, sequence: 1 }]);
+    expect(eventPage1.body.nextCursor).toBe(1);
+    const eventPage2 = await request(origin, `/conversations/${ids[0]}/events?limit=1&after=1`);
+    expect(eventPage2.body.events).toMatchObject([{ id: secondEventId, sequence: 4 }]);
+
+    const beforeCount = journal.records.size;
+    await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+    await service.close();
+    journal.close();
+    await database.closePool(database.pool);
+    database.pool = database.openPool();
+    store = new ConversationStore(database.pool);
+    newService();
+    const reloadedOrigin = await listen();
+    expect(await request(reloadedOrigin, `/conversations/${ids[0]}/events`)).toMatchObject({
+      status: 200, body: { events: [{ id: firstEventId }, { id: secondEventId }] },
+    });
+    expect(journal.records.size).toBe(beforeCount);
+    expect(journal.records.get(unknown.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');
+
+    expect(await request(reloadedOrigin, `/conversations/${ids[0]}`, {
+      method: 'DELETE', body: { expectedRevision: 4 },
+    })).toEqual({ status: 204, body: undefined });
+    expect((await request(reloadedOrigin, `/conversations/${ids[0]}`)).status).toBe(404);
+    expect(journal.findRequest(`subject:${ownerId}`, 'unknown-key')?.runId).toBe(unknown.runId);
+    expect(journal.records.get(unknown.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');
+  });
+
+  it('returns only fixed templates and re-sanitized own-run projections', async () => {
+    const live = journal.reserve(`subject:${ownerId}`, 'live', 'meridian-member-inquiry', '1.0.0', {});
+    journal.update(live.runId, 'success');
+    service.live.set(live.runId, {
+      state: 'success', inputs: { searchValue: 'PRIVATE_INPUT_CANARY' }, started: 1, finished: 2,
+      result: { status: 'success', outputs: { members: [{ memberNumber: 'PRIVATE_MEMBER_CANARY', name: 'PRIVATE_NAME_CANARY' }] } },
+      memberIdentity: { status: 'verified', inquiryRunId: live.runId, memberNumber: 'PRIVATE_MEMBER_CANARY', name: 'PRIVATE_NAME_CANARY' },
+      approval: { pending: undefined, cancel() {} },
+    } as never);
+
+    const saved = journal.reserve(`subject:${ownerId}`, 'saved', 'meridian-member-inquiry', '1.0.0', {});
+    journal.update(saved.runId, 'success');
+    const resultDir = join(evidenceDir, saved.runId);
+    mkdirSync(resultDir);
+    writeFileSync(join(resultDir, 'result.json'), JSON.stringify({
+      status: 'success',
+      outputs: { members: [{ memberNumber: 'PRIVATE_SAVED_CANARY', name: 'PRIVATE_SAVED_NAME' }] },
+      structure: {
+        capability: 'meridian-member-inquiry',
+        inputs: [
+          { name: 'searchMode', type: 'string', value: 'withheld' },
+          { name: 'searchValue', type: 'string', value: 'withheld' },
+        ],
+        outputs: [{
+          name: 'members', type: 'table', value: 'withheld', columns: [
+            { name: 'memberNumber', type: 'string', value: 'withheld' },
+            { name: 'name', type: 'string', value: 'withheld' },
+          ],
+        }],
+      },
+    }));
+
+    const conversationId = randomUUID();
+    const origin = await listen();
+    await request(origin, '/conversations', { method: 'POST', body: { id: conversationId } });
+    for (const [expectedRevision, runId] of [live.runId, saved.runId].entries()) {
+      expect((await request(origin, `/conversations/${conversationId}/events`, {
+        method: 'POST', body: { id: randomUUID(), kind: 'run_linked', role: 'assistant', runId, expectedRevision },
+      })).status).toBe(201);
+    }
+    const beforeCount = journal.records.size;
+    const history = await request(origin, `/conversations/${conversationId}/events`);
+    expect(history.status).toBe(200);
+    expect(history.body.events.map((event: { content: string }) => event.content)).toEqual(['Linked run.', 'Linked run.']);
+    expect(history.body.events[0].run).toEqual({
+      runId: live.runId, capability: 'meridian-member-inquiry', version: '1.0.0', state: 'success',
+      result: { status: 'success', sensitiveValuesUnavailable: true },
+    });
+    expect(history.body.events[1].run.result.structure).toMatchObject({ capability: 'meridian-member-inquiry' });
+    expect(JSON.stringify(history.body.events)).not.toContain('PRIVATE_MEMBER_CANARY');
+    expect(JSON.stringify(history.body.events)).not.toContain('PRIVATE_SAVED_CANARY');
+    expect(JSON.stringify(history.body.events)).not.toContain('PRIVATE_INPUT_CANARY');
+    expect(JSON.stringify(history.body.events)).not.toContain('memberIdentity');
+    expect(JSON.stringify(history.body.events)).not.toContain('evidence');
+    expect(journal.records.size).toBe(beforeCount);
+  });
+
+  it('rejects foreign runs, legacy principals, malformed inputs, and unexpected database errors without disclosure', async () => {
+    const ownerRun = journal.reserve(`subject:${ownerId}`, 'owner-run', 'meridian-member-inquiry', '1.0.0', {});
+    const otherRun = journal.reserve(`subject:${otherId}`, 'other-run', 'meridian-member-inquiry', '1.0.0', {});
+    const conversationId = randomUUID();
+    const origin = await listen();
+    expect((await request(origin, '/conversations', { method: 'POST', body: { id: conversationId } })).status).toBe(201);
+    expect((await request(origin, `/conversations/${conversationId}`, { token: otherToken })).status).toBe(404);
+    expect((await request(origin, '/conversations', { token: otherToken })).body.conversations).toEqual([]);
+    expect((await request(origin, `/conversations/${conversationId}/events`, {
+      method: 'POST', body: { id: randomUUID(), kind: 'run_linked', role: 'assistant', runId: otherRun.runId, expectedRevision: 0 },
+    })).status).toBe(404);
+    expect((await request(origin, `/conversations/${conversationId}/events`, {
+      method: 'POST', body: { id: randomUUID(), kind: 'run_linked', role: 'assistant', runId: ownerRun.runId, expectedRevision: 0 },
+    })).status).toBe(201);
+
+    for (const [path, method, body] of [
+      ['/conversations', 'POST', { id: randomUUID(), owner: ownerId }],
+      ['/conversations', 'POST', { id: 'not-a-uuid' }],
+      [`/conversations/${conversationId}`, 'PATCH', { archived: true, expectedRevision: 1, owner: ownerId }],
+      [`/conversations/${conversationId}`, 'DELETE', { expectedRevision: -1 }],
+      [`/conversations/${conversationId}/events`, 'POST', { id: randomUUID(), kind: 'message_omitted', role: 'user', expectedRevision: 1, content: 'PRIVATE RAW TEXT' }],
+    ] as const) expect((await request(origin, path, { method, body })).status).toBe(400);
+    for (const path of ['/conversations?archived=no', '/conversations?limit=0', '/conversations?extra=true', `/conversations/${conversationId}/events?after=-1`])
+      expect((await request(origin, path)).status).toBe(400);
+    expect((await request(origin, '/conversations', { token: 'wrong-token-that-is-long-enough-0000' })).status).toBe(401);
+
+    const noStoreOrigin = await listen(null);
+    expect((await request(noStoreOrigin, '/conversations')).status).toBe(503);
+    const legacyOrigin = await listen(store, null);
+    expect((await request(legacyOrigin, '/conversations', { token: 'c'.repeat(32) })).status).toBe(403);
+
+    vi.spyOn(store, 'list').mockRejectedValueOnce(new Error('PRIVATE DATABASE ERROR CANARY'));
+    const failure = await request(origin, '/conversations');
+    expect(failure).toEqual({ status: 500, body: { error: 'Request failed; inspect safe run evidence or server configuration' } });
+    expect(JSON.stringify(failure)).not.toContain('PRIVATE DATABASE ERROR CANARY');
+  });
+});

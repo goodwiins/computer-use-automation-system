@@ -3,16 +3,19 @@ import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { LanguageModel } from 'ai';
+import { Pool } from 'pg';
 import { z } from 'zod';
 import { RequestError, Journal } from '../runtime/journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
 import { InvocationService } from './service.js';
 import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
+import { conversationRouter } from './conversation-http.js';
+import { ConversationStore } from './conversations.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional() }).strict();
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; port: number; chatModel?: LanguageModel; uiDir?: string }) {
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string }) {
   const authenticate = createAuthenticator(config);
   const app = express();
   app.disable('x-powered-by');
@@ -53,6 +56,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!run.evidence.includes(req.params.file!)) throw new RequestError(404, 'Unknown evidence file');
     res.sendFile(resolve(join(service.evidenceDir, req.params.id!, req.params.file!)));
   });
+  app.use('/conversations', conversationRouter(service, config.conversations));
   const chat = createChatHandlers(service, config.chatModel);
   app.post('/chat', chat.legacy);
   app.post('/api/chat', chat.stream);
@@ -69,33 +73,61 @@ export async function serve(profileName = 'meridian') {
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';
   const journal = new Journal(join(evidenceDir, 'journal'), process.env.JOURNAL_HMAC_KEY ?? '');
   let uiDir: string | undefined;
-  const cleanup = () => {
-    journal.close();
+  let service: InvocationService | undefined;
+  let pool: Pool | undefined;
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = () => cleanupPromise ??= (async () => {
+    let failure: unknown;
+    try { await service?.close(); } catch (error) { failure = error; }
+    try { await pool?.end(); } catch (error) { failure ??= error; }
+    try { journal.close(); } catch (error) { failure ??= error; }
     if (uiDir) rmSync(uiDir, { recursive: true, force: true });
-  };
+    if (failure) throw failure;
+  })();
   try {
+    const subjectTokens = parseSubjectCredentials(process.env.SUBJECT_API_TOKENS);
+    const databaseUrl = process.env.DATABASE_URL;
+    if (databaseUrl && !subjectTokens) throw new Error('Conversation storage configuration is invalid');
     // Each instance serves its own immutable build, even with different journals.
     const { build } = await import('vite');
     uiDir = mkdtempSync(join(tmpdir(), 'meridian-ui-'));
     await build({ configFile: resolve('vite.config.ts'), build: { outDir: uiDir } });
-    const service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
+    service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
+    let conversations: ConversationStore | undefined;
+    let shutdownOnDatabaseError: (() => void) | undefined;
+    if (databaseUrl) {
+      try {
+        pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
+        pool.on('error', () => { process.exitCode = 1; shutdownOnDatabaseError?.(); });
+        conversations = new ConversationStore(pool);
+        await conversations.migrate();
+      } catch { throw new Error('Conversation storage startup failed'); }
+    }
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
-    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens: parseSubjectCredentials(process.env.SUBJECT_API_TOKENS), port, uiDir });
-    const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
+    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens, conversations, port, uiDir });
+    const server = app.listen(port, '127.0.0.1');
+    await new Promise<void>((resolveListening, rejectListening) => {
+      const listening = () => { server.removeListener('error', failed); resolveListening(); };
+      const failed = (error: Error) => { server.removeListener('listening', listening); rejectListening(error); };
+      server.once('listening', listening);
+      server.once('error', failed);
+    });
+    console.log(`Dashboard: http://127.0.0.1:${port}`);
     let closing = false;
     const shutdown = () => {
       if (closing) return;
       closing = true;
       for (const signal of ['SIGINT', 'SIGTERM'] as const) process.removeListener(signal, shutdown);
       // Reject late model invocations before draining HTTP or awaiting runtime cleanup.
-      void service.close().finally(cleanup).catch(() => { process.exitCode = 1; });
-      server.close();
+      void cleanup().catch(() => { process.exitCode = 1; });
+      if (server.listening) server.close();
       server.closeAllConnections();
     };
+    shutdownOnDatabaseError = shutdown;
     server.once('close', shutdown);
     server.on('error', () => { shutdown(); process.exitCode = 1; });
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, shutdown);
     return server;
-  } catch (error) { cleanup(); throw error; }
+  } catch (error) { await cleanup().catch(() => {}); throw error; }
 }
