@@ -20,6 +20,8 @@ Crash recovery is an explicit non-executing maintenance operation. It requires t
 
 Durable intent does not prove native dispatch. A rejection or changed page prevents native dispatch; an already committed intent remains conservatively unknown if completion is not verified. Mark `mutationDispatched` only immediately before the native dispatch path as today, and rely on journal intent to preserve unknown state even if post-await validation fails first. Never re-approve, retry or downgrade automatically.
 
+An unrelated journal write (for example a status alias) can fail while post-intent page revalidation awaits. Both journal implementations expose a synchronous `assertHealthy()` over their known closed/failed state. Runtime callers supply that check through optional `assertDispatchAllowed`; GuardedSurface calls it after the final await, before entering native dispatch. This is a local fail-stop check, not a database lease or proof of external fencing.
+
 ## Migration and selection
 
 `RUN_JOURNAL=postgres` explicitly selects PostgreSQL; unset/`filesystem` retains the current unmigrated mode. Unknown values fail. PostgreSQL requires `DATABASE_URL`, `JOURNAL_HMAC_KEY` and a matching migration marker in the configured evidence journal directory. No automatic empty database initialization or filesystem fallback in PostgreSQL mode.
