@@ -1,0 +1,22 @@
+{
+  "runId": "1dd93dd5-a56e-4312-bdf9-5565a97a9bba",
+  "producerSha": "476f8cacf57cc3e42b29bd3c2b4d721f297bf2ae",
+  "resultCode": "POST_OUTCOME_UNKNOWN",
+  "evaluation": {
+    "status": "unknown",
+    "taskStatus": "POST_OUTCOME_UNKNOWN",
+    "attempts": 19,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": [
+      "POST_OUTCOME_UNKNOWN"
+    ]
+  },
+  "humanApprovalReceived": true,
+  "logSha256": "40210fe15352032c8675917101ab263328af4e2cfa9f41fab38fe27337188cf3",
+  "resultSha256": "aecf42e26659fc2318f6b32dc3fd30eaaf05eb73e99b8ace6b3c24c7d01ef1b5",
+  "journalSha256": "35e55a756cc1d29312bc7e4266b9f764af3e6cfb99d00aa5db6a59b2f3393cdc",
+  "scope": "One approved posting intent; completion could not be verified. Terminal unknown, no retry or artifact.",
+  "producerProvenance": "Checkout verified at launch in the execution session; the run log does not embed a Git SHA."
+}

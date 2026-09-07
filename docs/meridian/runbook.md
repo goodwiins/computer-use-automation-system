@@ -1,12 +1,12 @@
 # MERIDIAN demonstration runbook
 
-Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The integrated baseline for this follow-up is `dev` at `de262402555ef3a4747dafead5cc17f9c19af6c1`, through PR #65. PRs #61–#64 added open-share, member-update, hold and maintenance runtime handling; PR #65 added CLI decisions. Its 566-test head and merge gates passed, but subsequent hosted approval-safety findings require the follow-up documented here before new live acceptance. Passing source and offline gates did not create live acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
+Status: partial Task 9 checkpoint. Live acceptance remains **3/7**: sign-on, member inquiry and member record are accepted. Funds transfer, open share, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. The current service baseline is `dev` merge `27767cfacd8ea6076969ce714d2f74438a39fb70`, including approval safety, auxiliary-page cleanup, transfer eligibility, assistant-ui, discovery outcome classification and historical field structure. Reviewed head `e9ab9d5` and this merge share tree `ab3fe003`; 710 tests, both typechecks/build and head/merge CI passed. These source gates do not create write acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
 
-The user separately authorized a Vercel AI SDK conversational backend and [assistant-ui](https://www.assistant-ui.com/) component map in an isolated UI task. Local commit `c89f3d4` passed the checks summarized in [the requirement matrix](implementation-progress.md#integrated-demonstration-documentation-and-final-gates), but remains unpublished and absent from `dev`. A UI PR, hosted checks and integrated acceptance remain open. Final integration must keep the existing Express, shared `InvocationService`, server-approval, dashboard, authentication and operator-control boundaries.
+The user-selected Vercel AI SDK and assistant-ui stack merged through PR #84. Genuine final-head chat/API/dashboard balance and missing-member demos passed, including explicit status lookup and reconnect without duplicate runs; see [live evidence](live-evidence.md#merged-ui-exception-and-status-rehearsal). Express, shared `InvocationService`, server approval, authentication and operator boundaries remain authoritative. Final write acceptance remains open.
 
 ## Setup
 
-Use Node 22 and the repository's existing dependencies:
+Use Node 22.12+ (22.x), 24.x, or 26+ and the repository's existing dependencies:
 
 ```sh
 npm ci
@@ -180,7 +180,7 @@ cu serve --profile meridian
 
 Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The isolated assistant-ui/Vercel AI SDK work maps stock chat and tool-result components to the existing authoritative `runId`, status, result and evidence. Local commit `c89f3d4` passed the checks summarized in [the requirement matrix](implementation-progress.md#integrated-demonstration-documentation-and-final-gates), but remains unpublished and absent from `dev`. Until a UI PR, hosted checks and integrated acceptance exist, use the current dashboard/API behavior described here and do not claim a completed chat integration.
+The merged assistant-ui/Vercel AI SDK chat renders authoritative run results from the same API. Chat defaults to **Check run status** on connection and after a run: it can inspect an existing run without executing another capability. Choose **New operation** explicitly for a new request, including a deliberate repeat with identical arguments. Status uses the original signed run; it never retries an unknown posting. Separate server instances build isolated UI assets. Historical runs show recorded input/output field names and types with values withheld; files created before this metadata existed remain explicitly unavailable. Discovery business outcomes retain their category after service restart.
 
 ## Faults, restart and result classes
 
@@ -209,7 +209,7 @@ npm run validate
 git diff --check
 ```
 
-Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current runtime source gates through PR #54, offline fixtures and read checks are recorded in [the report](report.md) and [live evidence](live-evidence.md); PR #54 head workflow `33958769455` / producer `101286792115` and merge workflow `33960952350` / producer `101292625264` passed. None of these gates closes the four writes or raises live acceptance above 3/7.
+Final delivery also requires hosted checks on the same final head and separate verification of the merged `dev` SHA. Current runtime/UI gates and their earlier history are recorded in [the report](report.md) and [live evidence](live-evidence.md). PR #84 head workflow `34031468183` / producer `101481646089` and merge workflow `34033072454` passed. None of these gates closes the four writes or raises live acceptance above 3/7.
 
 Label every demonstration **live**, **offline fixture** or **recorded evidence**. Only a hosted, separately approved and verified operation can raise `3/7`. If the model alone is unavailable, the API/operator path may replay an already approved artifact with a new key for a genuinely new request. If target/browser access is unavailable, show sanitized recorded evidence and run the existing offline fixture only when a browser exists. Never switch modes during a live write or retry the preserved unknown posting.
 

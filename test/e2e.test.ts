@@ -4,8 +4,8 @@
 // The real-model run lives in /evidence/; this test pins the machinery.
 
 import type { Server } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import type OpenAI from 'openai';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
@@ -18,17 +18,9 @@ import { RunLogger } from '../src/evidence/logger.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface } from '../src/surface/guarded.js';
 
-// PF-M8: an ephemeral port — a fixed one collides with leaked workers and parallel checkouts.
-const server: Server = createApp().listen(0);
-await once(server, 'listening');
-const PORT = (server.address() as AddressInfo).port;
-const ORIGIN = `http://localhost:${PORT}`;
+let origin: string;
 
-const policy = Policy.parse({
-  allowedOrigins: [ORIGIN],
-  allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
-  riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
-});
+let policy: Policy;
 
 /** An OpenAI stand-in that plays a fixed sequence of tool calls. */
 function scriptedOpenAI(script: Array<{ name: string; args: Record<string, unknown> }>): OpenAI {
@@ -79,6 +71,17 @@ const SCRIPT = [
 ];
 
 describe('discovery → artifact → replay (scripted LLM)', () => {
+  let server: Server;
+  beforeAll(async () => {
+    server = createApp().listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    policy = Policy.parse({
+      allowedOrigins: [origin],
+      allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
+    });
+  });
   afterAll(() => new Promise((r) => server.close(r)));
 
   it(
@@ -90,7 +93,7 @@ describe('discovery → artifact → replay (scripted LLM)', () => {
       const surface = new GuardedSurface(new BrowserSurface(), policy, async () => false);
       const discovery = await runDiscovery(
         'Look up member 12345 and read their current savings balance',
-        `${ORIGIN}/`,
+        `${origin}/`,
         { memberId: '12345' },
         policy.allowedOrigins,
         { surface, logger, openai: scriptedOpenAI(SCRIPT), model: 'scripted', maxSteps: 10 },
@@ -106,7 +109,7 @@ describe('discovery → artifact → replay (scripted LLM)', () => {
           name: 'e2e-lookup',
           description: 'goal',
           goal: 'Look up member 12345 and read their current savings balance',
-          entryUrl: `${ORIGIN}/`,
+          entryUrl: `${origin}/`,
           params: { memberId: '12345' },
           sensitiveParams: [],
           allowedOrigins: policy.allowedOrigins,

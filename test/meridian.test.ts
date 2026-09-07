@@ -13,7 +13,6 @@ import { describePendingApproval, requestApproval, startApprovalServer } from '.
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { CapabilityArtifact, moneyCents, validOutput, validateParams, type OutputValue } from '../src/artifact/schema.js';
-import * as clients from '../src/agent/client.js';
 import { runDiscovery } from '../src/agent/loop.js';
 import * as runtime from '../src/runtime/run.js';
 import { recordArtifact } from '../src/artifact/recorder.js';
@@ -34,6 +33,7 @@ import express from 'express';
 import { chromium, type Page } from 'playwright';
 import { request as httpRequest, createServer } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { MockLanguageModelV3 } from 'ai/test';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'meridian-')); dirs.push(dir); return dir; };
@@ -194,6 +194,26 @@ it('blocks a profile mutation intent and dispatch after revalidation crosses the
 });
 
 describe('durable request identity', () => {
+  it('isolates caller keys and returns current records through updates and restart', () => {
+    const dir = temp(); let journal = new Journal(dir, key);
+    try {
+      const request = { member: 'fixture' };
+      const caller = journal.reserve('caller', 'shared', 'inquiry', '1.0.0', request);
+      const operator = journal.reserve('operator', 'shared', 'inquiry', '1.0.0', request);
+      expect(operator.runId).not.toBe(caller.runId);
+      expect(journal.lookup('caller', 'missing', request).existing).toBeUndefined();
+      journal.update(caller.runId, 'running');
+      expect(journal.lookup('caller', 'shared', request).existing?.state).toBe('running');
+      journal.update(caller.runId, 'success');
+      expect(journal.lookup('caller', 'shared', request).existing?.state).toBe('success');
+      journal.close(); journal = new Journal(dir, key);
+      expect(journal.reserve('caller', 'shared', 'inquiry', '1.0.0', request)).toMatchObject({ runId: caller.runId, state: 'success' });
+      expect(journal.lookup('operator', 'shared', request).existing).toMatchObject({ runId: operator.runId, state: 'interrupted' });
+      expect(() => journal.lookup('caller', 'shared', { member: 'changed' })).toThrow(/another request/);
+      expect(journal.records.size).toBe(2);
+    } finally { journal.close(); }
+  });
+
   it('deduplicates after restart, detects changed context, and never resumes dispatch', () => {
     const dir = temp(); let journal = new Journal(dir, key);
     const request = { args: { member: 'PRIVATE-MEMBER' }, role: 'TELLER' };
@@ -930,7 +950,10 @@ describe('MERIDIAN funds-transfer semantic checks', () => {
   });
 });
 
-it.each([false, true])('keeps funds outcome phase correct: intent=%s', async afterIntent => {
+it.each([
+  { afterIntent: false, startup: false }, { afterIntent: true, startup: false },
+  { afterIntent: false, startup: true }, { afterIntent: true, startup: true },
+])('keeps funds outcome phase correct: intent=$afterIntent startup=$startup', async ({ afterIntent, startup }) => {
   const artifact = applyMeridianContract(transferArtifact());
   artifact.status = 'approved';
   artifact.steps = artifact.steps.filter(step => step.id === 'post');
@@ -939,7 +962,7 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
   const surface: Surface = {
     mutationDispatched: false,
-    start: async () => {}, navigate: async () => {},
+    start: async () => { if (startup) { surface.mutationDispatched = afterIntent; throw new InsufficientFundsError(); } }, navigate: async () => {},
     currentUrl: () => `${origin}/members/9001`,
     frameUrls: () => [`${origin}/members/9001`],
     observe: async () => ({ url: `${origin}/members/9001`, title: '', frames: [] }),
@@ -960,7 +983,9 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
     : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
   expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toMatchObject(
     afterIntent ? { status: 'failure' } : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
-  expect(surface.click).toHaveBeenCalledOnce();
+  const outcomeEvents = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(event => event.event === 'replay.business_outcome');
+  expect(outcomeEvents).toEqual(afterIntent ? [] : [expect.objectContaining({ code: 'INSUFFICIENT_FUNDS' })]);
+  expect(surface.click).toHaveBeenCalledTimes(startup ? 0 : 1);
   expect(escalate).not.toHaveBeenCalled();
 
   surface.mutationDispatched = false;
@@ -977,8 +1002,8 @@ it.each([false, true])('keeps funds outcome phase correct: intent=%s', async aft
   expect(discovery).toMatchObject(afterIntent
     ? { status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' }
     : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
-  expect(create).toHaveBeenCalledOnce();
-  expect(surface.click).toHaveBeenCalledOnce();
+  expect(create).toHaveBeenCalledTimes(startup ? 0 : 1);
+  expect(surface.click).toHaveBeenCalledTimes(startup ? 0 : 1);
   expect(escalate).not.toHaveBeenCalled();
 });
 
@@ -1004,6 +1029,135 @@ describe('MERIDIAN guarded transfer path', () => {
     { shareId: '9001-B', type: 'S0001', balance: '0.00', status: 'OPEN' },
     { shareId: '9001-C', type: 'S0001', balance: '9.00', status: 'OPEN' },
   ];
+
+  it.each([
+    { entry: 'start', failure: '' },
+    { entry: 'navigate', failure: '' },
+    { entry: 'click', failure: '' },
+    { entry: 'start', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'wrong-member' },
+    { entry: 'navigate', failure: 'changed-frame' },
+    { entry: 'navigate', failure: 'closed-share' },
+    { entry: 'navigate', failure: 'duplicate-share' },
+    { entry: 'navigate', failure: 'insufficient' },
+    { entry: 'navigate', failure: 'stale-checkpoint' },
+    { entry: 'start', failure: 'origin-redirect' },
+    { entry: 'navigate', failure: 'origin-redirect' },
+    { entry: 'click', failure: 'origin-redirect' },
+    { entry: 'replay', failure: 'insufficient' },
+    { entry: 'discovery', failure: 'insufficient' },
+  ])('captures the real transfer member checkpoint after $entry (failure=$failure)', async ({ entry, failure }) => {
+    let transferVisits = 0;
+    let wrongMemberVisits = 0;
+    let posts = 0;
+    const rows = eligibleRows.map(row => ({ ...row }));
+    if (failure === 'closed-share') rows[0]!.status = 'CLOSED';
+    if (failure === 'insufficient') rows[0]!.balance = '0.99';
+    if (failure === 'duplicate-share') rows.push({ ...rows[0]! });
+    const shares = `<table><tr><th>Share</th><th>Type</th><th>Balance</th><th>Status</th></tr>${rows.map(row => `<tr><td>${row.shareId}</td><td>${row.type}</td><td>$${row.balance}</td><td>${row.status}</td></tr>`).join('')}</table>`;
+    let member = `<p>OPR SUPER1 | BR MAIN-001 | SID fixture-session</p><table><tbody><tr></tr><tr></tr><tr><td><table><tr><td>Member No.:</td><td>9001</td></tr></table>${shares}<a href="/members/9001/transfer">Transfer</a></td></tr></tbody></table>`;
+    const redirectApp = express();
+    redirectApp.get('/members/9001', (_req, res) => res.send(member));
+    redirectApp.get('/members/9001/transfer', (_req, res) => { transferVisits++; res.send('unexpected transfer'); });
+    redirectApp.post('*', (_req, res) => { posts++; res.send('unexpected post'); });
+    const redirectServer = redirectApp.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => redirectServer.once('listening', resolve));
+    const redirectOrigin = `http://127.0.0.1:${(redirectServer.address() as { port: number }).port}`;
+    const app = express();
+    app.get('/members', (_req, res) => res.send('<a href="/members/9001">9001 - Fixture Member</a>'));
+    app.get('/members/9001', (_req, res) => failure === 'origin-redirect' ? res.redirect(`${redirectOrigin}/members/9001`) : res.send(member));
+    app.get('/members/9999', (_req, res) => { wrongMemberVisits++; res.send(member); });
+    app.get('/members/9001/transfer', (_req, res) => { transferVisits++; res.send('<p>Transfer form</p>'); });
+    app.post('*', (_req, res) => { posts++; res.send('unexpected post'); });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const allowedOrigins = [localOrigin, redirectOrigin];
+    const localPolicy = Policy.parse({ ...policy, allowedOrigins });
+    const browser = new BrowserSurface({ allowedOrigins, profile });
+    const readTable = browser.readTable.bind(browser);
+    const extracted = vi.spyOn(browser, 'readTable').mockImplementation(async (...args) => {
+      const result = await readTable(...args);
+      if (failure === 'changed-frame') await browser.page.reload();
+      return result;
+    });
+    const beforeDispatch = vi.fn();
+    const events: Array<{ event: string; attempt: unknown }> = [];
+    const surface = new GuardedSurface(browser, localPolicy, async () => true, undefined, {
+      profile, session: new ControlSession(), deadline: Date.now() + 10000,
+      runId: randomUUID(), artifact: 'meridian-funds-transfer', version: '1.0.0',
+      operator: 'super1', role: 'SUPERVISOR', branch: 'MAIN-001', beforeDispatch,
+      transfer: { expected: request, memberTable: meridianTransferMemberTable },
+    }, (event, data) => events.push({ event, attempt: data.attempt }));
+    try {
+      if (entry === 'navigate' || entry === 'click') await surface.start(`${localOrigin}/members`);
+      const memberUrl = `${localOrigin}/members/${failure === 'wrong-member' ? '9999' : '9001'}`;
+      if (entry === 'replay' || entry === 'discovery') {
+        const params = { ...request, operator: 'SUPER1', password: 'secret', branch: 'MAIN-001' };
+        const logger = new RunLogger(entry, new Redactor(), temp(), true);
+        const escalate = vi.fn(async () => 'abort' as const);
+        const create = vi.fn();
+        const artifact = applyMeridianContract(transferArtifact());
+        artifact.status = 'approved';
+        artifact.app.entryUrl = memberUrl;
+        artifact.app.allowedOrigins = allowedOrigins;
+        const result = entry === 'replay'
+          ? await runReplay(artifact, params, { surface, logger, policy: localPolicy, escalate })
+          : await runDiscovery('transfer', memberUrl, params, allowedOrigins, {
+            surface, logger, escalate, model: 'fixture', maxSteps: 1,
+            openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
+          });
+        expect(result).toMatchObject({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS', detail: 'Insufficient available balance in the source share.' });
+        if (entry === 'replay') expect(JSON.parse(readFileSync(join(logger.dir, 'result.json'), 'utf8'))).toMatchObject({ status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
+        expect(extracted).toHaveBeenCalledOnce();
+        expect(escalate).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+        expect(transferVisits).toBe(0);
+      } else {
+        const visit = entry === 'start' ? surface.start(memberUrl) : entry === 'click'
+          ? surface.click({ description: 'Member', strategies: [{ kind: 'role', role: 'link', name: '9001 - Fixture Member' }] })
+          : surface.navigate(memberUrl);
+        if (failure === 'stale-checkpoint') {
+          await visit;
+          member = member.replace('<td>OPEN</td>', '<td>CLOSED</td>');
+          await expect(surface.navigate(memberUrl)).rejects.toThrow(/transfer/i);
+          await expect(surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] })).rejects.toThrow(/frame|eligibility/i);
+          expect(transferVisits).toBe(0);
+        } else if (failure) {
+          await expect(visit).rejects.toThrow(failure === 'insufficient' ? InsufficientFundsError : /member|bound|frame|transfer/i);
+          await expect(surface.navigate(`${localOrigin}/members/9001/transfer`)).rejects.toThrow(/eligibility|frame/i);
+          if (failure === 'origin-redirect') {
+            expect(surface.currentUrl()).toBe(`${redirectOrigin}/members/9001`);
+            expect(extracted).not.toHaveBeenCalled();
+            await expect(surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] })).rejects.toThrow(/eligibility|frame/i);
+          }
+          expect(transferVisits).toBe(0);
+        } else {
+          await visit;
+          expect(extracted).toHaveBeenCalledOnce();
+          await surface.navigate(memberUrl);
+          expect(extracted).toHaveBeenCalledTimes(2);
+          for (const suffix of ['', '/review', '/post']) {
+            await expect(surface.navigate(`${localOrigin}/members/9001/transfer${suffix}`)).rejects.toThrow(/eligibility|route/i);
+          }
+          await surface.click({ description: 'Transfer', strategies: [{ kind: 'role', role: 'link', name: 'Transfer' }] });
+          expect(transferVisits).toBe(1);
+          expect(surface.currentUrl()).toBe(`${localOrigin}/members/9001/transfer`);
+        }
+      }
+      expect(wrongMemberVisits).toBe(0);
+      expect(posts).toBe(0);
+      expect(beforeDispatch).not.toHaveBeenCalled();
+      expect(events.some(event => event.event === 'mutation.intent')).toBe(false);
+      expect(events.filter(event => event.event === 'action.end').map(event => event.attempt))
+        .toEqual(events.filter(event => event.event === 'action.start').map(event => event.attempt));
+    } finally {
+      await browser.close();
+      server.closeAllConnections();
+      redirectServer.closeAllConnections();
+      await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => redirectServer.close(() => resolve()))]);
+    }
+  });
 
   function transferHarness(rows = eligibleRows, facts = validReviewFacts, onAction?: (event: string, data: Record<string, unknown>) => void, expected = request) {
     let currentRows: Array<Record<string, string>> = rows;
@@ -2705,7 +2859,14 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
   const dir = temp(), artifactDir = temp(); const journal = new Journal(join(dir, 'journal'), key);
   const run = journal.reserve('operator', 'r', 'hold', '1.0.0', {});
   const service = new InvocationService(journal, policy, profile, dir, [], artifactDir);
-  const app = createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: 4180 });
+  let tool = 'run_status';
+  const chatModel = new MockLanguageModelV3({ doGenerate: async () => ({
+    content: [{ type: 'tool-call', toolCallId: 'call-1', toolName: tool, input: JSON.stringify({ runId: run.runId }) }],
+    finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+    usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+    warnings: [],
+  }) });
+  const app = createApp(service, { callerToken: 'c'.repeat(32), operatorToken: 'o'.repeat(32), port: 4180, chatModel });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const address = server.address() as { port: number };
   const request = (path: string, headers = {}, method = 'GET', body?: string) => new Promise<{ status: number; headers: Headers }>((resolve, reject) => {
@@ -2721,9 +2882,6 @@ it('authenticates API/evidence, denies caller decisions and rejects hostile orig
     expect((await request(`/runs/${run.runId}/decision`, caller, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'approve' }))).status).toBe(403);
     const fixture = CapabilityArtifact.parse(JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8')));
     vi.spyOn(service, 'catalog').mockReturnValue([{ id: fixture.id, version: fixture.version, description: fixture.description, parameters: fixture.parameters, outputs: fixture.outputs, tools: toToolSchema(fixture) }]);
-    let tool = 'run_status';
-    const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ function: { name: tool, arguments: JSON.stringify({ runId: run.runId }) } }] } }] }));
-    vi.spyOn(clients, 'makeLLMClient').mockReturnValue({ model: 'fixture', openai: { chat: { completions: { create } } } as unknown as ReturnType<typeof clients.makeLLMClient>['openai'] });
     const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
     const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
     expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
@@ -2962,9 +3120,12 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     const context = browser.page.context();
     const originalUrl = browser.currentUrl();
     const nativeNewPage = context.newPage.bind(context);
+    let priorPopup: Page | undefined;
     const pendingPopup = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      const popup = browser.page.waitForEvent('popup');
       const auxiliary = nativeNewPage();
       await browser.page.evaluate(() => { window.open('/members/9999'); });
+      priorPopup = await popup;
       return auxiliary;
     });
     try {
@@ -2974,23 +3135,25 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
     expect(browser.currentUrl()).toBe(originalUrl);
 
-    let triggerPopupOnClose = true;
     let cleanupPopup: Page | undefined;
-    const popupDuringClose = (opened: Page) => {
-      if (opened === browser.page || !triggerPopupOnClose) return;
-      triggerPopupOnClose = false;
+    const popupDuringClose = vi.spyOn(context, 'newPage').mockImplementationOnce(async () => {
+      if (!priorPopup?.isClosed()) throw new Error('Prior popup cleanup did not finish');
+      // A delayed event from a closed popup must not steal the auxiliary
+      // page's close hook. Bind it to newPage's result, not the next event.
+      (context as unknown as { emit(event: string, page: Page): boolean }).emit('page', priorPopup);
+      const opened = await nativeNewPage();
       const nativeClose = opened.close.bind(opened);
       vi.spyOn(opened, 'close').mockImplementationOnce(async () => {
         const popup = browser.page.waitForEvent('popup');
-        await browser.page.evaluate(() => { window.open('about:blank'); });
+        await browser.page.evaluate(() => { window.open('/members/9999'); });
         cleanupPopup = await popup;
         await nativeClose();
       });
-    };
-    context.on('page', popupDuringClose);
+      return opened;
+    });
     try {
       await expect(browser.readOnlyPage(`${localOrigin}/members/9001`, [meridianMemberContactTable], 3000)).rejects.toThrow(/popup/i);
-    } finally { context.off('page', popupDuringClose); }
+    } finally { popupDuringClose.mockRestore(); }
     expect(cleanupPopup?.isClosed()).toBe(true);
     expect(wrongMemberGets).toBe(0);
     expect(context.pages().map(page => page.url())).toEqual([originalUrl]);
@@ -3036,7 +3199,9 @@ it('reads fresh hold eligibility in the same browser context without invalidatin
     await expect(auxiliary.goto(`${localOrigin}/members/8888`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
     expect(forbiddenMemberGets).toBe(0);
     await browser.page.context().unroute('**/*');
-    await auxiliary.close();
+    await expect(auxiliary.goto(`${localOrigin}/members/8888`, { waitUntil: 'load', timeout: 1000 })).rejects.toThrow();
+    expect(forbiddenMemberGets).toBe(0);
+    // Browser shutdown below disposes the intentionally failed page close.
   } finally {
     for (const socket of upgradeSockets) socket.destroy();
     await browser.close();
@@ -3436,15 +3601,16 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
     ]) }));
     await page.goto(`http://127.0.0.1:${address.port}`); await page.locator('#credential').fill('o'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor({ state: 'visible' });
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
     expect(await page.locator('#role-label').isVisible()).toBe(true);
     expect(await page.locator('#credential').inputValue()).toBe(''); expect(await page.locator('#fields img').count()).toBe(0);
     expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 2.5 s' }).count()).toBe(1);
     expect(await page.locator('#runs article').filter({ hasText: 'Elapsed: 0 ms' }).count()).toBe(1);
     const historical = page.locator('#runs article').filter({ hasText: 'Historical sensitive values are unavailable.' });
     expect(await historical.count()).toBe(1); expect(await historical.getByText(/Elapsed:/).count()).toBe(0);
-    await page.route('**/chat', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: '<img src=x onerror=alert(1)>' }) }));
+    await page.route('**/api/chat', route => route.fulfill({ contentType: 'text/event-stream', headers: { 'x-vercel-ai-ui-message-stream': 'v1' }, body: [{ type: 'start', messageId: 'hostile' }, { type: 'text-start', id: 'text' }, { type: 'text-delta', id: 'text', delta: '<img src=x onerror=alert(1)>' }, { type: 'text-end', id: 'text' }, { type: 'finish' }].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n' }));
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
-    await page.locator('#messages p').first().waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
+    await page.getByText('<img src=x onerror=alert(1)>', { exact: true }).waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
     await page.locator('#credential').fill('c'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('status')?.textContent?.includes('Connected as caller'));

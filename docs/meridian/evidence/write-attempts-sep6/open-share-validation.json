@@ -1,0 +1,20 @@
+{
+  "runId": "592430d3-427b-4576-be6e-845792cfb8eb",
+  "producerSha": "476f8cacf57cc3e42b29bd3c2b4d721f297bf2ae",
+  "resultCode": "VALIDATION_REJECTED",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "business_outcome",
+    "attempts": 13,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "humanApprovalReceived": false,
+  "logSha256": "3d4ecd5b54e89a935c6dda3ff3add329c52254e7f8d0a5d1e4343f98deb24245",
+  "resultSha256": "2dd18234573c4796984f9014c1fdb93a2b4c487203a52dd43c4f17c2aa9d9414",
+  "journalSha256": "db10bc830193e851d725ad9e06b5431689999873233b29c53c4867ee05e6ee2f",
+  "scope": "Native opening review rejected the deposit before approval or mutation. Separate guarded inspection observed a 5.00 minimum. No write acceptance.",
+  "producerProvenance": "Checkout verified at launch in the execution session; the run log does not embed a Git SHA."
+}
