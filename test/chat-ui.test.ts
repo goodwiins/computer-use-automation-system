@@ -754,7 +754,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   expect(errors).toEqual([]);
 }, 20000);
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {
-  const { page, state, connect, errors, url } = await fixture();
+  const { page, state, service, connect, errors, url } = await fixture();
   await page.locator('#credential').fill('invalid');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await visible(page, '#status', 'Credential rejected');
@@ -774,18 +774,55 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   });
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
   await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
-  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#runs', runId);
-  const invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
-  expect(invokes).toHaveLength(2);
-  expect(invokes.map((r) => r.key)).toEqual([firstKey, firstKey]);
-  expect(state.invocations.size).toBe(1);
-  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, operator: 'SUPERVISOR' });
-  expect(await page.locator('#fields input').inputValue()).toBe('offline-member');
+  await page.getByText('The original request may still run or may have completed.', { exact: false }).waitFor();
   state.runs[0]!.state = 'success';
+  expect(state.runs[0]!.state).toBe('success');
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [capability, inquiry];
+  service.availability = () => fixtureAvailability('available', 'available');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#operator').selectOption('TELLER');
+  await page.locator('#fields input').fill('changed-member');
+  const invokeButton = page.getByRole('button', { name: 'Invoke capability', exact: true });
+  expect(await invokeButton.isDisabled()).toBe(true);
+  await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.waitForTimeout(100);
+  let invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(1);
+  await page.getByRole('button', { name: 'Start a separate request', exact: true }).click();
+  expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await invokeButton.isDisabled()).toBe(true);
+  await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.waitForTimeout(100);
+  expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('available', 'available');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await invokeButton.click();
+  await visible(page, '#runs', runId);
+  invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[0]?.key).toBe(firstKey);
+  expect(invokes[1]?.key).not.toBe(firstKey);
+  expect(state.invocations.size).toBe(2);
+  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, operator: 'SUPERVISOR' });
+  expect(invokes[1]?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
+  expect(invokes[1]?.body).toEqual({ args: { member: 'changed-member' }, operator: 'TELLER' });
+  expect(await page.locator('#fields input').inputValue()).toBe('changed-member');
   state.runs[0]!.evidence.push('../private.json');
   await page.locator('#refresh').click();
-  await page.getByText('Run details and evidence', { exact: true }).click();
+  await page.getByText('Run details and evidence', { exact: true }).first().click();
   await page.getByRole('list', { name: 'Recorded step timeline' }).waitFor();
   const requestsBefore = state.requests.length;
   await page.getByRole('button', { name: 'View ../private.json', exact: true }).click();

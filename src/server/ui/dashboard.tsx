@@ -44,6 +44,8 @@ export function CapabilityCatalog() {
   const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
   const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
   const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
+  const recoveryPending = recoveryAvailable && Boolean(attempt.current);
+  const ordinarySubmitBlocked = active.current || Boolean(acceptedId) || loading || Boolean(historyError) || recoveryPending;
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     active.current = true;
@@ -75,7 +77,7 @@ export function CapabilityCatalog() {
   }
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current || acceptedId || loading || historyError || selectedUnavailable) return;
+    if (!capability || ordinarySubmitBlocked || selectedUnavailable) return;
     const status = availability?.find(item => item.id === capability.id);
     if (meridianSession && (!status || status.state !== 'available')) {
       setError(status?.reason || 'Availability unavailable');
@@ -117,6 +119,12 @@ export function CapabilityCatalog() {
     const retained = attempt.current;
     if (!recoveryAvailable || !retained) return;
     await submitAttempt(retained, true);
+  }
+  function startSeparateRequest() {
+    if (busy || loading || historyError) return;
+    setRecoveryAvailable(false);
+    attempt.current = undefined;
+    setError('');
   }
   return (
     <section aria-labelledby="catalog-heading">
@@ -181,20 +189,27 @@ export function CapabilityCatalog() {
                 ))}
               </div>
               <OperatorSessionControls />
-              <button disabled={selectedUnavailable}>{busy ? 'Submitting…' : 'Invoke capability'}</button>
+              <button disabled={selectedUnavailable || ordinarySubmitBlocked}>{busy ? 'Submitting…' : 'Invoke capability'}</button>
             </fieldset>
           </form>
         )}
         {error && <p role="alert">{error}</p>}
         {recoveryAvailable && attempt.current && (
           <p>
-            Acceptance is unconfirmed. Look up the original request with its original request key. This lookup cannot start a new operation.
+            Acceptance is unconfirmed. The original request may still run or may have completed. Looking it up does not cancel it.
             <button
               type="button"
               disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}
               onClick={() => void recover()}
             >
               Look up original request
+            </button>
+            <button
+              type="button"
+              disabled={busy || loading || Boolean(historyError)}
+              onClick={startSeparateRequest}
+            >
+              Start a separate request
             </button>
           </p>
         )}
