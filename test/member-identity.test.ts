@@ -5,6 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Journal } from '../src/runtime/journal.js';
+import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
+import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import { InvocationService } from '../src/server/service.js';
 import { createApp } from '../src/server/http.js';
 import * as runtime from '../src/runtime/run.js';
@@ -15,6 +17,7 @@ import { Redactor } from '../src/safety/redact.js';
 import { recordedStructure } from '../src/evidence/safe-event.js';
 import type { ReplayResult } from '../src/replay/outcomes.js';
 import { principalKey, type Principal } from '../src/server/auth.js';
+import { createPostgresFixture } from './fixtures/postgres.js';
 
 const balance = 'meridian-member-record', inquiry = 'meridian-member-inquiry';
 const member = '9001', name = 'Verified Fixture Member';
@@ -84,6 +87,7 @@ it('serializes the exact-member read under the same caller and role, with no rep
   f.releases[0]!(shares);
   await vi.waitFor(() => expect(f.replay).toHaveBeenCalledTimes(2));
   const lookup = [...f.journal.records.values()][1]!;
+  expect(lookup.invocationScope).toBe('member-identity');
   expect(lookup.caller).toBe('operator');
   expect(f.create.mock.calls[1]![0]).toMatchObject({ artifact: inquiry,
     params: { searchMode: 'number', searchValue: member }, operator: { operator: 'SUPERVISOR', role: 'SUPERVISOR' } });
@@ -95,6 +99,14 @@ it('serializes the exact-member read under the same caller and role, with no rep
   f.releases[1]!(identity());
   const run = await f.settle(accepted.runId);
   expect(run.memberIdentity).toEqual({ status: 'verified', inquiryRunId: lookup.runId, memberNumber: member, name });
+  const completionState = f.service as unknown as {
+    completions: Set<Promise<void>>;
+    completionByRun: Map<string, Promise<void>>;
+  };
+  await vi.waitFor(() => {
+    expect(completionState.completions.size).toBe(0);
+    expect(completionState.completionByRun.size).toBe(0);
+  });
   expect(run.result).toEqual(publicShares);
   const privateLookup = await f.service.get('operator', lookup.runId);
   expect(privateLookup).toMatchObject({ inputs: undefined, result: { status: 'success' } });
@@ -129,11 +141,15 @@ it('keeps a subject owner on the linked member-identity inquiry', async () => {
   const child = await f.service.get(principal, lookup.runId);
   expect(child).toMatchObject({ inputs: undefined, result: { status: 'success' } });
   expect(child.result).not.toHaveProperty('outputs');
+  await expect(f.service.get({ ...principal, role: 'caller' }, lookup.runId)).rejects.toMatchObject({ status: 404 });
+  expect((await f.service.get({ ...principal, role: 'caller' }, runId)).memberIdentity)
+    .toEqual({ status: 'verified', memberNumber: member, name });
 });
 
 it('keeps an explicitly requested name inquiry public', async () => {
   const f = fixture();
   const accepted = await f.service.invoke('caller', inquiry, { searchMode: 'name', searchValue: name }, 'member-identity:client-controlled');
+  expect(f.journal.records.get(accepted.runId)?.invocationScope).toBe('public');
   f.releases[0]!(identity());
   await vi.waitFor(async () => expect((await f.service.get('caller', accepted.runId)).state).toBe('success'));
   expect(await f.service.get('caller', accepted.runId)).toMatchObject({
@@ -209,6 +225,18 @@ it('projects a real private child intervention and permits only exact abort or r
     request.on('error', reject);
     request.end(JSON.stringify({ approvalId, decision }));
   });
+  const lookupHttp = (token: string, key: string) => new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const request = httpRequest({
+      hostname: '127.0.0.1', port: address.port, path: '/api/chat/request', method: 'GET',
+      headers: { Host: '127.0.0.1:4180', Authorization: `Bearer ${token}`, 'Idempotency-Key': key },
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => resolve({ status: response.statusCode!, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
 
   const accepted = await f.service.invoke(principal, balance, { member }, 'private-http-parent', 'SUPERVISOR');
   await vi.waitFor(async () => {
@@ -218,6 +246,24 @@ it('projects a real private child intervention and permits only exact abort or r
   });
   const child = (await f.journal.list()).find(record => record.capability === inquiry)!;
   const pendingId = f.service.live.get(child.runId)!.approval.pending!.id;
+  const childArgs = { searchMode: 'number', searchValue: member };
+  await expect(f.service.invoke(principal, inquiry, childArgs, `member-identity:${accepted.runId}`, 'SUPERVISOR'))
+    .rejects.toMatchObject({ status: 404 });
+  await expect(f.service.invoke(principal, inquiry, { ...childArgs, searchValue: 'other-member' }, `member-identity:${accepted.runId}`, 'SUPERVISOR'))
+    .rejects.toMatchObject({ status: 404 });
+  await f.journal.bindReference(principalKey(principal), 'private-status-alias', child.runId);
+  await expect(f.service.invoke(principal, inquiry, childArgs, 'private-status-alias', 'SUPERVISOR'))
+    .rejects.toMatchObject({ status: 404 });
+  await expect(f.service.invoke(principal, inquiry, childArgs, `member-identity:${accepted.runId}`, 'SUPERVISOR', true))
+    .rejects.toMatchObject({ status: 404 });
+  await expect(f.service.invoke(principal, inquiry, childArgs, 'private-status-alias', 'SUPERVISOR', true))
+    .rejects.toMatchObject({ status: 404 });
+  expect(await lookupHttp(operatorToken, `member-identity:${accepted.runId}`)).toMatchObject({
+    status: 404, text: JSON.stringify({ error: 'No accepted request found' }),
+  });
+  expect(await lookupHttp(operatorToken, 'private-status-alias')).toMatchObject({
+    status: 404, text: JSON.stringify({ error: 'No accepted request found' }),
+  });
   const operatorView = await f.service.get(principal, child.runId);
   expect((await f.service.history(principal)).map(run => run.runId)).toEqual([accepted.runId, child.runId]);
   expect(operatorView).toMatchObject({ inputs: undefined, result: undefined });
@@ -230,8 +276,8 @@ it('projects a real private child intervention and permits only exact abort or r
     },
   });
   expect(operatorView.intervention).not.toHaveProperty('request.action');
-  expect(JSON.stringify([operatorView, await f.service.get({ ...principal, role: 'caller' }, child.runId)])).not.toMatch(/PRIVATE child|PRIVATE_CHILD/);
-  expect((await f.service.get({ ...principal, role: 'caller' }, child.runId)).intervention).toEqual({ kind: 'replay_stuck', awaitingOperator: true });
+  await expect(f.service.get({ ...principal, role: 'caller' }, child.runId)).rejects.toMatchObject({ status: 404 });
+  expect((await f.service.history({ ...principal, role: 'caller' })).map(run => run.runId)).not.toContain(child.runId);
 
   expect(await decideHttp(operatorToken, accepted.runId, pendingId, 'abort')).toMatchObject({ status: 409 });
   expect(await decideHttp(operatorToken, child.runId, randomUUID(), 'abort')).toMatchObject({ status: 409 });
@@ -285,15 +331,90 @@ it('withholds restored internal inquiry values on a fresh service', async () => 
   const restoredJournal = new Journal(join(f.dir, 'journal'), 'member-identity-fixture-hmac-key-32-characters');
   const restored = new InvocationService(restoredJournal, f.service.policy, f.service.profile, f.dir, [balance, inquiry]);
   try {
-    const run = await restored.get('caller', lookup.runId);
-    expect(run).toMatchObject({ inputs: undefined, result: { status: 'success', sensitiveValuesUnavailable: true, structure: { capability: inquiry } } });
-    expect(JSON.stringify(run)).not.toContain(member);
-    expect(JSON.stringify(run)).not.toContain(rawName);
-    expect(JSON.stringify(run)).not.toContain('9002');
-    expect((await restored.history('caller')).find(item => item.runId === lookup.runId)).toMatchObject({ inputs: undefined });
+    await expect(restored.get('caller', lookup.runId)).rejects.toMatchObject({ status: 404 });
+    expect((await restored.history('caller')).find(item => item.runId === lookup.runId)).toBeUndefined();
   } finally {
     await restored.close();
     restoredJournal.close();
+  }
+});
+
+it('keeps private scope and caller projections across a PostgreSQL service restart', async () => {
+  for (const role of ['TELLER', 'SUPERVISOR']) {
+    vi.stubEnv(`MERIDIAN_${role}_OPERATOR`, role);
+    vi.stubEnv(`MERIDIAN_${role}_PASSWORD`, 'fixture-password');
+  }
+  vi.stubEnv('MERIDIAN_BRANCH', 'MAIN-001');
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'member-identity-postgres-'));
+  let journal: PostgresJournal | undefined;
+  let restoredJournal: PostgresJournal | undefined;
+  let restoredPool: ReturnType<typeof database.openPool> | undefined;
+  const releases: ((result: ReplayResult) => void)[] = [];
+  try {
+    await PostgresJournal.migrate(database.pool);
+    const snapshot: JournalSnapshot = { records: [], aliases: [] };
+    const importId = randomUUID();
+    const digest = journalDigest('member-identity-fixture-hmac-key-32-characters', snapshot);
+    await PostgresJournal.importSnapshot(database.pool, 'member-identity-fixture-hmac-key-32-characters', snapshot, importId, digest);
+    journal = await PostgresJournal.open(database.pool, 'member-identity-fixture-hmac-key-32-characters', importId, digest);
+    const policy = Policy.parse({ allowedOrigins: ['https://web-sample.interface-hiring.com'],
+      allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' } });
+    const profile = loadProfile('meridian');
+    const service = new InvocationService(journal, policy, profile, dir, [balance, inquiry]);
+    const create = vi.spyOn(runtime, 'createRuntime').mockImplementation(() => ({
+      surface: { mutationDispatched: false }, promptRedactor: new Redactor(), close: async () => {},
+    }) as unknown as ReturnType<typeof runtime.createRuntime>);
+    vi.spyOn(runtime, 'executeReplay').mockImplementation(() => new Promise(resolve => { releases.push(resolve); }));
+    const principal = { subjectId: '11111111-1111-4111-8111-111111111111', role: 'operator' } as const;
+    const accepted = await service.invoke(principal, balance, { member }, 'pg-private-parent', 'SUPERVISOR');
+    releases[0]!(shares);
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    const child = (await journal!.list()).find(record => record.capability === inquiry)!;
+    expect(child.invocationScope).toBe('member-identity');
+    releases[1]!(identity());
+    await vi.waitFor(async () => expect((await service.get(principal, accepted.runId)).memberIdentity?.status).toBe('verified'));
+    expect((await service.get({ ...principal, role: 'caller' }, accepted.runId)).memberIdentity)
+      .toEqual({ status: 'verified', memberNumber: member, name });
+    await expect(service.get({ ...principal, role: 'caller' }, child.runId)).rejects.toMatchObject({ status: 404 });
+
+    const publicInquiry = await service.invoke({ ...principal, role: 'caller' }, inquiry,
+      { searchMode: 'number', searchValue: member }, 'member-identity:client-controlled-number');
+    expect((await journal!.get(publicInquiry.runId))?.invocationScope).toBe('public');
+    releases[2]!(identity());
+    await vi.waitFor(async () => expect((await service.get({ ...principal, role: 'caller' }, publicInquiry.runId)).state).toBe('success'));
+    await service.close();
+    await journal.close();
+    journal = undefined;
+
+    restoredPool = database.openPool();
+    const marker = await restoredPool.query<{ import_id: string; source_digest: string }>(
+      'SELECT import_id::text, source_digest FROM meridian_journal_authority WHERE singleton = true',
+    );
+    restoredJournal = await PostgresJournal.open(restoredPool, 'member-identity-fixture-hmac-key-32-characters', marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
+    const restored = new InvocationService(restoredJournal, policy, profile, dir, [balance, inquiry]);
+    expect(await restored.get({ ...principal, role: 'caller' }, accepted.runId)).toMatchObject({
+      memberIdentity: { status: 'unavailable' },
+    });
+    await expect(restored.get({ ...principal, role: 'caller' }, child.runId)).rejects.toMatchObject({ status: 404 });
+    const callerHistory = await restored.history({ ...principal, role: 'caller' });
+    expect(callerHistory.map(run => run.runId)).toContain(accepted.runId);
+    expect(callerHistory.map(run => run.runId)).toContain(publicInquiry.runId);
+    expect(callerHistory.map(run => run.runId)).not.toContain(child.runId);
+    expect((await restored.history(principal)).map(run => run.runId)).not.toContain(child.runId);
+    expect((await restored.get(principal, child.runId)).evidence).toEqual([]);
+    await restored.close();
+    await restoredJournal.close();
+    restoredJournal = undefined;
+    create.mockRestore();
+  } finally {
+    releases.forEach(resolve => resolve(failure));
+    await restoredJournal?.close().catch(() => {});
+    await journal?.close().catch(() => {});
+    if (restoredPool) await database.closePool(restoredPool);
+    await database.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -319,7 +440,8 @@ it.each([
   const authorizedViews = change === 'caller' ? (['operator'] as const) : (['caller', 'operator'] as const);
   for (const principal of authorizedViews) {
     expect((await f.service.history(principal)).map(run => run.runId)).not.toContain(lookup.runId);
-    expect(await f.service.get(principal, lookup.runId)).toMatchObject({ inputs: undefined, result: undefined });
+    if (principal === 'caller') await expect(f.service.get(principal, lookup.runId)).rejects.toMatchObject({ status: 404 });
+    else expect(await f.service.get(principal, lookup.runId)).toMatchObject({ inputs: undefined, result: undefined });
   }
   f.releases[1]!(result);
   if (change === 'withheld') f.service.live.delete(lookup.runId);
@@ -327,11 +449,15 @@ it.each([
   expect(run.memberIdentity).toEqual({ status: 'unavailable', inquiryRunId: lookup.runId });
   expect(run.result).toEqual(publicShares);
   for (const principal of authorizedViews) {
-    const child = await f.service.get(principal, lookup.runId);
     expect((await f.service.history(principal)).map(item => item.runId)).not.toContain(lookup.runId);
-    expect(child.inputs).toBeUndefined();
-    expect(child.result ? 'outputs' in child.result : false).toBe(false);
-    expect(JSON.stringify(child)).not.toContain(name);
+    if (principal === 'caller') {
+      await expect(f.service.get(principal, lookup.runId)).rejects.toMatchObject({ status: 404 });
+    } else {
+      const child = await f.service.get(principal, lookup.runId);
+      expect(child.inputs).toBeUndefined();
+      expect(child.result ? 'outputs' in child.result : false).toBe(false);
+      expect(JSON.stringify(child)).not.toContain(name);
+    }
   }
 });
 
@@ -354,7 +480,7 @@ it.each(['unauthorized', 'missing', 'failed balance', 'shutdown', 'unknown', 'lo
     const lookup = [...f.journal.records.values()].find(r => r.capability === inquiry)!;
     expect(lookup.state).toBe('failure');
     expect((await f.service.history('caller')).map(run => run.runId)).toEqual([runId]);
-    expect(await f.service.get('caller', lookup.runId)).toMatchObject({ state: 'failure', inputs: undefined, result: undefined });
+    await expect(f.service.get('caller', lookup.runId)).rejects.toMatchObject({ status: 404 });
   }
   expect(f.replay).toHaveBeenCalledTimes(1);
 });

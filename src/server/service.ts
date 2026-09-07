@@ -7,7 +7,7 @@ import { ControlSession } from '../escalation/session.js';
 import type { ReplayResult } from '../replay/outcomes.js';
 import { applyMeridianContract } from '../runtime/contracts.js';
 import { Approval, publicIntervention } from '../runtime/approval.js';
-import { RequestError, type RunJournal } from '../runtime/journal.js';
+import { RequestError, type JournalRecord, type RunJournal } from '../runtime/journal.js';
 import { type AppProfile } from '../runtime/profile.js';
 import { closeRuntime, createRuntime, executeReplay, operatorContext } from '../runtime/run.js';
 import { Redactor } from '../safety/redact.js';
@@ -25,11 +25,10 @@ export type CapabilityAvailability = {
 };
 export type MemberIdentity =
   | { status: 'pending' | 'unavailable'; inquiryRunId?: string }
-  | { status: 'verified'; inquiryRunId: string; memberNumber: string; name: string };
+  | { status: 'verified'; inquiryRunId?: string; memberNumber: string; name: string };
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
-  private readonly privateInvocations = new Set<string>();
   private active?: string;
   private closing = false;
   private admission: Promise<void> = Promise.resolve();
@@ -51,6 +50,16 @@ export class InvocationService {
   catalog(principal: Principal) {
     return [...this.artifacts.values()].filter(a => principalRole(principal) === 'operator' || this.allowlist.includes(a.id))
       .map(a => ({ id: a.id, version: a.version, description: a.description, parameters: a.parameters.filter(p => p.source !== 'server'), outputs: a.outputs, tools: toToolSchema(a) }));
+  }
+  private isPrivateRecord(record: Pick<JournalRecord, 'capability' | 'invocationScope'>): boolean {
+    return record.invocationScope === 'member-identity'
+      || (record.invocationScope === undefined && this.profile.appId === 'meridian' && record.capability === 'meridian-member-inquiry');
+  }
+  private projectMemberIdentity(principal: Principal, identity: MemberIdentity | undefined): MemberIdentity {
+    const current = identity ?? { status: 'unavailable' as const };
+    if (principalRole(principal) === 'operator') return current;
+    if (current.status === 'verified') return { status: current.status, memberNumber: current.memberNumber, name: current.name };
+    return { status: current.status };
   }
   private async persistState(runId: string, state: 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN') {
     try { await this.journal.update(runId, state); } catch { /* Preserve the original run outcome and let the journal fail closed. */ }
@@ -81,6 +90,17 @@ export class InvocationService {
     try { return await work(); }
     finally { release(); }
   }
+  private async lookupInvocation(owner: string, key: string, request: unknown, privateInvocation: boolean) {
+    try {
+      return await this.journal.lookup(owner, key, request);
+    } catch (error) {
+      if (!privateInvocation && error instanceof RequestError && error.status === 409) {
+        const existing = await this.journal.findRequest(owner, key);
+        if (existing && this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
+      }
+      throw error;
+    }
+  }
   async invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
     return this.withAdmission(() => this.invokeRun(principal, id, args, key, role, false, lookupOnly));
   }
@@ -106,8 +126,10 @@ export class InvocationService {
     // Secrets are excluded from identity. The configured operator/branch/role are included.
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
     const owner = principalKey(principal);
-    const { existing, identity } = await this.journal.lookup(owner, key, request);
+    const { existing, identity } = await this.lookupInvocation(owner, key, request, privateInvocation);
     if (existing) {
+      if (!privateInvocation && this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
+      if (privateInvocation && existing.invocationScope !== 'member-identity') throw new RequestError(409, 'Member identity inquiry is unavailable');
       if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
       return { runId: existing.runId, reused: true as const };
     }
@@ -119,7 +141,11 @@ export class InvocationService {
     if (await this.journal.hasUnknown(id))
       throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
-    const record = await this.journal.reserve(owner, key, id, artifact.version, request);
+    const record = await this.journal.reserve(owner, key, id, artifact.version, request, 'replay', {
+      invocationScope: privateInvocation ? 'member-identity' : 'public',
+    });
+    if (!privateInvocation && this.isPrivateRecord(record)) throw new RequestError(404, 'No accepted request found');
+    if (privateInvocation && record.invocationScope !== 'member-identity') throw new RequestError(409, 'Member identity inquiry is unavailable');
     this.active = record.runId;
     const session = new ControlSession();
     const approval = new Approval(session, () => {
@@ -128,7 +154,6 @@ export class InvocationService {
     }, Date.now() + 600_000);
     const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
     this.live.set(record.runId, state);
-    if (privateInvocation) this.privateInvocations.add(record.runId);
     const finish = () => { state.finished = Date.now(); this.active = undefined; };
     let intentRequested = false;
     try {
@@ -173,6 +198,11 @@ export class InvocationService {
       }).finally(() => { if (runtime.cleanupFailed) this.cleanupFailed = true; finish(); });
       this.completions.add(completion);
       this.completionByRun.set(record.runId, completion);
+      const forgetCompletion = () => {
+        this.completions.delete(completion);
+        if (this.completionByRun.get(record.runId) === completion) this.completionByRun.delete(record.runId);
+      };
+      void completion.then(forgetCompletion, forgetCompletion);
       if (this.profile.appId === 'meridian' && id === 'meridian-member-record') {
         state.memberIdentity = { status: 'pending' };
         // Only this fresh balance request can start its linked approved read. Status and key reuse cannot.
@@ -190,7 +220,7 @@ export class InvocationService {
             const rows = lookup?.result?.status === 'success' ? lookup.result.outputs.members : undefined;
             const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
             const inquiryRecord = await this.journal.get(inquiryRunId);
-            if (this.privateInvocations.has(inquiryRunId) && !inquiry.reused && inquiryRecord?.caller === record.caller
+            if (inquiryRecord?.invocationScope === 'member-identity' && !inquiry.reused && inquiryRecord.caller === record.caller
               && lookup?.state === 'success' && lookup.inputs.searchMode === 'number' && lookup.inputs.searchValue === member
               && row && typeof row === 'object' && row.memberNumber === member && typeof row.name === 'string' && row.name.trim()) {
               state.memberIdentity = { status: 'verified', inquiryRunId, memberNumber: member, name: row.name };
@@ -217,13 +247,14 @@ export class InvocationService {
     const record = await this.journal.get(runId);
     if (!record) throw new RequestError(404, 'Unknown run');
     if (!canAccessRun(principal, record.caller)) throw new RequestError(403, 'Run belongs to another principal');
-    const privateRun = this.privateInvocations.has(runId);
+    const privateRun = this.isPrivateRecord(record);
+    if (privateRun && principalRole(principal) !== 'operator') throw new RequestError(404, 'Unknown run');
     const live = this.live.get(runId);
     const dir = join(this.evidenceDir, runId);
-    const evidence = existsSync(dir) ? readdirSync(dir).filter(f => /^[a-zA-Z0-9._-]+\.(png|json|jsonl)$/.test(f)) : [];
+    const evidence = privateRun ? [] : existsSync(dir) ? readdirSync(dir).filter(f => /^[a-zA-Z0-9._-]+\.(png|json|jsonl)$/.test(f)) : [];
     let historyResult;
     let structure: RecordedStructure | undefined;
-    if (!live && existsSync(join(dir, 'result.json'))) {
+    if (!privateRun && !live && existsSync(join(dir, 'result.json'))) {
       try {
         const saved = JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8'));
         historyResult = this.profile.appId === 'meridian' ? persistedResult(saved) : saved;
@@ -232,7 +263,13 @@ export class InvocationService {
       } catch { historyResult = undefined; }
     }
     const result = live?.result;
-    const safeResult = privateRun ? result ? persistedResult(result) : historyResult
+    const privateResult = result ? persistedResult(result) : historyResult;
+    const withoutPrivateStructure = (value: typeof privateResult) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const { structure: _structure, ...rest } = value as Record<string, unknown>;
+      return rest;
+    };
+    const safeResult = privateRun ? withoutPrivateStructure(privateResult)
       : result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
     const intervention = privateRun
       ? principalRole(principal) === 'operator' && live?.approval.pending ? {
@@ -245,26 +282,28 @@ export class InvocationService {
             reason: 'Linked identity check needs operator attention.',
             url: '(unavailable)',
           },
-        } : principalRole(principal) === 'operator' ? undefined : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined
+        } : undefined
       : principalRole(principal) === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined;
-    return { runId, kind: record.kind, inputs: this.privateInvocations.has(runId) ? undefined : live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
-      state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
+    return { runId, kind: record.kind, inputs: privateRun ? undefined : live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
+      state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: privateRun ? undefined : live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       finishedAt: live?.finished ? new Date(live.finished).toISOString() : undefined,
       intervention,
       result: safeResult, structure: privateRun ? undefined : structure, sensitiveValuesUnavailable: !live || privateRun, evidence,
-      memberIdentity: record.capability === 'meridian-member-record' ? live?.memberIdentity ?? { status: 'unavailable' as const } : undefined };
+      memberIdentity: record.capability === 'meridian-member-record' ? this.projectMemberIdentity(principal, live?.memberIdentity) : undefined };
   }
   async history(principal: Principal) {
     const records = await this.journal.list();
     const operator = principalRole(principal) === 'operator';
     const visible = records.filter(record => canAccessRun(principal, record.caller)
-      && (!this.privateInvocations.has(record.runId) || (operator && this.live.get(record.runId)?.approval.pending)));
-    return Promise.all(visible.map(record => this.get(principal, record.runId)));
+      && (!this.isPrivateRecord(record) || operator));
+    const projected = await Promise.all(visible.map(record => this.get(principal, record.runId)));
+    return projected.filter((run, index) => !this.isPrivateRecord(visible[index]!) || Boolean(this.live.get(visible[index]!.runId)?.approval.pending));
   }
   async decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
     if (principalRole(principal) !== 'operator') throw new RequestError(403, 'Only operators can decide interventions');
     await this.get(principal, runId);
-    if (this.privateInvocations.has(runId) && decision === 'approve') throw new RequestError(409, 'Private identity inquiry approval is unavailable');
+    const record = await this.journal.get(runId);
+    if (record && this.isPrivateRecord(record) && decision === 'approve') throw new RequestError(409, 'Private identity inquiry approval is unavailable');
     const live = this.live.get(runId);
     if (!live) throw new RequestError(409, 'Run has no live intervention');
     live.approval.decide(id, decision);

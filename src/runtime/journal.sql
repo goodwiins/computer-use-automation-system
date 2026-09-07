@@ -18,8 +18,32 @@ CREATE TABLE IF NOT EXISTS meridian_runs (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   state text NOT NULL CHECK (state IN ('reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN')),
   dispatch_intent boolean NOT NULL DEFAULT false,
+  invocation_scope text NULL,
   CHECK (state <> 'dispatching' OR dispatch_intent)
 );
+
+ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS invocation_scope text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'meridian_runs'::regclass AND conname = 'meridian_runs_invocation_scope_check'
+  ) THEN
+    ALTER TABLE meridian_runs
+      ADD CONSTRAINT meridian_runs_invocation_scope_check
+      CHECK (invocation_scope IN ('public', 'member-identity'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'meridian_runs'::regclass AND conname = 'meridian_runs_member_identity_scope_check'
+  ) THEN
+    ALTER TABLE meridian_runs
+      ADD CONSTRAINT meridian_runs_member_identity_scope_check
+      CHECK (invocation_scope IS NULL OR invocation_scope <> 'member-identity'
+        OR (kind = 'replay' AND capability = 'meridian-member-inquiry'));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS meridian_run_requests (
   identity text PRIMARY KEY CHECK (identity ~ '^[a-f0-9]{64}$'),

@@ -7,9 +7,12 @@ const RecordSchema = z.object({
   kind: z.enum(['discovery', 'replay']).default('replay'),
   runId: z.string().uuid(), caller: z.string(), capability: z.string(), version: z.string(),
   request: z.string(), identity: z.string(), createdAt: z.string(),
+  invocationScope: z.enum(['public', 'member-identity']).optional(),
   state: z.enum(['reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN']),
 });
 export type JournalRecord = z.infer<typeof RecordSchema>;
+export type InvocationScope = 'public' | 'member-identity';
+export type ReservationOptions = { invocationScope?: InvocationScope };
 const AliasSchema = z.object({
   caller: z.string(), identity: z.string().regex(/^[a-f0-9]{64}$/),
   request: z.string().regex(/^[a-f0-9]{64}$/), runId: z.string().uuid(),
@@ -24,7 +27,8 @@ export interface RunJournal {
   hasUnknown(capability: string): Awaitable<boolean>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
   findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
-  reserve(caller: string, key: string, capability: string, version: string, request: unknown, kind?: 'discovery' | 'replay'): Awaitable<JournalRecord>;
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown,
+    kind?: 'discovery' | 'replay', options?: ReservationOptions): Awaitable<JournalRecord>;
   bindReference(caller: string, key: string, runId: string): Awaitable<void>;
   update(runId: string, state: JournalRecord['state']): Awaitable<void>;
   assertHealthy(): void;
@@ -65,6 +69,15 @@ export const AuthorityMarkerSchema = z.object({
 export type AuthorityMarker = z.infer<typeof AuthorityMarkerSchema>;
 
 function readEnvelope(path: string, key: string): unknown { return readSignedEnvelope(path, key); }
+
+export function validateReservationScope(capability: string, runKind: 'discovery' | 'replay', options?: ReservationOptions): InvocationScope {
+  const scope = options?.invocationScope ?? 'public';
+  if (scope !== 'public' && scope !== 'member-identity') throw new RequestError(400, 'Invalid invocation scope');
+  if (scope === 'member-identity' && (runKind !== 'replay' || capability !== 'meridian-member-inquiry')) {
+    throw new RequestError(400, 'Invalid invocation scope');
+  }
+  return scope;
+}
 
 /** Authenticate a snapshot without acquiring a lock or recovering/mutating it. */
 export function readJournalRecord(dir: string, runId: string, key: string): JournalRecord {
@@ -188,6 +201,7 @@ export class Journal implements RunJournal {
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
+    this.assertHealthy();
     validateIdempotencyKey(key);
     if (existsSync(join(this.dir, AUTHORITY_MARKER))) throw new Error('Filesystem journal is fenced for PostgreSQL cutover');
     const target = this.records.get(runId);
@@ -220,10 +234,13 @@ export class Journal implements RunJournal {
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');
     return { existing, identity, digest };
   }
-  reserve(caller: string, key: string, capability: string, version: string, request: unknown, kind: 'discovery' | 'replay' = 'replay') {
+  reserve(caller: string, key: string, capability: string, version: string, request: unknown,
+    kind: 'discovery' | 'replay' = 'replay', options?: ReservationOptions) {
+    const invocationScope = validateReservationScope(capability, kind, options);
     const { existing, identity, digest } = this.lookup(caller, key, request);
     if (existing) return existing;
-    const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity, createdAt: new Date().toISOString(), state: 'reserved' };
+    const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity,
+      invocationScope, createdAt: new Date().toISOString(), state: 'reserved' };
     this.persist(record); return record;
   }
   update(runId: string, state: JournalRecord['state']) {

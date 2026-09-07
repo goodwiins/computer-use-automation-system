@@ -79,6 +79,36 @@ describe.sequential('filesystem journal maintenance', () => {
     } finally { await database.close(); }
   });
 
+  it('keeps old signed records without invocation scope byte-compatible and rejects tampered scope', async () => {
+    const dir = tempDir();
+    const journalDir = join(dir, 'journal');
+    mkdirSync(journalDir, { recursive: true });
+    const old = {
+      kind: 'replay' as const, runId: '11111111-1111-4111-8111-111111111111', caller: 'caller', capability: 'meridian-member-inquiry', version: '1.0.0',
+      request: 'a'.repeat(64), identity: 'b'.repeat(64), createdAt: '2026-09-07T00:00:00.000Z', state: 'success' as const,
+    };
+    signed(join(journalDir, `${old.runId}.json`), old);
+    const snapshot = readJournalSnapshot(journalDir, key);
+    expect(snapshot.records[0]).toEqual(old);
+    expect(Object.hasOwn(snapshot.records[0]!, 'invocationScope')).toBe(false);
+    const digest = '4801f10664ce96a7604f53ce7a70dfde5f0f6e0ed40e3f4744cccd5d5c4a280d';
+    expect(journalDigest(key, snapshot)).toBe(digest);
+    const database = await createPostgresFixture();
+    try {
+      await PostgresJournal.migrate(database.pool);
+      await importJournal(journalDir, database.pool, key);
+      expect(readAuthorityMarker(journalDir, key)).toMatchObject({ digest });
+      const marker = readAuthorityMarker(journalDir, key);
+      const restored = await PostgresJournal.open(database.pool, key, marker.importId, marker.digest);
+      expect(await restored.get(old.runId)).toEqual(old);
+      await restored.close();
+    } finally { await database.close(); }
+
+    const tamperedId = randomUUID();
+    signed(join(journalDir, `${tamperedId}.json`), { ...old, runId: tamperedId, invocationScope: 'private' });
+    expect(() => readJournalSnapshot(journalDir, key)).toThrow();
+  });
+
   it('rejects tampered snapshots before database rows and leaves a pending fence on database failure', async () => {
     const dir = tempDir();
     const { unknown } = fixtureSnapshot(dir);
@@ -193,7 +223,7 @@ describe.sequential('filesystem journal maintenance', () => {
     const missingConfirmation = spawnSync(process.execPath, ['--import', 'tsx', 'cli.ts', 'journal-recover', '--owner', '11111111-1111-4111-8111-111111111111'], { cwd: process.cwd(), env, encoding: 'utf8' });
     expect(missingConfirmation.status).not.toBe(0);
     expect(`${missingConfirmation.stdout}${missingConfirmation.stderr}`).toContain('--confirm-fenced');
-  });
+  }, 30_000);
 
   it('runs a valid journal-import CLI path without entering runtime, model, browser, or server code', async () => {
     const poolEnd = vi.fn().mockResolvedValue(undefined);

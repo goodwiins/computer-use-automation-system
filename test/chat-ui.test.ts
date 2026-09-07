@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,9 +9,16 @@ import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai'
 import { afterEach, expect, it, vi } from 'vitest';
 import { createApp } from '../src/server/http.js';
 import { RequestError } from '../src/runtime/journal.js';
+import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
+import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import type { InvocationService } from '../src/server/service.js';
+import { InvocationService as RealInvocationService } from '../src/server/service.js';
+import * as runtime from '../src/runtime/run.js';
+import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
+import { Redactor } from '../src/safety/redact.js';
 import { chatRequest, observeGuardedChatStream } from '../src/server/ui/transport.js';
 import { publicIntervention } from '../src/runtime/approval.js';
+import { createPostgresFixture } from './fixtures/postgres.js';
 
 // All browser/model/run fixtures in this suite are offline. No target is invoked.
 const callerToken = 'c'.repeat(32),
@@ -550,6 +558,244 @@ async function visible(page: Page, selector: string, text: string) {
     { selector, text },
   );
 }
+
+it('recovers a real PostgreSQL chat action after the browser loses its response before tool output', async () => {
+  for (const role of ['TELLER', 'SUPERVISOR']) {
+    vi.stubEnv(`MERIDIAN_${role}_OPERATOR`, role);
+    vi.stubEnv(`MERIDIAN_${role}_PASSWORD`, 'fixture-password');
+  }
+  vi.stubEnv('MERIDIAN_BRANCH', 'MAIN-001');
+  const database = await createPostgresFixture();
+  const dir = mkdtempSync(join(tmpdir(), 'chat-postgres-ui-'));
+  const hmacKey = 'chat-postgres-ui-fixture-hmac-key-32-characters';
+  const snapshot: JournalSnapshot = { records: [], aliases: [] };
+  const importId = randomUUID();
+  const digest = journalDigest(hmacKey, snapshot);
+  await PostgresJournal.migrate(database.pool);
+  await PostgresJournal.importSnapshot(database.pool, hmacKey, snapshot, importId, digest);
+  const journal = await PostgresJournal.open(database.pool, hmacKey, importId, digest);
+  const profile = loadProfile('meridian');
+  const service = new RealInvocationService(journal, profilePolicy(profile), profile, dir,
+    ['meridian-member-inquiry'], 'artifacts');
+  const create = vi.spyOn(runtime, 'createRuntime').mockImplementation(() => ({
+    surface: { mutationDispatched: false, currentUrl: () => 'https://web-sample.interface-hiring.com/signon' },
+    promptRedactor: new Redactor(), close: async () => {},
+  }) as unknown as ReturnType<typeof runtime.createRuntime>);
+  const replay = vi.spyOn(runtime, 'executeReplay').mockResolvedValue({
+    status: 'success', outputs: { members: [{ memberNumber: '9001', name: 'Fixture Member' }] },
+    runId: 'offline-chat-fixture', evidenceDir: dir, recoveries: [],
+  });
+  const invoke = vi.spyOn(service, 'invoke');
+  const actionArgs = [
+    { searchMode: 'number', searchValue: '9001' },
+    { searchMode: 'number', searchValue: '9002' },
+  ] as const;
+  const state = {
+    requests: [] as { path: string; method?: string; key?: string; body?: unknown }[],
+    toolSchemas: [] as string[][],
+    actionToolCalls: 0,
+    statusToolCalls: 0,
+    actionIndex: 0,
+    dropResponse: true,
+    responseLossBeforeToolOutput: false,
+    responseHadToolInput: false,
+    responseWrites: [] as string[],
+    deliveredWrites: [] as string[],
+  };
+  let originalRunId = '';
+  const usage = {
+    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 1, text: 1, reasoning: 0 },
+  };
+  const model = new MockLanguageModelV3({
+    doGenerate: async () => ({
+      content: [{ type: 'tool-call' as const, toolCallId: 'route', toolName: 'route_request', input: JSON.stringify({ intent: 'invoke' }) }],
+      finishReason: { unified: 'tool-calls', raw: 'tool-calls' }, usage, warnings: [],
+    }),
+    doStream: async options => {
+      const names = Array.isArray(options.tools)
+        ? options.tools.map(tool => tool.name)
+        : Object.keys(options.tools ?? {});
+      state.toolSchemas.push(names);
+      if (names.includes('meridian-member-inquiry')) {
+        state.actionToolCalls++;
+        const args = actionArgs[state.actionIndex++] ?? actionArgs.at(-1)!;
+        return {
+          stream: simulateReadableStream({ chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'tool-call', toolCallId: `action-${state.actionToolCalls}`, toolName: 'meridian-member-inquiry', input: JSON.stringify(args) },
+            { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool-calls' }, usage },
+          ] }) as ReadableStream<never>,
+        };
+      }
+      if (names.includes('run_status')) {
+        state.statusToolCalls++;
+        return {
+          stream: simulateReadableStream({ chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'tool-call', toolCallId: `status-${state.statusToolCalls}`, toolName: 'run_status', input: JSON.stringify({ runId: originalRunId }) },
+            { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool-calls' }, usage },
+          ] }) as ReadableStream<never>,
+        };
+      }
+      return {
+        stream: simulateReadableStream({ chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'text-start', id: 'text' },
+          { type: 'text-delta', id: 'text', delta: 'Please provide a member number.' },
+          { type: 'text-end', id: 'text' },
+          { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
+        ] }) as ReadableStream<never>,
+      };
+    },
+  });
+  const server = createServer();
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
+  const port = address.port;
+  const app = createApp(service, { callerToken, operatorToken, port, chatModel: model });
+  server.on('request', (req, res) => {
+    const record = { path: req.url!, method: req.method, key: req.headers['idempotency-key'] as string | undefined, body: undefined as unknown };
+    state.requests.push(record);
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => { if (body) record.body = JSON.parse(body); });
+    if (req.url === '/api/chat' && state.dropResponse) {
+      const originalWrite = res.write.bind(res);
+      let observed = '';
+      res.write = ((chunk: unknown, ...args: unknown[]) => {
+        const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8');
+        observed += text;
+        state.responseWrites.push(text);
+        const toolOutput = observed.indexOf('"type":"tool-output-available"');
+        if (toolOutput >= 0) {
+          state.responseHadToolInput = observed.includes('"type":"tool-input-available"')
+            || observed.includes('"type":"tool-input-start"');
+          state.dropResponse = false;
+          state.responseLossBeforeToolOutput = true;
+          res.destroy();
+          return false;
+        }
+        state.deliveredWrites.push(text);
+        return (originalWrite as (...writeArgs: unknown[]) => boolean)(chunk, ...args);
+      }) as typeof res.write;
+    }
+    app(req, res);
+  });
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    if (message.type() === 'error' && !message.text().includes('Failed to load resource')) errors.push(message.text());
+  });
+  await page.route('**/*', route =>
+    new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort(),
+  );
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    await page.goto(url);
+    await page.locator('#credential').fill(callerToken);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.locator('#workspace').waitFor();
+    const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+    await message.fill('Find member 9001');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByText('Acceptance is unconfirmed.', { exact: false }).waitFor();
+    await vi.waitFor(async () => {
+      const records = await journal.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.state).toBe('success');
+    });
+    const firstRecord = (await journal.list())[0]!;
+    originalRunId = firstRecord.runId;
+    expect(state.responseLossBeforeToolOutput).toBe(true);
+    expect(state.responseHadToolInput).toBe(true);
+    expect(state.deliveredWrites.join('')).not.toContain('"type":"tool-output-available"');
+    const originalKey = state.requests.find(request => request.path === '/api/chat')?.key;
+    expect(originalKey).toBeTruthy();
+
+    // While the response is unresolved, chat is forced through the status-only model path.
+    await message.fill('Did that finish?');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.statusToolCalls).toBe(1));
+    expect(state.toolSchemas[1]).toEqual(['run_status']);
+    expect(state.actionToolCalls).toBe(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect((await journal.list())).toHaveLength(1);
+
+    // A direct submit is disabled by the same hold and dispatches no request.
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    const directSubmit = page.getByRole('button', { name: 'Invoke capability', exact: true });
+    expect(await directSubmit.isDisabled()).toBe(true);
+    const directPostsBefore = state.requests.filter(request => request.path.endsWith('/invoke')).length;
+    await page.locator('#invoke').evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.waitForTimeout(100);
+    expect(state.requests.filter(request => request.path.endsWith('/invoke'))).toHaveLength(directPostsBefore);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledTimes(1);
+
+    await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+    await page.getByText(`The original request was bound to run ${originalRunId}.`, { exact: false }).waitFor();
+    const lookup = state.requests.find(request => request.path === '/api/chat/request');
+    expect(lookup).toMatchObject({ method: 'GET', key: originalKey });
+    expect(lookup?.body).toBeUndefined();
+    await page.waitForFunction(() => !document.body.textContent?.includes('Chat messages are status-only while this action request is being confirmed'));
+
+    // Once the exact terminal run and available capability are confirmed, a later action gets a new key/run.
+    await message.fill('Find member 9002');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.actionToolCalls).toBe(2));
+    await vi.waitFor(async () => expect((await journal.list())).toHaveLength(2));
+    const actionPosts = state.requests.filter(request => request.path === '/api/chat' && (request.body as { intent?: string } | undefined)?.intent === 'auto');
+    expect(actionPosts).toHaveLength(2);
+    expect(actionPosts[1]?.key).not.toBe(originalKey);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(replay).toHaveBeenCalledTimes(2);
+
+    // Missing/malformed recovery is fixed and model-free; a quarantined local inquiry cannot replay.
+    const missing = await fetch(`${url}/api/chat/request`, { headers: { Authorization: `Bearer ${callerToken}`, 'Idempotency-Key': 'missing-chat-key' } });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'No accepted request found' });
+    const malformed = await fetch(`${url}/api/chat/request`, { headers: { Authorization: `Bearer ${callerToken}`, 'Idempotency-Key': 'bad key' } });
+    expect(malformed.status).toBe(400);
+    const unknown = await journal.reserve('caller', 'local-inquiry-unknown', 'meridian-member-inquiry', '1.0.0',
+      { searchMode: 'number', searchValue: '9010' }, 'replay', { invocationScope: 'public' });
+    await journal.update(unknown.runId, 'dispatching');
+    await journal.update(unknown.runId, 'failure');
+    const beforeUnknown = { invokes: invoke.mock.calls.length, creates: create.mock.calls.length, replays: replay.mock.calls.length };
+    const blocked = await fetch(`${url}/capabilities/meridian-member-inquiry/invoke`, {
+      method: 'POST', headers: { Authorization: `Bearer ${callerToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'local-inquiry-fresh' },
+      body: JSON.stringify({ args: { searchMode: 'number', searchValue: '9011' } }),
+    });
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toEqual({ error: 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.' });
+    expect(invoke).toHaveBeenCalledTimes(beforeUnknown.invokes + 1);
+    expect(create).toHaveBeenCalledTimes(beforeUnknown.creates);
+    expect(replay).toHaveBeenCalledTimes(beforeUnknown.replays);
+    expect(errors).toEqual([]);
+  } finally {
+    await browser.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await service.close().catch(() => {});
+    await journal.close().catch(() => {});
+    await database.close();
+    create.mockRestore();
+    replay.mockRestore();
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60000);
 it('keeps the Next.js chat focused and preserves a draft when Activity is toggled', async () => {
   const { page, errors } = await fixture(true);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();

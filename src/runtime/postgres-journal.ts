@@ -7,9 +7,12 @@ import {
   type JournalLookup,
   type JournalRecord,
   type JournalSnapshot,
+  type InvocationScope,
+  type ReservationOptions,
   type RequestAlias,
   RequestError,
   type RunJournal,
+  validateReservationScope,
   validateIdempotencyKey,
 } from './journal.js';
 
@@ -27,6 +30,7 @@ const record = z.object({
   request: hash,
   identity: hash,
   createdAt: z.string(),
+  invocationScope: z.enum(['public', 'member-identity']).optional(),
   state,
 }).strict();
 const alias = z.object({ caller: safeText, identity: hash, request: hash, runId: uuid }).strict();
@@ -41,6 +45,7 @@ type RunRow = {
   request: string;
   identity: string;
   created_at: Date | string;
+  invocation_scope: InvocationScope | null;
   state: JournalRecord['state'];
   dispatch_intent: boolean;
 };
@@ -99,7 +104,7 @@ function recordFromRow(row: RunRow): JournalRecord {
   const date = row.created_at instanceof Date ? row.created_at : new Date(row.created_at);
   if (!Number.isFinite(date.getTime())) throw new Error('Journal row validation failed');
   try {
-    return record.parse({
+    const value = {
       kind: row.kind,
       runId: row.run_id,
       caller: row.caller,
@@ -109,7 +114,9 @@ function recordFromRow(row: RunRow): JournalRecord {
       identity: row.identity,
       createdAt: date.toISOString(),
       state: row.state,
-    });
+      ...(row.invocation_scope === null || row.invocation_scope === undefined ? {} : { invocationScope: row.invocation_scope }),
+    };
+    return record.parse(value);
   } catch { throw new Error('Journal row validation failed'); }
 }
 
@@ -130,11 +137,14 @@ async function staticTransaction<T>(pool: Pool, work: (client: PoolClient) => Pr
   try {
     try { await client.query('BEGIN'); }
     catch { discard = true; throw new Error('Journal operation failed'); }
+    let commitAttempted = false;
     try {
       const result = await work(client);
+      commitAttempted = true;
       await client.query('COMMIT');
       return result;
     } catch (error) {
+      if (commitAttempted) discard = true;
       try { await client.query('ROLLBACK'); }
       catch { discard = true; }
       if (error instanceof RequestError) throw error;
@@ -173,6 +183,8 @@ export class PostgresJournal implements RunJournal {
       records.set(item.runId, item);
       identities.add(item.identity);
       dateValue(item.createdAt);
+      validateReservationScope(item.capability, item.kind,
+        item.invocationScope === undefined ? undefined : { invocationScope: item.invocationScope });
     }
     for (const item of parsed.aliases) {
       const target = records.get(item.runId);
@@ -209,10 +221,10 @@ export class PostgresJournal implements RunJournal {
         try {
           await client.query(
             `INSERT INTO meridian_runs
-              (run_id, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              (run_id, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent, invocation_scope)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
             [item.runId, item.kind, item.caller, item.capability, item.version, item.request, item.identity,
-              dateValue(item.createdAt), importedState, dispatchIntent],
+              dateValue(item.createdAt), importedState, dispatchIntent, item.invocationScope ?? null],
           );
           await client.query(
             `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
@@ -296,7 +308,7 @@ export class PostgresJournal implements RunJournal {
     return this.transaction(async client => {
       await this.lockAuthority(client);
       const result = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs WHERE run_id = $1`,
         [id],
       );
@@ -309,7 +321,7 @@ export class PostgresJournal implements RunJournal {
     return this.transaction(async client => {
       await this.lockAuthority(client);
       const result = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs ORDER BY created_at, run_id`,
       );
       return result.rows.map(recordFromRow);
@@ -355,13 +367,14 @@ export class PostgresJournal implements RunJournal {
   }
 
   async reserve(caller: string, key: string, capability: string, version: string, request: unknown,
-    runKind: 'discovery' | 'replay' = 'replay'): Promise<JournalRecord> {
+    runKind: 'discovery' | 'replay' = 'replay', options?: ReservationOptions): Promise<JournalRecord> {
     this.assertHealthy();
     const principal = validateCaller(caller);
     validateIdempotencyKey(key);
     const name = validateCapability(capability);
     const release = validateVersion(version);
     const requestedKind = parse(kind, runKind, 'Invalid journal kind');
+    const invocationScope = validateReservationScope(name, requestedKind, options);
     const identity = safeDigest(this.key, { caller: principal, key });
     const digest = safeDigest(this.key, request);
     return this.transaction(async client => {
@@ -386,10 +399,10 @@ export class PostgresJournal implements RunJournal {
       try {
         inserted = await client.query<RunRow>(
           `INSERT INTO meridian_runs
-            (run_id, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'reserved', false)
-           RETURNING run_id::text, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent`,
-          [runId, requestedKind, principal, name, release, digest, identity, createdAt],
+            (run_id, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent, invocation_scope)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'reserved', false, $9)
+           RETURNING run_id::text, kind, caller, capability, version, request, identity, created_at, invocation_scope, state, dispatch_intent`,
+          [runId, requestedKind, principal, name, release, digest, identity, createdAt, invocationScope],
         );
         await client.query(
           `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
@@ -416,15 +429,19 @@ export class PostgresJournal implements RunJournal {
     await this.transaction(async client => {
       await this.lockAuthority(client);
       const target = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs WHERE run_id = $1 FOR UPDATE`,
         [id],
       );
       if (!target.rows[0] || target.rows[0].caller !== principal) throw new RequestError(403, 'Run belongs to another principal');
-      const existing = await client.query<{ identity: string }>(
-        `SELECT identity FROM meridian_run_requests WHERE identity = $1`, [identity],
+      const existing = await client.query<{ identity: string; caller: string; request: string; run_id: string; is_alias: boolean }>(
+        `SELECT identity, caller, request, run_id::text, is_alias FROM meridian_run_requests WHERE identity = $1`, [identity],
       );
-      if (existing.rows[0]) throw requestConflict('Idempotency key already identifies another request');
+      if (existing.rows[0]) {
+        if (existing.rows[0].is_alias && existing.rows[0].caller === principal
+          && existing.rows[0].run_id === id && existing.rows[0].request === target.rows[0].request) return;
+        throw requestConflict('Idempotency key already identifies another request');
+      }
       try {
         await client.query(
           `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
@@ -445,7 +462,7 @@ export class PostgresJournal implements RunJournal {
     await this.transaction(async client => {
       await this.lockAuthority(client);
       const found = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs WHERE run_id = $1 FOR UPDATE`,
         [id],
       );
@@ -495,7 +512,7 @@ export class PostgresJournal implements RunJournal {
 
   private async findRequestWithIdentity(client: PoolClient, caller: string, identity: string): Promise<JournalRecord | undefined> {
     const result = await client.query<RunRow>(
-      `SELECT r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request, r.identity, r.created_at, r.state, r.dispatch_intent
+      `SELECT r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
        FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
        WHERE q.identity = $1 AND q.caller = $2`,
       [identity, caller],

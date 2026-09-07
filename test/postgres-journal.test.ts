@@ -56,7 +56,9 @@ describe.sequential('PostgresJournal', () => {
     const request = { amount: '1.00' };
     const original = await journal.reserve(caller, 'direct-key', 'read-only', version, request);
     await journal.update(original.runId, 'success');
+    await expect(journal.bindReference(caller, 'direct-key', original.runId)).rejects.toMatchObject({ status: 409 });
     await journal.bindReference(caller, 'status-key', original.runId);
+    await expect(journal.bindReference(caller, 'status-key', original.runId)).resolves.toBeUndefined();
     expect((await journal.findRequest(caller, 'status-key'))?.runId).toBe(original.runId);
     expect(await journal.findRequest('other-caller', 'status-key')).toBeUndefined();
     await expect(journal.bindReference('other-caller', 'forged-key', original.runId)).rejects.toMatchObject({ status: 403 });
@@ -70,6 +72,77 @@ describe.sequential('PostgresJournal', () => {
     expect((await journal.lookup(caller, 'status-key', request)).existing?.runId).toBe(original.runId);
     expect((await journal.get(original.runId))?.state).toBe('success');
     await journal.close();
+  });
+
+  it('persists explicit invocation scope and leaves legacy NULL scope unclassified', async () => {
+    const publicRun = await journal.reserve(caller, 'public-member-key', 'meridian-member-inquiry', version,
+      { searchMode: 'number', searchValue: '42' }, 'replay', { invocationScope: 'public' });
+    await journal.update(publicRun.runId, 'success');
+    const privateRun = await journal.reserve(caller, 'private-member-key', 'meridian-member-inquiry', version,
+      { searchMode: 'number', searchValue: '43' }, 'replay', { invocationScope: 'member-identity' });
+    expect((await journal.get(publicRun.runId))?.invocationScope).toBe('public');
+    expect((await journal.get(privateRun.runId))?.invocationScope).toBe('member-identity');
+    await journal.update(privateRun.runId, 'success');
+    await database.pool.query('UPDATE meridian_runs SET invocation_scope = NULL WHERE run_id = $1', [privateRun.runId]);
+    const legacy = await journal.get(privateRun.runId);
+    expect(legacy).not.toHaveProperty('invocationScope');
+    const rows = await database.pool.query<{ invocation_scope: string | null }>(
+      'SELECT invocation_scope FROM meridian_runs WHERE run_id IN ($1, $2) ORDER BY run_id',
+      [publicRun.runId, privateRun.runId],
+    );
+    expect(rows.rows.map(row => row.invocation_scope).sort()).toEqual([null, 'public']);
+  });
+
+  it('adds the nullable scope column to an existing journal and keeps migration idempotent', async () => {
+    await database.pool.query('ALTER TABLE meridian_runs DROP COLUMN invocation_scope CASCADE');
+    const before = await database.pool.query<{ count: string }>(
+      `SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'meridian_runs' AND column_name = 'invocation_scope'`,
+    );
+    expect(before.rows[0]?.count).toBe('0');
+    await expect(PostgresJournal.migrate(database.pool)).resolves.toBeUndefined();
+    await expect(PostgresJournal.migrate(database.pool)).resolves.toBeUndefined();
+    const after = await database.pool.query<{ is_nullable: string }>(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'meridian_runs' AND column_name = 'invocation_scope'`,
+    );
+    expect(after.rows).toEqual([{ is_nullable: 'YES' }]);
+  });
+
+  it('rejects private scope outside the internal member inquiry capability', async () => {
+    await expect(journal.reserve(caller, 'bad-private-scope', capability, version, {}, 'replay', {
+      invocationScope: 'member-identity',
+    })).rejects.toMatchObject({ status: 400 });
+    await expect(database.pool.query(
+      `INSERT INTO meridian_runs
+        (run_id, kind, caller, capability, version, request, identity, state, invocation_scope)
+       VALUES ($1, 'replay', 'caller', 'other-capability', '1.0.0', $2, $3, 'success', 'member-identity')`,
+      [randomUUID(), 'a'.repeat(64), 'b'.repeat(64)],
+    )).rejects.toThrow();
+  });
+
+  it('discards a PostgreSQL client after an uncertain static transaction commit', async () => {
+    const pool = database.pool;
+    const originalConnect = pool.connect.bind(pool);
+    let releasedWithDiscard: boolean | undefined;
+    (pool as Pool & { connect: typeof pool.connect }).connect = (async () => {
+      const client = await originalConnect();
+      const originalRelease = client.release.bind(client);
+      client.release = (discard?: boolean) => { releasedWithDiscard = discard; originalRelease(discard); };
+      const originalQuery = client.query.bind(client);
+      client.query = (async (text: unknown, ...args: unknown[]) => {
+        const result = await (originalQuery as (...queryArgs: unknown[]) => Promise<unknown>)(text, ...args);
+        if (typeof text === 'string' && text.trim().toUpperCase() === 'COMMIT') throw new Error('lost acknowledgement');
+        return result;
+      }) as typeof client.query;
+      return client;
+    }) as typeof pool.connect;
+    try {
+      await expect(PostgresJournal.migrate(pool)).rejects.toThrow(/Journal operation failed/);
+      expect(releasedWithDiscard).toBe(true);
+    } finally { pool.connect = originalConnect; }
   });
 
   it('recovers by exact owner, fences the stale instance, and permits a new owner', async () => {

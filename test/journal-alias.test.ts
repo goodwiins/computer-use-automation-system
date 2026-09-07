@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, statSync, fsyncSync, fstatSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ it('persists caller-scoped aliases without changing terminal evidence and reject
     const path = join(dir, `${original.runId}.json`);
     const before = readFileSync(path, 'utf8');
     journal.bindReference('caller', 'B', original.runId);
+    expect(() => journal.bindReference('caller', 'B', original.runId)).not.toThrow();
     expect(journal.findRequest('operator', 'B')).toBeUndefined();
     expect(() => journal.bindReference('operator', 'forged', original.runId)).toThrow('another principal');
     expect(journal.lookup('caller', 'B', request).existing?.runId).toBe(original.runId);
@@ -54,6 +56,15 @@ it('does not claim a binding when persistence fails before the alias is written'
     expect(journal.findRequest('caller', 'B')).toBeUndefined();
     expect(readFileSync(path, 'utf8')).toBe(before);
     expect(journal.records.size).toBe(1);
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('rejects bindReference through the initial health gate after close', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-alias-closed-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    journal.close();
+    expect(() => journal.bindReference('caller', 'closed-alias', randomUUID())).toThrow('Journal is closed');
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
