@@ -2,7 +2,7 @@
 
 import './csp';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { authenticatedFetch, RunProvider, useRuns, type Session } from './session';
+import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, type Session } from './session';
 import { Chat } from './chat';
 import { CapabilityCatalog, RunHistory } from './dashboard';
 import { ReviewDialog } from './review';
@@ -36,7 +36,7 @@ export default function App() {
       .then(data => {
         if (typeof data?.localTellerLogin?.teller === 'string' && typeof data.localTellerLogin.supervisor === 'string') {
           setLocalLogin(data.localTellerLogin);
-          setStatus('Choose a teller to connect. Supervisor access requires an operator API credential.');
+          setStatus('Choose caller or operator dashboard access. Local caller access is credential-free; operator dashboard access requires an API credential.');
         }
       }).catch(() => {}); // Keep credential login available when local login cannot be discovered.
     return () => controller.abort();
@@ -58,11 +58,31 @@ export default function App() {
       }
       const response = await authenticatedFetch(token, '/capabilities');
       if (!response.ok) throw new Error('Credential rejected. Connect with an authorized credential.');
-      const data = await response.json();
+      let data: unknown;
+      try {
+        data = await response.json();
+      } catch {
+        throw new CapabilityAuthorityError();
+      }
       if (attempt !== loginAttempt.current) return;
-      if (localLogin && data.principal !== (loginRole === 'teller' ? 'caller' : 'operator')) throw new Error('Supervisor access requires an operator API credential.');
-      setSession({ token, principal: data.principal, capabilities: data.capabilities, availability: Array.isArray(data.availability) ? data.availability : undefined });
-      setStatus(`Connected as ${data.principal}. Credentials remain in page memory.`);
+      const authority = validateCapabilityAuthority(data);
+      if (localLogin && authority.principal !== (loginRole === 'teller' ? 'caller' : 'operator')) {
+        throw new Error('Operator dashboard requires an operator API credential. This credential does not verify target SUPERVISOR access.');
+      }
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('Invalid capability catalog. Reconnect with an authorized credential.');
+      }
+      const metadata = data as { capabilities?: unknown; availability?: unknown };
+      if (!Array.isArray(metadata.capabilities)) {
+        throw new Error('Invalid capability catalog. Reconnect with an authorized credential.');
+      }
+      setSession({
+        token,
+        ...authority,
+        capabilities: metadata.capabilities as Session['capabilities'],
+        availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
+      });
+      setStatus(`Connected as ${authority.principal}. Credentials remain in page memory.`);
     } catch (e) {
       if (attempt === loginAttempt.current) setStatus(e instanceof Error ? e.message : 'Connection failed.');
     } finally {
@@ -81,21 +101,23 @@ export default function App() {
         <section aria-label="Session" className="session">
           <form ref={loginForm} id="login" onSubmit={connect} autoComplete="off">
             {localLogin && <>
-              <label htmlFor="login-role">Operator</label>
+              <label htmlFor="login-role">Dashboard access</label>
               <select id="login-role" value={loginRole} disabled={connecting} onChange={event => {
                 const role = event.target.value;
                 disconnect();
                 setLoginRole(role);
               }}>
-                <option value="teller">{localLogin.teller} · Teller</option>
-                <option value="operator">{localLogin.supervisor} · Supervisor</option>
+                <option value="teller">{localLogin.teller} · Caller dashboard</option>
+                <option value="operator">{localLogin.supervisor} · Operator dashboard</option>
               </select>
             </>}
-            {(!localLogin || loginRole === 'operator') && <label htmlFor="credential">{localLogin ? 'Operator API credential' : 'API credential'}</label>}
+            {(!localLogin || loginRole === 'operator') && <label htmlFor="credential">{localLogin ? 'Operator API credential (dashboard controls only)' : 'API credential'}</label>}
+            {localLogin && loginRole === 'operator' && <p className="muted">This credential grants operator dashboard controls; it does not authenticate a target SUPERVISOR session.</p>}
             <div className="login-row">
               {(!localLogin || loginRole === 'operator') && <input
                 id="credential"
                 name="credential"
+                aria-label={localLogin ? 'Operator API credential' : undefined}
                 type="password"
                 disabled={preview}
                 required
@@ -113,6 +135,7 @@ export default function App() {
           <p id="status" role="status">
             {status}
           </p>
+          {session && <AuthoritySummary session={session} />}
         </section>
         <p className="sidebar-footer">Meridian Core<br /><span>Private local workspace</span></p>
       </aside>
@@ -129,8 +152,8 @@ export default function App() {
 
 function Workspace() {
   const [activityOpen, setActivityOpen] = useState(false);
-  const { runs } = useRuns();
-  const awaitingReview = runs.filter(run => run.intervention).length;
+  const { runs, session } = useRuns();
+  const awaitingReview = session.principal === 'operator' ? runs.filter(hasCurrentPublicIntervention).length : 0;
   return <div id="workspace" data-activity-open={activityOpen}>
     <div className="workspace-header">
       <span>Assistant</span>
@@ -140,9 +163,26 @@ function Workspace() {
     </div>
     <Chat />
     <aside id="activity-panel" className="activity-panel" aria-label="Activity" hidden={!activityOpen}>
-      <CapabilityCatalog />
-      <RunHistory />
+      {session.principal === 'operator' ? <>
+        <RunHistory />
+        <CapabilityCatalog />
+      </> : <>
+        <CapabilityCatalog />
+        <RunHistory />
+      </>}
     </aside>
     <ReviewDialog />
   </div>;
+}
+
+function AuthoritySummary({ session }: { session: Session }) {
+  return (
+    <section className="authority-summary" aria-label="Access summary">
+      <h2>Access summary</h2>
+      <p><strong>Dashboard access:</strong> {session.principal === 'operator' ? 'Operator' : 'Caller'}</p>
+      <p><strong>Chat execution:</strong> Teller</p>
+      <p><strong>Target session:</strong> Not verified</p>
+      <p><strong>Branch:</strong> Not verified</p>
+    </section>
+  );
 }

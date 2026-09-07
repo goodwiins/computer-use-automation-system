@@ -139,7 +139,11 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
         <>
           <h4>Review the exact request</h4>
           <ReviewFacts action={action} />
-          <p className="review-operator">Operator {action.operator} · {action.branch} · {action.role}</p>
+          {actionContextValid ? (
+            <p className="review-operator">Target session: Verified for this run · Branch: {action.branch} · Operator {action.operator} · Role {action.role}</p>
+          ) : (
+            <p className="review-operator">Target session: Not verified · Branch: Not verified</p>
+          )}
         </>
       ) : approval ? <p className="warning">Confirmation is unavailable until the server provides the exact action context.</p>
         : <p>Repair the active browser session, then request one bounded retry.</p>}
