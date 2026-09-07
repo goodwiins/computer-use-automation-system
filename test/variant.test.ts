@@ -8,6 +8,8 @@
 //      no re-recording, base file untouched.
 
 import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../target-app/server.js';
@@ -20,24 +22,11 @@ import { RunLogger } from '../src/evidence/logger.js';
 import { BrowserSurface } from '../src/surface/browser.js';
 import { GuardedSurface } from '../src/surface/guarded.js';
 
-const PORT = 4198;
-const ORIGIN = `http://localhost:${PORT}`;
-
-const policy = Policy.parse({
-  allowedOrigins: [ORIGIN],
-  allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
-  riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
-});
+let policy: Policy;
 
 const base: Artifact = CapabilityArtifact.parse(
   JSON.parse(readFileSync('artifacts/lookup-member-balance.v1.0.0.json', 'utf8')),
 );
-// Point the base at this test's server; stand-in for the same vendor product
-// installed at another tenant. The VARIANT entry (?tenant=premier) is what
-// makes the negative case meaningful: base artifact vs renamed control.
-base.app.entryUrl = `${ORIGIN}/?tenant=premier`;
-base.app.allowedOrigins = [ORIGIN];
-
 const overlayJson = {
   schemaVersion: 1,
   tenant: 'premier',
@@ -46,7 +35,7 @@ const overlayJson = {
   status: 'approved',
   appId: 'cu-nexus',
   base: { id: 'lookup-member-balance', version: '1.0.0' },
-  entryUrl: `${ORIGIN}/?tenant=premier`,
+  entryUrl: '', // Set to the test server's assigned port in beforeAll.
   stepOverrides: [
     { stepId: 's1', prepend: [{ kind: 'role', role: 'link', name: 'Account Inquiry' }] },
   ],
@@ -65,14 +54,23 @@ async function replay(artifact: Artifact, params: Record<string, string | number
 describe('cross-tenant replay via overlay', () => {
   let server: Server;
   beforeAll(async () => {
-    server = createApp().listen(PORT);
+    server = createApp().listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    policy = Policy.parse({
+      allowedOrigins: [origin],
+      allowedActions: ['navigate', 'click', 'fill', 'select', 'extract', 'assert'],
+      riskHandling: { read: 'allow', reversible_write: 'allow', irreversible: 'escalate' },
+    });
+    base.app.allowedOrigins = [origin];
+    base.app.entryUrl = overlayJson.entryUrl = `${origin}/?tenant=premier`;
   });
   afterAll(() => new Promise((r) => server.close(r)));
 
   it(
     'base artifact alone fails loudly at the renamed control',
     async () => {
-      const result = await replay(base, { memberId: '23456' });
+      const result = await replay({ ...base, steps: base.steps.map(step => ({ ...step, timeoutMs: 1000 })) }, { memberId: '23456' });
       expect(result.status).toBe('failure');
       if (result.status === 'failure') {
         expect(result.failure.stepId).toBe('s1');
