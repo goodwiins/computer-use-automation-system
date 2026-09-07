@@ -20,7 +20,8 @@ export type MemberIdentity =
   | { status: 'verified'; inquiryRunId: string; memberNumber: string; name: string };
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
-  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
+  readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; privateInvocation?: true; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
+  private readonly privateInvocations = new Set<string>();
   private active?: string;
   private closing = false;
   private completion?: Promise<void>;
@@ -41,6 +42,13 @@ export class InvocationService {
       .map(a => ({ id: a.id, version: a.version, description: a.description, parameters: a.parameters.filter(p => p.source !== 'server'), outputs: a.outputs, tools: toToolSchema(a) }));
   }
   invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
+    return this.invokeRun(principal, id, args, key, role, false);
+  }
+  private invokeInternal(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR') {
+    return this.invokeRun(principal, id, args, key, role, true);
+  }
+  private invokeRun(principal: Principal, id: string, args: Record<string, string | number>, key: string,
+    role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean) {
     if (principal !== 'operator' && (role !== 'TELLER' || !this.allowlist.includes(id))) throw new RequestError(403, 'Capability or operator context is not authorized');
     const artifact = this.artifacts.get(id);
     if (!artifact) throw new RequestError(404, 'Unknown approved capability');
@@ -75,8 +83,9 @@ export class InvocationService {
       const live = this.live.get(record.runId);
       if (live) live.state = approval.pending ? 'awaiting-human' : 'running';
     }, Date.now() + 600_000);
-    const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
+    const state = { state: 'running', inputs: normalized, ...(privateInvocation ? { privateInvocation: true as const } : {}), started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
     this.live.set(record.runId, state);
+    if (privateInvocation) this.privateInvocations.add(record.runId);
     const finish = () => { state.finished = Date.now(); this.active = undefined; };
     try {
       const runtime = createRuntime({ kind: 'replay', artifact: id, version: artifact.version, policy: this.policy,
@@ -125,7 +134,7 @@ export class InvocationService {
           try {
             const member = state.inputs.member;
             if (this.closing || state.state !== 'success' || typeof member !== 'string' || !member.trim()) return;
-            const inquiry = this.invoke(principal, 'meridian-member-inquiry',
+            const inquiry = this.invokeInternal(principal, 'meridian-member-inquiry',
               { searchMode: 'number', searchValue: member }, `member-identity:${record.runId}`, role);
             inquiryRunId = inquiry.runId;
             state.memberIdentity = { status: 'pending', inquiryRunId };
@@ -133,7 +142,7 @@ export class InvocationService {
             const lookup = this.live.get(inquiryRunId);
             const rows = lookup?.result?.status === 'success' ? lookup.result.outputs.members : undefined;
             const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
-            if (!inquiry.reused && this.journal.records.get(inquiryRunId)?.caller === record.caller
+            if (this.privateInvocations.has(inquiryRunId) && !inquiry.reused && this.journal.records.get(inquiryRunId)?.caller === record.caller
               && lookup?.state === 'success' && lookup.inputs.searchMode === 'number' && lookup.inputs.searchValue === member
               && row && typeof row === 'object' && row.memberNumber === member && typeof row.name === 'string' && row.name.trim()) {
               state.memberIdentity = { status: 'verified', inquiryRunId, memberNumber: member, name: row.name };
@@ -174,14 +183,16 @@ export class InvocationService {
       } catch { historyResult = undefined; }
     }
     const result = live?.result;
-    const safeResult = result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
-    return { runId, kind: record.kind, inputs: live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
+    const privateSafeResult = result ? result.status === 'success' ? { status: result.status, sensitiveValuesUnavailable: true } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, sensitiveValuesUnavailable: true } : { status: 'failure', failure: { code: result.failure.code ?? 'RUN_FAILED' }, sensitiveValuesUnavailable: true } : historyResult;
+    const safeResult = this.privateInvocations.has(runId) ? privateSafeResult
+      : result ? result.status === 'success' ? { status: result.status, outputs: result.outputs } : result.status === 'business_outcome' ? { status: result.status, outcomeCode: result.outcomeCode, detail: result.detail } : { status: 'failure', failure: { stepId: result.failure.stepId, code: result.failure.code ?? 'RUN_FAILED', detail: result.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.' : 'Run stopped. Inspect the current step and safe evidence.' } } : historyResult;
+    return { runId, kind: record.kind, inputs: this.privateInvocations.has(runId) ? undefined : live?.inputs, capability: record.capability, version: record.version, createdAt: record.createdAt,
       state: ['reserved', 'running', 'dispatching'].includes(record.state) ? live?.state ?? record.state : record.state, step: live?.step, elapsedMs: live ? (live.finished ?? Date.now()) - live.started : undefined,
       intervention: principal === 'operator' ? (live?.approval.pending ? publicIntervention(live.approval.pending, live.redactor) : undefined) : live?.approval.pending ? { kind: live.approval.pending.request.kind, awaitingOperator: true } : undefined,
-      result: safeResult, structure, sensitiveValuesUnavailable: !live, evidence,
+      result: safeResult, structure, sensitiveValuesUnavailable: !live || this.privateInvocations.has(runId), evidence,
       memberIdentity: record.capability === 'meridian-member-record' ? live?.memberIdentity ?? { status: 'unavailable' as const } : undefined };
   }
-  history(principal: Principal) { return [...this.journal.records.values()].filter(r => principal === 'operator' || r.caller === principal).map(r => this.get(principal, r.runId)); }
+  history(principal: Principal) { return [...this.journal.records.values()].filter(r => !this.privateInvocations.has(r.runId) && (principal === 'operator' || r.caller === principal)).map(r => this.get(principal, r.runId)); }
   decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
     if (principal !== 'operator') throw new RequestError(403, 'Only operators can decide interventions');
     this.get(principal, runId);
