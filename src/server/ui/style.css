@@ -78,6 +78,7 @@ section { min-width: 0; }
 .composer:has(textarea:focus-visible) { outline: 2px solid #568776; outline-offset: 2px; }
 .composer .actions { display: flex; justify-content: flex-end; margin-top: .25rem; }
 .send-button { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; padding: .5rem; }
+.stop-button { width: auto; border-radius: 22px; display: inline-flex; gap: .4rem; }
 .send-button svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .send-button rect { fill: currentColor; stroke: none; }
 .composer-note { text-align: center; color: var(--muted); font-size: .7rem; margin: .6rem 0 0; }

@@ -837,7 +837,11 @@ it('offline stopping the response preserves its accepted run and exposes no muta
     await page.locator('#message').fill('Read offline-member shares');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await vi.waitFor(() => expect(state.invocations.size).toBe(1), { interval: 20, timeout: 5000 });
-    await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+    const stop = page.getByRole('button', { name: 'Stop response', exact: true });
+    await stop.waitFor();
+    expect(await stop.isVisible()).toBe(true);
+    expect(await stop.textContent()).toContain('Stop response');
+    await stop.click();
     await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
     await page.locator('#refresh').click();
@@ -845,11 +849,9 @@ it('offline stopping the response preserves its accepted run and exposes no muta
     expect(state.invocations.size).toBe(1);
     expect(state.decisions).toEqual([]);
     expect(await page.getByRole('button', { name: /regenerate|retry|edit|branch/i }).count()).toBe(0);
-    expect(
-      await page
-        .getByText('Stopping the response does not cancel a run or undo a transaction.', { exact: true })
-        .count(),
-    ).toBe(1);
+    const explanation = page.getByText('Stopping the response does not cancel a run or undo a transaction.', { exact: true });
+    expect(await explanation.count()).toBe(1);
+    expect(await explanation.isVisible()).toBe(true);
   } finally {
     finishResponse();
   }
