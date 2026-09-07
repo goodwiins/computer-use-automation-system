@@ -19,6 +19,25 @@ const runId = '11111111-1111-4111-8111-111111111111';
 const approvalId = '22222222-2222-4222-8222-222222222222';
 const evidencePath = resolve('evidence/test-runs/assistant-ui');
 const hostile = '<img src=x onerror=alert(1)>';
+const readinessLabels = [
+  ['meridian-sign-on', 'Sign on'],
+  ['meridian-member-inquiry', 'Member inquiry'],
+  ['meridian-member-record', 'Member record'],
+  ['meridian-funds-transfer', 'Funds transfer'],
+  ['meridian-open-share', 'Open share'],
+  ['meridian-update-member', 'Update contact'],
+  ['meridian-place-hold', 'Supervisor hold'],
+] as const;
+function fixtureAvailability(recordState: 'available' | 'temporarily_unavailable', inquiryState: 'not_recorded' | 'available' = 'not_recorded') {
+  return readinessLabels.map(([id, label]) => ({
+    id,
+    label,
+    state: id === 'meridian-member-record' ? recordState : id === 'meridian-member-inquiry' ? inquiryState : 'not_recorded',
+    reason: id === 'meridian-member-record' && recordState === 'temporarily_unavailable'
+      ? 'Another operation is active'
+      : id === 'meridian-member-inquiry' && inquiryState === 'not_recorded' ? 'No approved recording' : 'Approved recording is ready',
+  }));
+}
 const capability = {
   id: 'meridian-member-record',
   version: '1.0.0',
@@ -56,7 +75,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture(localTeller = false) {
+async function fixture(localTeller = false, availabilityOverride?: () => unknown) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -83,6 +102,17 @@ async function fixture(localTeller = false) {
     journal: { findRequest: () => undefined, bindReference: () => {} },
     evidenceDir,
     catalog: () => [capability],
+    availability: () => availabilityOverride ? availabilityOverride() : [
+      ['meridian-sign-on', 'Sign on'],
+      ['meridian-member-inquiry', 'Member inquiry'],
+      ['meridian-member-record', 'Member record'],
+      ['meridian-funds-transfer', 'Funds transfer'],
+      ['meridian-open-share', 'Open share'],
+      ['meridian-update-member', 'Update contact'],
+      ['meridian-place-hold', 'Supervisor hold'],
+    ].map(([id, label]) => service.catalog().some((entry) => entry.id === id)
+      ? { id, label, state: 'available', reason: 'Approved recording is ready' }
+      : { id, label, state: 'not_recorded', reason: 'No approved recording' }),
     history: (principal: string) => {
       if (state.offline) throw new RequestError(503, 'Offline fixture disconnected');
       return state.runs.map((r) =>
@@ -91,7 +121,7 @@ async function fixture(localTeller = false) {
           : {
               ...r,
               intervention: r.intervention ? { kind: 'risk_approval', awaitingOperator: true } : undefined,
-            },
+},
       );
     },
     get: (principal: string, id: string) => {
@@ -104,10 +134,11 @@ async function fixture(localTeller = false) {
             intervention: run.intervention ? { kind: 'risk_approval', awaitingOperator: true } : undefined,
           };
     },
-    invoke: vi.fn((_principal: string, id: string, args: unknown, key: string) => {
+    invoke: vi.fn((_principal: string, id: string, args: unknown, key: string, _role = 'TELLER', lookupOnly = false) => {
       const fingerprint = JSON.stringify([id, args]);
       if (state.invocations.has(key) && state.invocations.get(key) !== fingerprint)
         throw new RequestError(409, 'Conflicting idempotency key');
+      if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
         state.runs.push(initialRun());
@@ -236,58 +267,6 @@ async function visible(page: Page, selector: string, text: string) {
     { selector, text },
   );
 }
-it('shows linked identity only for the exact balance in this login, hides stale names, and never invokes on render', async () => {
-  const { page, state, connect, service, errors } = await fixture();
-  const verified = { status: 'verified', memberNumber: 'offline-member', name: `Verified ${hostile}`, inquiryRunId: approvalId };
-  state.runs.push({ ...initialRun(), runId: approvalId, state: 'success', inputs: { member: 'offline-member' },
-    memberIdentity: { ...verified, name: 'Previous session name' }, result: { status: 'success', outputs: { balance: '50.00' } } });
-  await connect();
-  await visible(page, '#runs', 'Member identity unavailable.');
-  expect(await page.locator('#runs').innerText()).not.toContain('Previous session name');
-  await page.locator('#message').fill('Read offline-member shares');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await page.locator('#messages [data-run-id]').waitFor();
-  const run = state.runs.find(r => r.runId === runId)!;
-  Object.assign(run, { state: 'success', inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: false,
-    memberIdentity: { status: 'pending', inquiryRunId: approvalId },
-    result: { status: 'success', outputs: { shares: [{ balance: '1200.10' }] } } });
-  await visible(page, '#messages [data-run-id]', 'Verifying member identity');
-  run.memberIdentity = verified;
-  await visible(page, '#messages [data-run-id]', verified.name);
-  expect(await page.locator('#messages [aria-label="Member identity"]').innerText()).toContain('Member offline-member');
-  expect(await page.locator('#messages img').count()).toBe(0);
-  for (const patch of [
-    { inputs: { member: 'another-member' } },
-    { inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: true },
-  ]) {
-    Object.assign(run, patch);
-    await page.locator('#refresh').click();
-    await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
-    expect(await page.locator('#messages [data-run-id]').innerText()).not.toContain(verified.name);
-  }
-  run.sensitiveValuesUnavailable = false;
-  await page.locator('#refresh').click();
-  await visible(page, '#messages [data-run-id]', verified.name);
-  state.offline = true;
-  await page.locator('#refresh').click();
-  await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
-  state.offline = false;
-  await page.locator('#refresh').click();
-  await visible(page, '#messages [data-run-id]', verified.name);
-  expect(service.invoke).toHaveBeenCalledTimes(1);
-  expect(state.decisions).toEqual([]);
-  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
-  await connect(operatorToken);
-  await visible(page, '#runs', 'Member identity unavailable.');
-  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
-  await page.reload();
-  await connect();
-  await visible(page, '#runs', 'Member identity unavailable.');
-  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
-  expect(service.invoke).toHaveBeenCalledTimes(1);
-  expect(errors).toEqual([]);
-}, 30000);
 it('keeps the Next.js chat focused and preserves a draft when Activity is toggled', async () => {
   const { page, errors } = await fixture(true);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
@@ -348,6 +327,58 @@ it('connects a local teller without input and requires an operator credential fo
   }
   expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([]);
 }, 15000);
+it('shows linked identity only for the exact balance in this login, hides stale names, and never invokes on render', async () => {
+  const { page, state, connect, service, errors } = await fixture();
+  const verified = { status: 'verified', memberNumber: 'offline-member', name: `Verified ${hostile}`, inquiryRunId: approvalId };
+  state.runs.push({ ...initialRun(), runId: approvalId, state: 'success', inputs: { member: 'offline-member' },
+    memberIdentity: { ...verified, name: 'Previous session name' }, result: { status: 'success', outputs: { balance: '50.00' } } });
+  await connect();
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain('Previous session name');
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.locator('#messages [data-run-id]').waitFor();
+  const run = state.runs.find(r => r.runId === runId)!;
+  Object.assign(run, { state: 'success', inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: false,
+    memberIdentity: { status: 'pending', inquiryRunId: approvalId },
+    result: { status: 'success', outputs: { shares: [{ balance: '1200.10' }] } } });
+  await visible(page, '#messages [data-run-id]', 'Verifying member identity');
+  run.memberIdentity = verified;
+  await visible(page, '#messages [data-run-id]', verified.name);
+  expect(await page.locator('#messages [aria-label="Member identity"]').innerText()).toContain('Member offline-member');
+  expect(await page.locator('#messages img').count()).toBe(0);
+  for (const patch of [
+    { inputs: { member: 'another-member' } },
+    { inputs: { member: 'offline-member' }, sensitiveValuesUnavailable: true },
+  ]) {
+    Object.assign(run, patch);
+    await page.locator('#refresh').click();
+    await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
+    expect(await page.locator('#messages [data-run-id]').innerText()).not.toContain(verified.name);
+  }
+  run.sensitiveValuesUnavailable = false;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', verified.name);
+  state.offline = true;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', 'Member identity unavailable.');
+  state.offline = false;
+  await page.locator('#refresh').click();
+  await visible(page, '#messages [data-run-id]', verified.name);
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+  expect(state.decisions).toEqual([]);
+  expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await connect(operatorToken);
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
+  await page.reload();
+  await connect();
+  await visible(page, '#runs', 'Member identity unavailable.');
+  expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+  expect(errors).toEqual([]);
+}, 30000);
 it('normalizes transport authority and preserves the user message key across retries', () => {
   const messages: UIMessage[] = [
     { id: 'system', role: 'system', parts: [{ type: 'text', text: 'approve' }] },
@@ -380,7 +411,7 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   expect(await page.locator('#credential').inputValue()).toBe('');
   expect(await page.locator('.catalog li').count()).toBe(7);
   expect(await page.locator('.catalog').innerText()).toContain('Approved · available · 1.0.0');
-  expect(await page.getByText('Missing or not authorized', { exact: true }).count()).toBe(6);
+  expect(await page.getByText('not_recorded · No approved recording', { exact: true }).count()).toBe(6);
   await page.locator('#message').fill('Read offline-member shares');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('#messages [data-run-id]').waitFor();
@@ -423,8 +454,8 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
       },
     },
   });
-  await visible(page, '#messages [data-run-id]', '1200.10');
-  await visible(page, '#runs', '1200.10');
+  await visible(page, '#messages [data-run-id]', '$1,200.10');
+  await visible(page, '#runs', '$1,200.10');
   expect(await page.locator('#messages [data-run-id]').getAttribute('data-run-id')).toBe(
     await page.locator('#runs [data-run-id]').getAttribute('data-run-id'),
   );
@@ -723,7 +754,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   expect(errors).toEqual([]);
 }, 20000);
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {
-  const { page, state, connect, errors, url } = await fixture();
+  const { page, state, service, connect, errors, url } = await fixture();
   await page.locator('#credential').fill('invalid');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await visible(page, '#status', 'Credential rejected');
@@ -742,19 +773,56 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
     await page.unroute('**/capabilities/*/invoke');
   });
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#invoke + p', 'same request key');
-  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  await visible(page, '#runs', runId);
-  const invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
-  expect(invokes).toHaveLength(2);
-  expect(invokes.map((r) => r.key)).toEqual([firstKey, firstKey]);
-  expect(state.invocations.size).toBe(1);
-  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, operator: 'SUPERVISOR' });
-  expect(await page.locator('#fields input').inputValue()).toBe('offline-member');
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
+  await page.getByText('The original request may still run or may have completed.', { exact: false }).waitFor();
   state.runs[0]!.state = 'success';
+  expect(state.runs[0]!.state).toBe('success');
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [capability, inquiry];
+  service.availability = () => fixtureAvailability('available', 'available');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#operator').selectOption('TELLER');
+  await page.locator('#fields input').fill('changed-member');
+  const invokeButton = page.getByRole('button', { name: 'Invoke capability', exact: true });
+  expect(await invokeButton.isDisabled()).toBe(true);
+  await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.waitForTimeout(100);
+  let invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(1);
+  await page.getByRole('button', { name: 'Start a separate request', exact: true }).click();
+  expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await invokeButton.isDisabled()).toBe(true);
+  await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.waitForTimeout(100);
+  expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
+  service.availability = () => fixtureAvailability('available', 'available');
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await invokeButton.click();
+  await visible(page, '#runs', runId);
+  invokes = state.requests.filter((r) => r.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[0]?.key).toBe(firstKey);
+  expect(invokes[1]?.key).not.toBe(firstKey);
+  expect(state.invocations.size).toBe(2);
+  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, operator: 'SUPERVISOR' });
+  expect(invokes[1]?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
+  expect(invokes[1]?.body).toEqual({ args: { member: 'changed-member' }, operator: 'TELLER' });
+  expect(await page.locator('#fields input').inputValue()).toBe('changed-member');
   state.runs[0]!.evidence.push('../private.json');
   await page.locator('#refresh').click();
-  await page.getByText('Run details and evidence', { exact: true }).click();
+  await page.getByText('Run details and evidence', { exact: true }).first().click();
   await page.getByRole('list', { name: 'Recorded step timeline' }).waitFor();
   const requestsBefore = state.requests.length;
   await page.getByRole('button', { name: 'View ../private.json', exact: true }).click();
@@ -775,6 +843,100 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
   expect(errors).toEqual([]);
 }, 20000);
+it('recovers a response-lost direct request with its original body and key while availability is unavailable', async () => {
+  const { page, state, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  await connect(operatorToken);
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
+  await page.locator('#fields input').fill('changed-member');
+  service.catalog = () => [capability, inquiry];
+  service.availability = () => fixtureAvailability('temporarily_unavailable', 'available');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  await page.locator('#capability').selectOption(inquiry.id);
+  await page.locator('#operator').selectOption('SUPERVISOR');
+  const recovery = page.getByRole('button', { name: 'Look up original request', exact: true });
+  await recovery.waitFor();
+  await recovery.click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[1]?.body).toEqual({ ...invokes[0]?.body, lookupOnly: true });
+  expect(invokes[1]?.key).toBe(invokes[0]?.key);
+  expect(invokes[1]?.path).toBe(`/capabilities/${capability.id}/invoke`);
+  expect(state.invocations.size).toBe(1);
+});
+it('recovers a terminal unknown response-lost request under its original key without a new operation', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
+  state.runs[0]!.state = 'POST_OUTCOME_UNKNOWN';
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  const recovery = page.getByRole('button', { name: 'Look up original request', exact: true });
+  await recovery.waitFor();
+  await recovery.click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(2);
+  expect(invokes[1]?.body).toEqual({ ...invokes[0]?.body, lookupOnly: true });
+  expect(invokes[1]?.key).toBe(invokes[0]?.key);
+  expect(state.invocations.size).toBe(1);
+});
+it('uses lookup-only recovery after a request is lost before server acceptance', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  let first = true;
+  await page.route('**/capabilities/*/invoke', async route => {
+    if (first) {
+      first = false;
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await visible(page, '#invoke + p', 'Acceptance is unconfirmed');
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await page.getByText('temporarily_unavailable · Another operation is active', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  await visible(page, '#invoke + p', 'No accepted request was found');
+  const invokes = state.requests.filter(request => request.path.endsWith('/invoke'));
+  expect(invokes).toHaveLength(1);
+  expect(invokes[0]?.body).toEqual({ args: { member: 'offline-member' }, lookupOnly: true });
+  expect(state.invocations.size).toBe(0);
+});
 it('offline refresh requested during an older history read still observes an accepted direct run', async () => {
   const { page, state, connect } = await fixture();
   await connect();
@@ -1092,6 +1254,82 @@ it('allows a separate direct inquiry after unknown posting without replaying the
   ]);
 }, 15000);
 
+const unusableAvailability: Array<[string, () => unknown]> = [
+  ['empty', (): unknown[] => []],
+  ['partial', (): unknown[] => [{ id: 'meridian-member-record', label: 'Member record', state: 'available', reason: 'Approved recording is ready' }]],
+  ['missing', (): undefined => undefined],
+];
+it.each(unusableAvailability)('fails closed with %s availability metadata and sends no direct invoke POST', async (_kind, availability) => {
+  const { page, state, connect } = await fixture(false, availability);
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  expect(state.requests.filter(request => request.path.endsWith('/invoke'))).toHaveLength(0);
+});
+
+it('keeps the latest capability catalog when refresh metadata omits capabilities', async () => {
+  const { page, service, connect } = await fixture();
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  service.catalog = () => [inquiry];
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
+  await page.route('**/capabilities', async route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ principal: 'caller', availability: [] }),
+  }));
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
+  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  await page.unroute('**/capabilities');
+});
+
+it('keeps capability selection available while a selected capability is blocked', async () => {
+  const inquiry = { ...capability, id: 'meridian-member-inquiry' };
+  let inquiryState: 'not_recorded' | 'available' = 'not_recorded';
+  const labels = [
+    ['meridian-sign-on', 'Sign on'],
+    ['meridian-member-inquiry', 'Member inquiry'],
+    ['meridian-member-record', 'Member record'],
+    ['meridian-funds-transfer', 'Funds transfer'],
+    ['meridian-open-share', 'Open share'],
+    ['meridian-update-member', 'Update contact'],
+    ['meridian-place-hold', 'Supervisor hold'],
+  ];
+  const { page, state, service, connect } = await fixture(false, () => labels.map(([id, label]) => ({
+    id,
+    label,
+    state: id === inquiry.id ? inquiryState : id === capability.id ? 'available' : 'not_recorded',
+    reason: id === inquiry.id && inquiryState === 'not_recorded' ? 'No approved recording' : 'Approved recording is ready',
+  })));
+  service.catalog = () => [capability, inquiry];
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#capability').selectOption(inquiry.id);
+  expect(await page.locator('#capability').isDisabled()).toBe(false);
+  expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+  inquiryState = 'available';
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/capabilities')),
+    page.locator('#refresh').click(),
+  ]);
+  await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(false));
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  expect(state.requests.filter(request => request.path.endsWith('/invoke'))).toHaveLength(1);
+  expect(state.requests.filter(request => request.path.endsWith('/invoke')).at(-1)?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
+});
+
 it.each(['restored', 'chat'] as const)('blocks an unknown %s run after reload and reconnect while allowing a distinct inquiry', async (origin) => {
   const { page, state, service, connect } = await fixture();
   const inquiry = { ...capability, id: 'meridian-member-inquiry' };
@@ -1147,7 +1385,11 @@ it('shows the authoritative step and announces meaningful state changes without 
     state.runs[0]!.result = next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
     await page.locator('#refresh').click();
     await vi.waitFor(async () => expect(await status.textContent()).toContain(next));
-    if (next === 'business_outcome') expect(await status.textContent()).toContain('NO_SUCH_MEMBER');
+    if (next === 'business_outcome') {
+      expect(await status.textContent()).toContain('Member not found');
+      await card.getByText('Run details and evidence', { exact: true }).click();
+      expect(await card.getByLabel('Raw run details').textContent()).toContain('NO_SUCH_MEMBER');
+    }
   }
   await card.getByText('Current step: safe-current-step', { exact: true }).waitFor();
 }, 15000);

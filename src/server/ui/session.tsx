@@ -2,8 +2,9 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { InvocationService, Principal } from '../service.js';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
+export type Availability = ReturnType<InvocationService['availability']>[number];
 export type Run = ReturnType<InvocationService['get']>;
-export type Session = { token: string; principal: Principal; capabilities: Capability[] };
+export type Session = { token: string; principal: Principal; capabilities: Capability[]; availability?: Availability[] };
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
@@ -43,6 +44,9 @@ export function RunProvider({
   children: ReactNode;
 }) {
   const [runs, setRuns] = useState<Run[]>([]);
+  const [capabilities, setCapabilities] = useState(session.capabilities);
+  const capabilitiesRef = useRef(session.capabilities);
+  const [availability, setAvailability] = useState(session.availability);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const abort = useRef(new AbortController());
@@ -76,20 +80,30 @@ export function RunProvider({
     }
     busy.current = true;
     try {
-      const history: Run[] = await (await request('/runs')).json();
+      const [historyResponse, capabilitiesResponse] = await Promise.all([request('/runs'), request('/capabilities')]);
+      const history: Run[] = await historyResponse.json();
+      const metadata = await capabilitiesResponse.json() as { capabilities?: Capability[]; availability?: Availability[] | null };
+      const hasCapabilities = Array.isArray(metadata.capabilities);
+      const nextCapabilities = hasCapabilities ? metadata.capabilities! : capabilitiesRef.current;
+      const nextAvailability = hasCapabilities && Array.isArray(metadata.availability) ? metadata.availability : undefined;
       const missing = [...watched.current].filter((id) => !history.some((run) => run.runId === id));
       const extra: Run[] = await Promise.all(
         missing.map(async (id) => (await request(`/runs/${segment(id)}`)).json()),
       );
       if (!abort.current.signal.aborted) {
         setRuns([...history, ...extra]);
+        setCapabilities(nextCapabilities);
+        capabilitiesRef.current = nextCapabilities;
+        setAvailability(nextAvailability);
         setError('');
       }
     } catch (e) {
-      if (!abort.current.signal.aborted)
+      if (!abort.current.signal.aborted) {
+        setAvailability(undefined);
         setError(
           `Disconnected from run updates. Displayed data may be stale. ${e instanceof Error ? e.message : 'Refresh to reconnect.'}`,
         );
+      }
     } finally {
       busy.current = false;
       if (!abort.current.signal.aborted) {
@@ -130,8 +144,9 @@ export function RunProvider({
     }, 1500);
     return () => clearInterval(timer);
   }, [runs, error, loading, refresh]);
+  const currentSession = { ...session, capabilities, availability };
   return (
-    <Context.Provider value={{ session, runs, watched: watched.current, loading, error, request, refresh, watch }}>
+    <Context.Provider value={{ session: currentSession, runs, watched: watched.current, loading, error, request, refresh, watch }}>
       {children}
     </Context.Provider>
   );

@@ -340,10 +340,16 @@ describe('durable request identity', () => {
       const service = new InvocationService(journal, policy, profile, temp(), ['meridian-member-record'], 'artifacts');
       const request = { mode: 'replay', capability: 'meridian-member-record', version: '1.0.0', args: { member: '123' }, context: { operator: 'TELLER-ONE', branch: 'MAIN-001', role: 'TELLER' } };
       const record = journal.reserve('operator', 'same-key', 'meridian-member-record', '1.0.0', request);
-      expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER').runId).toBe(record.runId);
+      journal.update(record.runId, 'dispatching');
+      journal.update(record.runId, 'failure');
+      expect(service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'TELLER', true)).toEqual({ runId: record.runId, reused: true });
       expect(createRuntime).not.toHaveBeenCalled();
-      expect(() => service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER')).toThrow(/another request/);
-      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR')).toThrow(/another request/);
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '124' }, 'same-key', 'TELLER', true)).toThrow(/another request/);
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).toThrow(/another request/);
+      expect(() => service.invoke('caller', 'meridian-member-record', { member: '123' }, 'same-key', 'SUPERVISOR', true)).toThrow(/not authorized/);
+      const before = journal.records.size;
+      expect(() => service.invoke('operator', 'meridian-member-record', { member: '123' }, 'missing-key', 'TELLER', true)).toThrow(/No accepted request/);
+      expect(journal.records.size).toBe(before);
       expect(createRuntime).not.toHaveBeenCalled();
     } finally {
       journal.close();
@@ -2982,6 +2988,7 @@ it.each([false, true])('authenticates API/evidence, denies caller decisions and 
       expect(token).not.toBe('o'.repeat(32));
       expect((await request('/capabilities', { Authorization: `Bearer ${token}` })).status).toBe(200);
       expect((await request('/capabilities/missing/invoke', { Authorization: `Bearer ${token}` }, 'POST', '{"args":{},"operator":"SUPERVISOR"}')).status).toBe(403);
+      expect((await request('/capabilities/missing/invoke', { Authorization: `Bearer ${token}` }, 'POST', '{"args":{},"lookupOnly":false}')).status).toBe(400);
     } else expect((await login()).status).toBe(404);
     const caller = { Authorization: `Bearer ${token}` };
     expect((await request(`/runs/${run.runId}`, caller)).status).toBe(403);
