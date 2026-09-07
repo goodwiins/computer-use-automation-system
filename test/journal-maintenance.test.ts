@@ -64,6 +64,14 @@ describe.sequential('filesystem journal maintenance', () => {
       expect((await journal.get(direct.runId))?.identity).toBe(direct.identity);
       expect((await journal.get(unknown.runId))?.state).toBe('POST_OUTCOME_UNKNOWN');
       expect((await journal.findRequest('caller', 'alias-key'))?.runId).toBe(direct.runId);
+      const imported = await database.pool.query<{ identity: string; request: string; run_id: string; is_alias: boolean }>(
+        'SELECT identity, request, run_id::text, is_alias FROM meridian_run_requests WHERE run_id = $1 ORDER BY is_alias, identity',
+        [direct.runId],
+      );
+      expect(imported.rows).toEqual([
+        { identity: directSnapshot.identity, request: directSnapshot.request, run_id: direct.runId, is_alias: false },
+        { identity: snapshot.aliases[0]!.identity, request: snapshot.aliases[0]!.request, run_id: direct.runId, is_alias: true },
+      ].sort((a, b) => Number(a.is_alias) - Number(b.is_alias) || a.identity.localeCompare(b.identity)));
       await journal.close();
       expect(() => new Journal(join(dir, 'journal'), key)).toThrow(/fenced/);
       await importJournal(join(dir, 'journal'), database.pool, key);
@@ -181,6 +189,44 @@ describe.sequential('filesystem journal maintenance', () => {
     const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'cli.ts', 'journal-recover', '--owner', 'bad', '--confirm-fenced'], { cwd: process.cwd(), env, encoding: 'utf8' });
     expect(invalid.status).not.toBe(0);
     expect(`${invalid.stdout}${invalid.stderr}`).toContain('--owner must be a UUID');
+    const missingConfirmation = spawnSync(process.execPath, ['--import', 'tsx', 'cli.ts', 'journal-recover', '--owner', '11111111-1111-4111-8111-111111111111'], { cwd: process.cwd(), env, encoding: 'utf8' });
+    expect(missingConfirmation.status).not.toBe(0);
+    expect(`${missingConfirmation.stdout}${missingConfirmation.stderr}`).toContain('--confirm-fenced');
+  });
+
+  it('runs a valid journal-import CLI path without entering runtime, model, browser, or server code', async () => {
+    const poolEnd = vi.fn().mockResolvedValue(undefined);
+    class FakePool { end = poolEnd; }
+    const importJournalCall = vi.fn().mockResolvedValue(undefined);
+    const makeLLMClient = vi.fn(() => { throw new Error('model tripwire'); });
+    const createRuntime = vi.fn(() => { throw new Error('runtime tripwire'); });
+    const serve = vi.fn(() => { throw new Error('server tripwire'); });
+    vi.resetModules();
+    vi.doMock('pg', () => ({ Pool: FakePool }));
+    vi.doMock('../src/runtime/journal-maintenance.js', () => ({ importJournal: importJournalCall }));
+    vi.doMock('../src/agent/client.js', () => ({ makeLLMClient }));
+    vi.doMock('../src/runtime/run.js', () => ({ createRuntime }));
+    vi.doMock('../src/server/http.js', () => ({ serve }));
+    vi.stubEnv('DATABASE_URL', 'postgresql://fixture.invalid/unused');
+    vi.stubEnv('JOURNAL_HMAC_KEY', key);
+    try {
+      const { runCli } = await import('../cli.js');
+      await runCli(['journal-import']);
+      expect(importJournalCall).toHaveBeenCalledOnce();
+      expect(importJournalCall.mock.calls[0]![1]).toBeInstanceOf(FakePool);
+      expect(poolEnd).toHaveBeenCalledOnce();
+      expect(makeLLMClient).not.toHaveBeenCalled();
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(serve).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('pg');
+      vi.doUnmock('../src/runtime/journal-maintenance.js');
+      vi.doUnmock('../src/agent/client.js');
+      vi.doUnmock('../src/runtime/run.js');
+      vi.doUnmock('../src/server/http.js');
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 
   it('does not remove a replacement startup lock it does not own', async () => {
