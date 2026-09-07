@@ -1,0 +1,39 @@
+# B2: authoritative runs in PostgreSQL
+
+Accepted B0 scope: migrate reservations, aliases, immutable terminal state and dispatch intent to PostgreSQL, retaining one worker. This branch starts at reviewed PR96 `1e029eb69098fa4b2c18b05f17b56249572a797a`, after fresh `dev` base `8950d772e515886800093ec79c44d5009bd16e67`.
+
+## Authority and privacy
+
+Use the installed `pg` client, existing PostgreSQL fixture, existing signed journal authentication and exact HMAC canonicalization. PostgreSQL queries are authoritative; do not mirror the journal into a Map. Preserve filesystem mode for unmigrated CLI/demo installations through a real shared journal contract. Existing filesystem read-only evaluator access remains non-mutating.
+
+Retain only existing journal metadata, HMACs, opaque migration/owner IDs, state and a durable dispatch-intent boolean. Never store raw requests, approval facts, target values, credentials or model text. Subject ownership, exact same-key reuse, alias conflict behavior, capability-wide unknown quarantine and terminal immutability remain intact. A new key or conversation is not reconciliation.
+
+Use a singleton database authority row and a durable owner UUID. Claiming an occupied row fails; no TTL, lease expiry or database connection loss releases it. Every write locks this row and checks its owner. All active states share a unique partial index, enforcing one active run even across concurrent requests. Request identities and alias identities share one primary-key namespace, with a foreign key to their run. Terminal transitions cannot erase dispatch intent; failure/interruption after intent becomes `POST_OUTCOME_UNKNOWN`.
+
+Any ambiguous database write/COMMIT outcome poisons that journal instance: no later read, write, invocation or dispatch may proceed through it. Roll back when possible, sanitize errors, retain the durable owner and close its runtime. Definite validation/conflict errors remain normal request errors. A healthy close releases ownership only after no active records remain and the caller has awaited runtime shutdown. A database connection is not a physical browser fence.
+
+Crash recovery is an explicit non-executing maintenance operation. It requires the exact occupied owner UUID and an explicit operator assertion that its process/browser/session has been stopped. Compare-and-swap that owner under a row lock, change pre-intent active records to `interrupted` and intent-bearing active records to `POST_OUTCOME_UNKNOWN`, then release ownership. Never automatically recover or retry a potentially live worker. B3 will implement stronger process fencing; B2 keeps uncertain owners unavailable until maintenance.
+
+## Dispatch boundary
+
+`beforeDispatch(context)` accepts `void | Promise<void>` and is awaited all the way through `createRuntime` and `GuardedSurface`. After the await, re-check automation/deadline, freshly inspect the exact prepared control and compare it with the approved live snapshot. Reapply operation/authority/review checks and refresh transfer/hold eligibility followed by another exact inspection. Reuse one local validation function for the existing pre-intent check and this post-intent check instead of copying a large block.
+
+Durable intent does not prove native dispatch. A rejection or changed page prevents native dispatch; an already committed intent remains conservatively unknown if completion is not verified. Mark `mutationDispatched` only immediately before the native dispatch path as today, and rely on journal intent to preserve unknown state even if post-await validation fails first. Never re-approve, retry or downgrade automatically.
+
+## Migration and selection
+
+`RUN_JOURNAL=postgres` explicitly selects PostgreSQL; unset/`filesystem` retains the current unmigrated mode. Unknown values fail. PostgreSQL requires `DATABASE_URL`, `JOURNAL_HMAC_KEY` and a matching migration marker in the configured evidence journal directory. No automatic empty database initialization or filesystem fallback in PostgreSQL mode.
+
+Provide `journal-import` and `journal-recover` maintenance CLI commands. Neither creates a runtime, invokes a model, listens on HTTP or launches a browser. Import holds the filesystem startup lock and rejects an existing server lock; the operator must stop the old service and inspect/remove any stale lock first. Authenticate every record and alias, validate filenames, exact owner/request bindings and unique identities before importing. Do not construct the recovering filesystem `Journal` to read a snapshot.
+
+Before the first database import attempt, fsync a permanent `postgres-authority.json` marker containing an opaque import UUID and authenticated snapshot digest. Both filesystem startup and every filesystem write reject this marker. The marker is never automatically removed, including on import failure. Store the same import UUID and digest in the database singleton. PostgreSQL startup verifies their match; a different/empty database cannot silently replace the authority. Marker parsing and snapshot authentication reject malformed/tampered input.
+
+Import is one transaction into an uninitialized empty authority, converting historical active records conservatively. Exact run IDs, request/identity HMACs and aliases survive. Repeating the same import after a lost acknowledgment verifies the persisted import identity and performs no writes to existing run state; a changed import is rejected. Failed authentication writes no database rows. A failed database import leaves the filesystem fenced. Do not overwrite an initialized authority, roll back to an older journal or enable two writers. Restoring a backup never by itself authorizes executing old work.
+
+## Integration and acceptance
+
+Await journal operations in service, HTTP, chat, conversation ownership/result resolution and MERIDIAN replay/discovery CLI. Serialize service admission only until a runtime is admitted; preserve same-key lookup before active/unknown rejection. Existing runs return status without a second runtime. A database read/write failure cannot leak a raw error or leave an unhandled completion rejection. Close runtime/service, then journal, then pool; do not release authority after an unverified shutdown.
+
+Preserve UI-owner availability/finishedAt changes when reconciling them; do not implement those features in this phase. Existing seven capabilities, public result contracts, subject access and operator-only exact approval remain intact.
+
+Acceptance uses real isolated PostgreSQL: duplicate/changed-key races, alias collisions, terminal/intent invariants, restart/import survival, corrupt import, uncertain commit, owner loss and no dual writer. Browser fixtures prove zero POST while storage is pending/rejected or page/authority changes during the await, and one POST for an unchanged approved control. Full Node22 repository CI, smoke and exact-head hosted CI remain distinct gates. No production merge, deployment, live target action or cloud spend. Live acceptance remains 4/7.
