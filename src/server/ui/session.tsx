@@ -2,8 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { InvocationService, Principal } from '../service.js';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
-export type Availability = ReturnType<InvocationService['availability']>[number];
-export type Run = ReturnType<InvocationService['get']>;
+export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
+export type Run = Awaited<ReturnType<InvocationService['get']>>;
 export type Session = { token: string; principal: Principal; capabilities: Capability[]; availability?: Availability[] };
 export type ActionAttempt = {
   kind: 'chat' | 'direct';

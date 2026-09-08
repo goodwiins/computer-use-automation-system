@@ -22,24 +22,24 @@ it('formats exact decimal values without floating point rounding', () => {
   expect(formatMoney('not-money')).toBe('not-money');
 });
 
-it('checks caller access before artifact existence and quarantines unknown outcomes safely', () => {
+it('checks caller access before artifact existence and quarantines unknown outcomes safely', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ui-readiness-')); temporary.push(root);
   const artifacts = join(root, 'artifacts'); mkdirSync(artifacts);
   copyFileSync('artifacts/meridian-member-record.v1.0.0.json', join(artifacts, 'member-record.json'));
   const profile = loadProfile('meridian');
   const journal = new Journal(join(root, 'journal'), 'j'.repeat(32));
   const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record'], artifacts);
-  expect(service.availability('caller')).toEqual(expect.arrayContaining([
+  expect(await service.availability('caller')).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: 'meridian-funds-transfer', state: 'restricted' }),
     expect.objectContaining({ id: 'meridian-member-record', state: 'available' }),
   ]));
-  expect(service.availability('operator')).toEqual(expect.arrayContaining([
+  expect(await service.availability('operator')).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: 'meridian-funds-transfer', state: 'not_recorded', reason: 'No approved recording' }),
   ]));
   const foreign = journal.reserve('foreign-owner', 'foreign-key', 'meridian-member-record', '1.0.0', {});
   journal.update(foreign.runId, 'dispatching');
   journal.update(foreign.runId, 'failure');
-  const quarantined = service.availability('caller').find(item => item.id === 'meridian-member-record');
+  const quarantined = (await service.availability('caller')).find(item => item.id === 'meridian-member-record');
   expect(quarantined).toMatchObject({ state: 'temporarily_unavailable' });
   expect(JSON.stringify(quarantined)).not.toContain('foreign-owner');
   expect(JSON.stringify(quarantined)).not.toContain(foreign.runId);
@@ -75,14 +75,14 @@ it('reports active and shutdown availability without changing the fixed public c
   const journal = new Journal(join(root, 'journal'), 'k'.repeat(32));
   const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record'], artifacts);
   (service as unknown as { active?: string }).active = 'active-run';
-  expect(service.availability('caller').find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
-  expect(service.availability('caller').map(item => item.id)).toHaveLength(7);
-  expect(service.availability('caller').map(item => item.id)).not.toContain('hidden-capability');
+  expect((await service.availability('caller')).find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
+  expect((await service.availability('caller')).map(item => item.id)).toHaveLength(7);
+  expect((await service.availability('caller')).map(item => item.id)).not.toContain('hidden-capability');
   await service.close();
-  expect(service.availability('caller').find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Server is shutting down' });
+  expect((await service.availability('caller')).find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Server is shutting down' });
 });
 
-it('exposes finishedAt only for live completion, never historical journal records', () => {
+it('exposes finishedAt only for live completion, never historical journal records', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ui-readiness-')); temporary.push(root);
   const artifacts = join(root, 'artifacts'); mkdirSync(artifacts);
   copyFileSync('artifacts/meridian-member-record.v1.0.0.json', join(artifacts, 'member-record.json'));
@@ -92,8 +92,8 @@ it('exposes finishedAt only for live completion, never historical journal record
   const record = journal.reserve('caller', 'history-key', 'meridian-member-record', '1.0.0', {});
   journal.update(record.runId, 'success');
   service.live.set(record.runId, { state: 'success', inputs: {}, started: 10, finished: 20, approval: new Approval(new ControlSession(), () => {}, Date.now() + 1000) });
-  expect(service.get('caller', record.runId).finishedAt).toBe(new Date(20).toISOString());
+  expect((await service.get('caller', record.runId)).finishedAt).toBe(new Date(20).toISOString());
   service.live.delete(record.runId);
-  expect(service.get('caller', record.runId).finishedAt).toBeUndefined();
+  expect((await service.get('caller', record.runId)).finishedAt).toBeUndefined();
   journal.close();
 });

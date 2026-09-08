@@ -67,7 +67,7 @@ async function start(service: InvocationService, model?: MockLanguageModelV3, lo
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Expected TCP test server');
   return (path: string, token: string, options: { method?: string; body?: unknown; key?: string } = {}) =>
-    new Promise<{ status: number; text: string; json: any }>((resolve, reject) => {
+    new Promise<{ status: number; headers: Headers; text: string; json: any }>((resolve, reject) => {
       const req = httpRequest({
         hostname: '127.0.0.1', port: address.port, path, method: options.method ?? 'GET',
         headers: {
@@ -82,7 +82,7 @@ async function start(service: InvocationService, model?: MockLanguageModelV3, lo
           const text = Buffer.concat(chunks).toString('utf8');
           let json: unknown;
           try { json = JSON.parse(text); } catch { json = undefined; }
-          resolve({ status: response.statusCode!, text, json });
+          resolve({ status: response.statusCode!, headers: new Headers(response.headers as Record<string, string>), text, json });
         });
       });
       req.on('error', reject);
@@ -170,23 +170,23 @@ it('applies exact subject ownership to run history, detail, approval projection,
   const own = journal.reserve(principalKey(a), 'same-key', 'lookup', '1.0.0', {});
   const foreign = journal.reserve(principalKey(b), 'same-key', 'lookup', '1.0.0', {});
   const legacy = journal.reserve('caller', 'legacy-key', 'lookup', '1.0.0', {});
-  expect(service.get(a, own.runId).runId).toBe(own.runId);
-  expect(() => service.get(b, own.runId)).toThrow('another principal');
-  expect(service.history(a).map(run => run.runId)).toEqual([own.runId]);
-  expect(service.history(b).map(run => run.runId)).toEqual([foreign.runId]);
-  expect(() => service.get('operator', own.runId)).toThrow('another principal');
-  expect(service.get('operator', legacy.runId).runId).toBe(legacy.runId);
+  expect((await service.get(a, own.runId)).runId).toBe(own.runId);
+  await expect(service.get(b, own.runId)).rejects.toThrow('another principal');
+  expect((await service.history(a)).map(run => run.runId)).toEqual([own.runId]);
+  expect((await service.history(b)).map(run => run.runId)).toEqual([foreign.runId]);
+  await expect(service.get('operator', own.runId)).rejects.toThrow('another principal');
+  expect((await service.get('operator', legacy.runId)).runId).toBe(legacy.runId);
 
   const session = new ControlSession();
   const approval = new Approval(session, () => {}, Date.now() + 60_000);
   const pending = approval.wait({ kind: 'replay_stuck', capability: 'lookup', goal: 'read', reason: 'stuck', url: 'https://example.test' });
   service.live.set(own.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval });
-  expect(service.get(a, own.runId).intervention).toEqual({ kind: 'replay_stuck', awaitingOperator: true });
+  expect((await service.get(a, own.runId)).intervention).toEqual({ kind: 'replay_stuck', awaitingOperator: true });
   const ownOperator: SubjectPrincipal = { ...a, role: 'operator' };
-  expect(service.get(ownOperator, own.runId).intervention).toMatchObject({ id: approval.pending!.id });
-  expect(() => service.decide(a, own.runId, approval.pending!.id, 'abort')).toThrow('Only operators');
-  expect(() => service.decide({ ...b, role: 'operator' }, own.runId, approval.pending!.id, 'abort')).toThrow('another principal');
-  service.decide(ownOperator, own.runId, approval.pending!.id, 'abort');
+  expect((await service.get(ownOperator, own.runId)).intervention).toMatchObject({ id: approval.pending!.id });
+  await expect(service.decide(a, own.runId, approval.pending!.id, 'abort')).rejects.toThrow('Only operators');
+  await expect(service.decide({ ...b, role: 'operator' }, own.runId, approval.pending!.id, 'abort')).rejects.toThrow('another principal');
+  await service.decide(ownOperator, own.runId, approval.pending!.id, 'abort');
   expect(await pending).toBe('abort');
 });
 
@@ -300,4 +300,83 @@ it('binds subject-owned status aliases and reconstructs only that subject old-me
   expect(ownPrompt).not.toContain('PRIVATE_OLD_REQUEST');
   expect(foreignPrompt).not.toContain(own.runId);
   expect(foreignPrompt).not.toContain('PRIVATE_OLD_REQUEST');
+});
+
+it('recovers an accepted chat request by its original subject key without executing work', async () => {
+  const { journal, service } = makeService();
+  const own = journal.reserve(principalKey(a), 'recover-direct', 'lookup', '1.0.0', {});
+  journal.update(own.runId, 'success');
+  const alias = journal.bindReference(principalKey(a), 'recover-alias', own.runId);
+  expect(alias).toBeUndefined();
+  const operatorSubjectRun = journal.reserve(principalKey(operator), 'recover-operator-subject', 'lookup', '1.0.0', {});
+  journal.update(operatorSubjectRun.runId, 'success');
+  const legacyOperatorRun = journal.reserve('operator', 'recover-legacy-operator', 'lookup', '1.0.0', {});
+  journal.update(legacyOperatorRun.runId, 'success');
+  const foreign = journal.reserve(principalKey(b), 'recover-foreign', 'lookup', '1.0.0', {});
+  journal.update(foreign.runId, 'success');
+  const unknown = journal.reserve(principalKey(a), 'recover-unknown', 'lookup', '1.0.0', {});
+  journal.update(unknown.runId, 'dispatching');
+  journal.update(unknown.runId, 'failure');
+
+  const invoke = vi.spyOn(service, 'invoke');
+  const bindReference = vi.spyOn(journal, 'bindReference');
+  const request = await start(service);
+
+  const direct = await request('/api/chat/request', aToken, { key: 'recover-direct' });
+  expect(direct.status).toBe(200);
+  expect(direct.json).toEqual({ kind: 'run', runId: own.runId, capability: 'lookup', state: 'success' });
+  expect(direct.headers.get('cache-control')).toContain('no-store');
+
+  const statusAlias = await request('/api/chat/request', aToken, { key: 'recover-alias' });
+  expect(statusAlias).toMatchObject({
+    status: 200,
+    json: { kind: 'run', runId: own.runId, capability: 'lookup', state: 'success' },
+  });
+  const unknownResponse = await request('/api/chat/request', aToken, { key: 'recover-unknown' });
+  expect(unknownResponse).toMatchObject({
+    status: 200,
+    json: { kind: 'run', runId: unknown.runId, capability: 'lookup', state: 'POST_OUTCOME_UNKNOWN' },
+  });
+
+  // Operator authority is demoted to the caller role while retaining its subject identity.
+  expect(await request('/api/chat/request', operatorToken, { key: 'recover-operator-subject' })).toMatchObject({
+    status: 200,
+    json: { kind: 'run', runId: operatorSubjectRun.runId },
+  });
+  expect((await request('/api/chat/request', operatorToken, { key: 'recover-legacy-operator' })).status).toBe(404);
+  expect((await request('/api/chat/request', aToken, { key: 'recover-foreign' })).status).toBe(404);
+  expect((await request('/api/chat/request', aToken, { key: 'recover-missing' })).status).toBe(404);
+  expect((await request('/api/chat/request', aToken)).status).toBe(400);
+
+  const findRequest = vi.spyOn(journal, 'findRequest').mockImplementation(() => { throw new Error('PRIVATE storage failure'); });
+  const unavailable = await request('/api/chat/request', aToken, { key: 'recover-direct' });
+  expect(unavailable.status).toBe(503);
+  expect(unavailable.text).not.toContain('PRIVATE storage failure');
+  expect(invoke).not.toHaveBeenCalled();
+  expect(bindReference).not.toHaveBeenCalled();
+  expect(findRequest).toHaveBeenCalledOnce();
+});
+
+it('keeps lookupOnly subject recovery exact across UNKNOWN, changed facts, and foreign subjects', async () => {
+  const { journal, service } = makeService(true);
+  const request = {
+    mode: 'replay', capability: 'hand-lookup-member-balance', version: '1.0.0',
+    args: { memberId: '123' }, context: null,
+  };
+  const accepted = journal.reserve(principalKey(a), 'lookup-only-subject', 'hand-lookup-member-balance', '1.0.0', request);
+  journal.update(accepted.runId, 'dispatching');
+  journal.update(accepted.runId, 'failure');
+  const before = journal.records.size;
+  const create = vi.spyOn(runtime, 'createRuntime');
+
+  expect(await service.invoke(a, 'hand-lookup-member-balance', { memberId: '123' }, 'lookup-only-subject', 'TELLER', true))
+    .toEqual({ runId: accepted.runId, reused: true });
+  await expect(service.invoke(a, 'hand-lookup-member-balance', { memberId: '124' }, 'lookup-only-subject', 'TELLER', true))
+    .rejects.toThrow(/another request/);
+  await expect(service.invoke(b, 'hand-lookup-member-balance', { memberId: '123' }, 'lookup-only-subject', 'TELLER', true))
+    .rejects.toThrow(/No accepted request/);
+  await expect(service.invoke(a, 'hand-lookup-member-balance', { memberId: '123' }, 'missing-lookup-only', 'TELLER', true))
+    .rejects.toThrow(/No accepted request/);
+  expect(journal.records.size).toBe(before);
+  expect(create).not.toHaveBeenCalled();
 });

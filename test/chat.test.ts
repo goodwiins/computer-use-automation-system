@@ -458,7 +458,8 @@ describe('AI SDK chat boundary', () => {
       expect(isolatedPrompt).not.toContain('PRIVATE_OLD_OPERATION');
       expect(create).toHaveBeenCalledTimes(2);
       await chatService.close();
-      expect(() => chatService.invoke('caller', artifact.id, args, 'after-close')).toThrow('Server is shutting down');
+      await expect(chatService.invoke('caller', artifact.id, args, initial.headers['Idempotency-Key'])).resolves.toEqual({ runId: original.runId, reused: true });
+      await expect(chatService.invoke('caller', artifact.id, args, 'after-close')).rejects.toThrow('Server is shutting down');
       expect(create).toHaveBeenCalledTimes(2);
     } finally { await chatService.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); }
   });

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import type { LanguageModel } from 'ai';
 import { Pool } from 'pg';
 import { z } from 'zod';
-import { RequestError, Journal } from '../runtime/journal.js';
+import { RequestError, type RunJournal } from '../runtime/journal.js';
+import { openRunJournal } from '../runtime/open-journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
 import { InvocationService } from './service.js';
@@ -17,6 +18,26 @@ import { ConversationStore } from './conversations.js';
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional(), lookupOnly: z.literal(true).optional() }).strict();
 const hash = (value: string) => createHash('sha256').update(value).digest();
+const asyncRoute = (handler: (req: Request, res: Response) => Promise<void>) =>
+  (req: Request, res: Response, next: NextFunction) => { void handler(req, res).catch(next); };
+
+export type ServerStorageConfiguration = {
+  mode: 'filesystem' | 'postgres';
+  databaseUrl?: string;
+  subjectTokens?: SubjectCredential[];
+  enableConversations: boolean;
+};
+
+export function resolveServerStorageConfiguration(env: NodeJS.ProcessEnv = process.env): ServerStorageConfiguration {
+  const mode = env.RUN_JOURNAL ?? 'filesystem';
+  if (mode !== 'filesystem' && mode !== 'postgres') throw new Error('RUN_JOURNAL must be filesystem or postgres');
+  const subjectTokens = parseSubjectCredentials(env.SUBJECT_API_TOKENS);
+  const databaseUrl = env.DATABASE_URL || undefined;
+  if (databaseUrl && !subjectTokens && mode !== 'postgres') throw new Error('Conversation storage configuration is invalid');
+  if (mode === 'postgres' && !databaseUrl) throw new Error('PostgreSQL journal requires DATABASE_URL');
+  return { mode, databaseUrl, subjectTokens, enableConversations: Boolean(databaseUrl && subjectTokens) };
+}
+
 export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
   const authenticate = createAuthenticator(config);
   const localTellerLogin = config.subjectTokens ? undefined : config.localTellerLogin;
@@ -54,29 +75,30 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal; next();
   });
-  app.get('/capabilities', (_req, res) => {
+  app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;
     res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
-      availability: typeof service.availability === 'function' ? service.availability(principal) : null });
-  });
-  app.get('/runs', (_req, res) => res.json(service.history(res.locals.principal)));
-  app.get('/runs/:id', (req, res) => res.json(service.get(res.locals.principal, req.params.id!)));
-  app.post('/capabilities/:id/invoke', (req, res) => {
+      availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
+  }));
+  app.get('/runs', asyncRoute(async (_req, res) => { res.json(await service.history(res.locals.principal)); }));
+  app.get('/runs/:id', asyncRoute(async (req, res) => { res.json(await service.get(res.locals.principal, req.params.id!)); }));
+  app.post('/capabilities/:id/invoke', asyncRoute(async (req, res) => {
     const body = Invoke.parse(req.body);
-    res.status(202).json(service.invoke(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator, body.lookupOnly ?? false));
-  });
-  app.post('/runs/:id/decision', (req, res) => {
+    res.status(202).json(await service.invoke(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator, body.lookupOnly ?? false));
+  }));
+  app.post('/runs/:id/decision', asyncRoute(async (req, res) => {
     const body = z.object({ approvalId: z.string().uuid(), decision: z.enum(['approve', 'retry', 'abort']) }).strict().parse(req.body);
-    service.decide(res.locals.principal, req.params.id!, body.approvalId, body.decision);
+    await service.decide(res.locals.principal, req.params.id!, body.approvalId, body.decision);
     res.json({ accepted: true });
-  });
-  app.get('/runs/:id/evidence/:file', (req, res) => {
-    const run = service.get(res.locals.principal, req.params.id!);
+  }));
+  app.get('/runs/:id/evidence/:file', asyncRoute(async (req, res) => {
+    const run = await service.get(res.locals.principal, req.params.id!);
     if (!run.evidence.includes(req.params.file!)) throw new RequestError(404, 'Unknown evidence file');
     res.sendFile(resolve(join(service.evidenceDir, req.params.id!, req.params.file!)));
-  });
+  }));
   app.use('/conversations', conversationRouter(service, config.conversations));
   const chat = createChatHandlers(service, config.chatModel);
+  app.get('/api/chat/request', chat.request);
   app.post('/chat', chat.legacy);
   app.post('/api/chat', chat.stream);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -90,39 +112,57 @@ export async function serve(profileName = 'meridian') {
   const profile = loadProfile(profileName);
   const policy = profilePolicy(profile);
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';
-  const journal = new Journal(join(evidenceDir, 'journal'), process.env.JOURNAL_HMAC_KEY ?? '');
+  const journalDir = join(evidenceDir, 'journal');
+  const journalKey = process.env.JOURNAL_HMAC_KEY ?? '';
+  let journal: RunJournal | undefined;
   let uiDir: string | undefined;
   let service: InvocationService | undefined;
   let pool: Pool | undefined;
+  let postgresJournal = false;
   let cleanupPromise: Promise<void> | undefined;
   const cleanup = () => cleanupPromise ??= (async () => {
     let failure: unknown;
     try { await service?.close(); } catch (error) { failure = error; }
+    // A runtime cleanup failure means the native close cannot be trusted. Keep
+    // the PostgreSQL authority owner so a later process cannot admit a run.
+    if (!postgresJournal || !service?.cleanupFailedState) {
+      try { await journal?.close(); } catch (error) { failure ??= error; }
+    }
     try { await pool?.end(); } catch (error) { failure ??= error; }
-    try { journal.close(); } catch (error) { failure ??= error; }
     if (uiDir) rmSync(uiDir, { recursive: true, force: true });
     if (failure) throw failure;
   })();
   try {
-    const subjectTokens = parseSubjectCredentials(process.env.SUBJECT_API_TOKENS);
-    const databaseUrl = process.env.DATABASE_URL;
-    if (databaseUrl && !subjectTokens) throw new Error('Conversation storage configuration is invalid');
-    // Snapshot the Next.js export so later builds cannot change a running instance.
-    const sourceUi = resolve('out');
-    if (!existsSync(join(sourceUi, 'index.html'))) throw new Error('Build the Next.js frontend first: npm run build');
-    uiDir = mkdtempSync(join(tmpdir(), 'meridian-ui-'));
-    cpSync(sourceUi, uiDir, { recursive: true });
-    service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
+    const storage = resolveServerStorageConfiguration();
+    const { subjectTokens, databaseUrl } = storage;
+    postgresJournal = storage.mode === 'postgres';
     let conversations: ConversationStore | undefined;
     let shutdownOnDatabaseError: (() => void) | undefined;
     if (databaseUrl) {
       try {
         pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
         pool.on('error', () => { process.exitCode = 1; shutdownOnDatabaseError?.(); });
-        conversations = new ConversationStore(pool);
-        await conversations.migrate();
+        if (storage.enableConversations) {
+          conversations = new ConversationStore(pool);
+          await conversations.migrate();
+        }
       } catch { throw new Error('Conversation storage startup failed'); }
     }
+    if (postgresJournal && !pool) throw new Error('PostgreSQL journal requires DATABASE_URL');
+    try {
+      journal = await openRunJournal(journalDir, journalKey, pool);
+    } catch (error) {
+      // Preserve the actionable local ownership error used by the lock gate;
+      // all other opener failures stay deliberately generic at the HTTP entry.
+      if (!postgresJournal && error instanceof Error && error.message === 'Journal already in use') throw error;
+      throw new Error(postgresJournal ? 'Authoritative journal startup failed' : 'Journal startup failed');
+    }
+    // Snapshot the Next.js export so later builds cannot change a running instance.
+    const sourceUi = resolve('out');
+    if (!existsSync(join(sourceUi, 'index.html'))) throw new Error('Build the Next.js frontend first: npm run build');
+    uiDir = mkdtempSync(join(tmpdir(), 'meridian-ui-'));
+    cpSync(sourceUi, uiDir, { recursive: true });
+    service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
     const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens, conversations, port, uiDir,

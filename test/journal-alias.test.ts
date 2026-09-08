@@ -1,8 +1,9 @@
 import { expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, statSync, fsyncSync, fstatSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Journal } from '../src/runtime/journal.js';
+import { Journal, readJournalSnapshot } from '../src/runtime/journal.js';
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -20,6 +21,7 @@ it('persists caller-scoped aliases without changing terminal evidence and reject
     const path = join(dir, `${original.runId}.json`);
     const before = readFileSync(path, 'utf8');
     journal.bindReference('caller', 'B', original.runId);
+    expect(() => journal.bindReference('caller', 'B', original.runId)).not.toThrow();
     expect(journal.findRequest('operator', 'B')).toBeUndefined();
     expect(() => journal.bindReference('operator', 'forged', original.runId)).toThrow('another principal');
     expect(journal.lookup('caller', 'B', request).existing?.runId).toBe(original.runId);
@@ -54,6 +56,51 @@ it('does not claim a binding when persistence fails before the alias is written'
     expect(journal.findRequest('caller', 'B')).toBeUndefined();
     expect(readFileSync(path, 'utf8')).toBe(before);
     expect(journal.records.size).toBe(1);
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('rejects bindReference through the initial health gate after close', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-alias-closed-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    journal.close();
+    expect(() => journal.bindReference('caller', 'closed-alias', randomUUID())).toThrow('Journal is closed');
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('quarantines a business outcome after durable dispatch intent but preserves one before intent', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-business-outcome-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    const before = journal.reserve('caller', 'before-business', 'write', '1.0.0', {});
+    journal.update(before.runId, 'business_outcome');
+    expect(journal.get(before.runId)?.state).toBe('business_outcome');
+
+    const after = journal.reserve('caller', 'after-business', 'write', '1.0.0', {});
+    journal.update(after.runId, 'dispatching');
+    journal.update(after.runId, 'business_outcome');
+    expect(journal.get(after.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');
+    expect(journal.hasUnknown('write')).toBe(true);
+    expect(() => journal.reserve('caller', 'fresh-business', 'write', '1.0.0', {})).toThrow(/unknown posting outcome/);
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('ignores an orphan alias publication temp during an authenticated snapshot read', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-alias-snapshot-temp-'));
+  const key = 'h'.repeat(64);
+  const journal = new Journal(dir, key);
+  try {
+    const original = journal.reserve('caller', 'A', 'write', '1.0.0', {});
+    journal.update(original.runId, 'success');
+    journal.bindReference('caller', 'B', original.runId);
+    const aliasPath = join(dir, 'aliases', readdirSync(join(dir, 'aliases'))[0]!);
+    const tempPath = `${aliasPath}.${randomUUID()}.tmp`;
+    writeFileSync(tempPath, readFileSync(aliasPath, 'utf8'));
+    journal.close();
+
+    expect(readJournalSnapshot(dir, key).aliases).toHaveLength(1);
+    writeFileSync(join(dir, 'aliases', 'unrelated.tmp'), 'garbage');
+    expect(() => readJournalSnapshot(dir, key)).toThrow(/Invalid journal snapshot entry/);
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
