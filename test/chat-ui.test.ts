@@ -3699,6 +3699,43 @@ it('keeps exact-run locks through switch-away and unlocks only after fresh confi
   await vi.waitFor(() => expect(state.decisions).toEqual(['retry']));
 }, 15000);
 
+it('keeps contact-update confirmation available when a hidden value collides with the capability name', async () => {
+  const { page, state, connect, errors } = await fixture();
+  const secrets = new Redactor();
+  secrets.addSensitiveValues(['update', 'private-credential']);
+  const capability = 'meridian-update-member';
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability, goal: 'Update contact', url: 'https://offline.example/members/9001/update' },
+    action: {
+      runId, artifact: capability, version: '1.0.0', stepId: 's13',
+      destination: 'https://offline.example/members/9001/update?token=private-credential',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { member: '9001', token: 'private-credential' }, visibleFacts: { member: '9001' }, tokenPresent: true, control: 'Save Changes',
+    },
+  }, secrets);
+  state.runs.push({ ...initialRun(), capability, state: 'awaiting-human', intervention });
+  await connect(operatorToken);
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  const dialog = page.getByRole('dialog');
+  const confirm = dialog.getByRole('button', { name: 'Confirm contact update', exact: true });
+  await confirm.waitFor();
+  expect(await confirm.isDisabled()).toBe(false);
+  await dialog.getByText('Target session: Verified for this run', { exact: false }).waitFor();
+  expect(await dialog.innerText()).not.toContain('private-credential');
+  expect(state.decisions).toEqual([]);
+
+  // A real identity mismatch must still disable confirmation; masking cannot waive it.
+  state.runs[0]!.intervention!.action!.artifact = 'meridian-place-hold';
+  await page.keyboard.press('Escape');
+  await page.locator('#refresh').click();
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  expect(await confirm.isDisabled()).toBe(true);
+  expect(await dialog.getByRole('button', { name: 'Refuse request', exact: true }).isDisabled()).toBe(false);
+  expect(state.decisions).toEqual([]);
+  expect(errors).toEqual([]);
+}, 15000);
+
 it('fails closed for mismatched or incomplete action context while keeping refusal available', async () => {
   const { page, state, connect } = await fixture();
   const intervention = publicIntervention({

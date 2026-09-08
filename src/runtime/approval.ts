@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { ControlSession, type InterventionRequest } from '../escalation/session.js';
 import { Redactor } from '../safety/redact.js';
 import { RequestError } from './journal.js';
+import { meridianContracts } from './contracts.js';
 
 export interface ActionContext {
   runId: string; artifact: string; version: string; stepId: string;
@@ -51,6 +52,8 @@ function credentialKey(key: string): boolean {
 export function publicIntervention(pending: PendingIntervention, secrets = new Redactor()): PendingIntervention {
   const { visibleFacts, businessValues, ...action } = pending.action ?? {};
   const redactor = secrets.forVisibleValues(businessValues ?? []);
+  // Canonical capability IDs are public structure used to bind the review to its run.
+  const capabilityId = (value: string) => typeof value === 'string' && Object.hasOwn(meridianContracts, value) ? value : redactor.redact(value);
   const safeUrl = (value: string) => {
     try {
       const url = new URL(value);
@@ -67,8 +70,9 @@ export function publicIntervention(pending: PendingIntervention, secrets = new R
   };
   return {
     ...pending,
-    request: { ...redactor.redact(pending.request), url: safeUrl(pending.request.url) },
+    request: { ...redactor.redact(pending.request), capability: capabilityId(pending.request.capability), url: safeUrl(pending.request.url) },
     ...(pending.action ? { action: { ...redactor.redact(action) as ActionContext,
+      artifact: capabilityId(pending.action.artifact),
       destination: safeUrl(pending.action.destination),
       facts: Object.fromEntries(Object.entries(visibleFacts ?? {})
         .filter(([key]) => !credentialKey(key) && !/body/i.test(key))
