@@ -1947,6 +1947,66 @@ it.each([
   expect(state.decisions).toEqual([]);
 }, 30000);
 
+it('claims one shared recovery probe across inline and dialog panels before a newer decision', async () => {
+  const { page, state, service, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Read fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', facts: {},
+      visibleFacts: { member: 'offline-member' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    service.invoke('caller', capability.id, { member: 'offline-member' }, route.request().headers()['idempotency-key'] ?? '');
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(operatorToken);
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor();
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`).first();
+  const accept = chatCard.getByRole('button', { name: 'Accept', exact: true });
+  await accept.waitFor();
+  await chatCard.getByRole('button', { name: 'Review request', exact: true }).click();
+  const dialogConfirm = page.getByRole('dialog').getByRole('button', { name: 'Confirm request', exact: true });
+  await dialogConfirm.waitFor();
+
+  let posts = 0;
+  await page.route('**/decision', async route => { posts += 1; await route.abort(); });
+  let releaseProbe!: () => void;
+  const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
+  let probes = 0;
+  await page.route(`**/runs/${runId}`, async route => { probes += 1; await heldProbe; await route.continue(); });
+  await dialogConfirm.click();
+  await page.getByText('Refresh to inspect authoritative state.', { exact: false }).first().waitFor();
+  // The failed decision refresh fetches the watched run once; the two mounted panels add only one recovery probe.
+  await vi.waitFor(() => expect(probes).toBe(2));
+  await page.waitForTimeout(50);
+  expect(probes).toBe(2);
+  releaseProbe();
+  await page.getByText('The server confirms this intervention is still pending.', { exact: false }).first().waitFor();
+  await vi.waitFor(async () => expect(await dialogConfirm.isEnabled()).toBe(true));
+
+  await page.unroute('**/decision');
+  await page.route('**/decision', route => { posts += 1; return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });
+  await dialogConfirm.click();
+  await vi.waitFor(() => expect(posts).toBe(2));
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(await accept.isDisabled()).toBe(true);
+  await page.waitForTimeout(50);
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(posts).toBe(2);
+}, 30000);
+
 it('resets neutral focus when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();
   const intervention = publicIntervention({

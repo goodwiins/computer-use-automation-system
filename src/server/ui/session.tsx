@@ -139,6 +139,7 @@ export type ReviewAttempt = {
   error?: string;
   probeVersion?: number;
   probeSettled?: boolean;
+  probeId?: string;
 };
 export function useRuns() {
   const value = useContext(Context);

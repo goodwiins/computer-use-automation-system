@@ -91,19 +91,23 @@ export function ApprovalPanel({ run, intervention, inline = false }: { run: Run;
   }, [attempt.sent, key]);
   useEffect(() => {
     if (!attempt.uncertain) return;
-    if (!attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
-    if (attempt.probing && !attempt.probeSettled) return;
-    if (attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
-    if (attempt.probing && attempt.probeSettled && attempt.probeVersion !== refreshVersion) {
+    const currentAttempt = getReviewAttempt(key);
+    if (!currentAttempt.uncertain) return;
+    if (!currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion === refreshVersion) return;
+    if (currentAttempt.probing && !currentAttempt.probeSettled) return;
+    if (currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion === refreshVersion) return;
+    if (currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion !== refreshVersion) {
       updateReviewAttempt(key, { probing: false });
       return;
     }
     const originalRunId = run.runId;
     const originalInterventionId = intervention.id;
-    updateReviewAttempt(key, { probing: true, probeSettled: false, probeVersion: refreshVersion });
+    const probeId = crypto.randomUUID();
+    updateReviewAttempt(key, { probing: true, probeSettled: false, probeVersion: refreshVersion, probeId });
     void request(`/runs/${segment(originalRunId)}`).then(response => response.json()).then((current: Run) => {
       const currentIntervention = interventionOf(current);
-      if (current.runId === originalRunId && current.state === 'awaiting-human'
+      if (getReviewAttempt(key).probeId === probeId
+        && current.runId === originalRunId && current.state === 'awaiting-human'
         && currentIntervention?.id === originalInterventionId) {
         updateReviewAttempt(key, {
           uncertain: false,
@@ -113,15 +117,17 @@ export function ApprovalPanel({ run, intervention, inline = false }: { run: Run;
         });
       }
     }).catch(() => { /* Keep the exact intervention locked until the next explicit refresh. */ })
-      .finally(() => updateReviewAttempt(key, { probeSettled: true }));
-  }, [attempt.uncertain, attempt.probing, attempt.probeVersion, intervention.id, key, refreshVersion, request, run.runId, updateReviewAttempt]);
+      .finally(() => {
+        if (getReviewAttempt(key).probeId === probeId) updateReviewAttempt(key, { probeSettled: true });
+      });
+  }, [attempt.uncertain, attempt.probing, attempt.probeVersion, getReviewAttempt, intervention.id, key, refreshVersion, request, run.runId, updateReviewAttempt]);
   async function decide(decision: 'approve' | 'retry' | 'abort') {
     const originalRunId = run.runId;
     const originalInterventionId = intervention.id;
     const current = getReviewAttempt(key);
     if (connectionError || current.locked || (decision === 'approve' && !actionContextValid)) return;
     activeSubmission.current = true;
-    updateReviewAttempt(key, { locked: true, sent: true, error: undefined });
+    updateReviewAttempt(key, { locked: true, sent: true, error: undefined, probeId: undefined });
     try {
       await request(`/runs/${segment(originalRunId)}/decision`, {
         method: 'POST',

@@ -18,4 +18,8 @@ Verification:
 - `npm run build` — passed as the focused test pretest
 - `git diff --check` — passed
 
-Full `npm run ci` with disposable PostgreSQL on port 55442 is assigned to root's shared heavy-check slot. No live mutation or capability acceptance is claimed by these offline UI fixtures.
+Root subsequently ran full `npm run ci` at `758a48d` with disposable PostgreSQL on port 55442: 51 files and 1108 tests passed.
+
+Independent review found a duplicate-panel recovery race. The follow-up fix claims the probe from a fresh shared-attempt snapshot and gives each probe an identity; callbacks update the attempt only while that identity remains current. A held-response browser regression verifies one recovery probe across inline and dialog mounts and keeps a newer decision locked on both surfaces.
+
+No live mutation or capability acceptance is claimed by these offline UI fixtures.
