@@ -129,7 +129,8 @@ export default function App() {
         {preview && <p role="note"><strong>UI-only preview · Backend not connected</strong></p>}
         <p className="sidebar-title">Your workspace</p>
         <section aria-label="Session" className="session">
-          <form ref={loginForm} id="login" onSubmit={connect} autoComplete="off">
+          {session && <button type="button" className="disconnect-button" onClick={disconnect}>Disconnect</button>}
+          <form hidden={Boolean(session)} ref={loginForm} id="login" onSubmit={connect} autoComplete="off">
             {localLogin && <>
               <label htmlFor="login-role">Role</label>
               <select id="login-role" value={loginRole} disabled={connecting} onChange={event => {
@@ -151,9 +152,9 @@ export default function App() {
             <div className="login-row">
               {!localLogin && <input id="credential" name="credential" type="password" disabled={preview} required autoComplete="off" spellCheck={false} />}
               <button disabled={preview || connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
-              {(session || connecting) && (
+              {connecting && (
                 <button type="button" onClick={disconnect}>
-                  {connecting ? 'Cancel' : 'Disconnect'}
+                  Cancel
                 </button>
               )}
             </div>

@@ -583,6 +583,8 @@ async function fixture(
   expect(documentResponse?.headers()['content-security-policy']).toContain("script-src 'self'");
   expect(documentResponse?.headers()['content-security-policy']).not.toContain('unsafe-inline');
   async function connect(token = callerToken) {
+    const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
+    if (await disconnect.isVisible()) await disconnect.click();
     await page.locator('#credential').fill(token);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor();
@@ -914,6 +916,9 @@ it('connects a local supervisor using operator and password, clearing the passwo
     await role.waitFor();
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await visible(page, '#status', 'Connected as caller');
+    expect(await page.locator('#login').isHidden()).toBe(true);
+    await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+    expect(await page.locator('#login').isVisible()).toBe(true);
     await role.selectOption('operator');
     expect(await page.locator('#credential').count()).toBe(0);
     const operator = page.getByLabel('Operator', { exact: true });
@@ -935,13 +940,19 @@ it('connects a local supervisor using operator and password, clearing the passwo
       status: 'success', outputs: { operator: 'SUPER1', role: 'SUPERVISOR', branch: 'MAIN' },
     } });
     await visible(page, '#status', 'Signed in as SUPER1 · SUPERVISOR · Branch MAIN');
+    expect(await page.locator('#login').isHidden()).toBe(true);
+    const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
+    expect(await disconnect.count()).toBe(1);
     await page.locator('#workspace').waitFor();
     expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
     expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
     expect(errors).toEqual([]);
     for (const width of [320, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
-      expect(await page.locator('#login').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      const button = await disconnect.boundingBox();
+      const section = await page.locator('.session').boundingBox();
+      expect(button!.height).toBeGreaterThanOrEqual(64);
+      expect(button!.width).toBeCloseTo(section!.width, 0);
     }
   } finally { vi.unstubAllEnvs(); }
 }, 15000);
@@ -2260,17 +2271,17 @@ it('offline polling survives identical failures, recovers automatically and stop
   await page.waitForTimeout(1700);
   expect(state.requests.filter((request) => request.path === '/runs')).toHaveLength(reads);
 }, 15000);
-it('offline disconnect, auth expiry and pagehide clear a newly typed credential draft', async () => {
+it('offline disconnect, auth expiry and pagehide restore the login form with empty credentials', async () => {
   const { page, state, connect } = await fixture();
   await connect();
-  await page.locator('#credential').fill(operatorToken);
+  expect(await page.locator('#credential').isHidden()).toBe(true);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   expect(await page.locator('#credential').inputValue()).toBe('');
   const attempts = state.requests.filter((request) => request.path === '/capabilities').length;
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   expect(state.requests.filter((request) => request.path === '/capabilities')).toHaveLength(attempts);
   await connect();
-  await page.locator('#credential').fill(operatorToken);
+  expect(await page.locator('#credential').isHidden()).toBe(true);
   await page.route('**/runs', (route) =>
     route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"expired"}' }),
   );
@@ -2279,7 +2290,7 @@ it('offline disconnect, auth expiry and pagehide clear a newly typed credential 
   expect(await page.locator('#credential').inputValue()).toBe('');
   await page.unroute('**/runs');
   await connect();
-  await page.locator('#credential').fill(operatorToken);
+  expect(await page.locator('#credential').isHidden()).toBe(true);
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
   await page.locator('#workspace').waitFor({ state: 'detached' });
   expect(await page.locator('#credential').inputValue()).toBe('');
@@ -2757,6 +2768,7 @@ it('keeps a replacement session connected when an old capability refresh is abor
   await connect(callerToken);
   await vi.waitFor(() => expect(state.capabilityPartial).toBe(true));
   try {
+    await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await page.locator('#credential').fill(callerToken);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.getByText('Connected as caller. Credentials remain in page memory.', { exact: true }).waitFor();
