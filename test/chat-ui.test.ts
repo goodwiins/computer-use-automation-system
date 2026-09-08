@@ -1094,6 +1094,8 @@ it('preserves the conversation across responsive Activity navigation', async () 
     await activity.focus();
     await page.keyboard.press('Enter');
     expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+    await expectNoHorizontalOverflow(page, '.activity-panel');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (width === 320 || width === 1440) {
       await page.screenshot({ path: walkthroughScreenshotPath(`activity-${width}.png`), fullPage: true });
     }
@@ -1111,7 +1113,6 @@ it('preserves the conversation across responsive Activity navigation', async () 
       await page.keyboard.press('Enter');
       expect(await activity.getAttribute('aria-expanded')).toBe('false');
     }
-    await expectNoHorizontalOverflow(page, '.activity-panel');
     await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 320);
     expect(await message.inputValue()).toBe('Draft survives Activity');
     expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
@@ -1127,6 +1128,84 @@ it('preserves the conversation across responsive Activity navigation', async () 
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
 }, 30000);
+
+it('moves Activity focus with the responsive breakpoint while the panel stays open', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+
+  await page.setViewportSize({ width: 768, height: 900 });
+  expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+  expect(await back.isVisible()).toBe(true);
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  expect(await back.isVisible()).toBe(false);
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Activity'));
+  expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  expect(await back.isVisible()).toBe(true);
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('preserves a newer conversation scroll position when closing wide Activity', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+  await activity.click();
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 120;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(120);
+
+  await activity.click();
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 520;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await activity.click();
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('restores narrow conversation scroll after crossing the breakpoint while Activity stays open', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await activity.click();
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 180;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(180);
+  await activity.click();
+  expect(await back.isVisible()).toBe(true);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  expect(await page.locator('.chat').isVisible()).toBe(true);
+  await page.setViewportSize({ width: 320, height: 900 });
+  expect(await back.isVisible()).toBe(true);
+  await back.click();
+  await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 180);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(180);
+  expect(errors).toEqual([]);
+}, 15000);
 
 it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoom at 200%', async () => {
   const { page, state, connect, errors, nativeDisplay } = await fixture(false, undefined, { nativeZoom200: true });

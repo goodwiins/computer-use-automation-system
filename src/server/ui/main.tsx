@@ -192,12 +192,23 @@ function Workspace() {
     setActivityOpen(true);
   };
   const closeActivity = () => {
-    shouldRestoreConversationFocusRef.current = true;
+    shouldRestoreConversationFocusRef.current =
+      document.querySelector<HTMLElement>('.chat')?.getClientRects().length === 0;
     setActivityOpen(false);
   };
   useLayoutEffect(() => {
     let restoreFrame: number | undefined;
     const back = activityBackRef.current;
+    const narrowActivity = window.matchMedia('(max-width: 1023px)');
+    const moveActivityFocus = () => {
+      if (!activityOpen) return;
+      if (narrowActivity.matches) {
+        activityBackRef.current?.focus();
+      } else {
+        activityTriggerRef.current?.focus();
+      }
+    };
+    narrowActivity.addEventListener('change', moveActivityFocus);
     if (activityOpen && back && back.getClientRects().length > 0) {
       back.focus();
     } else if (!activityOpen && shouldRestoreConversationFocusRef.current) {
@@ -216,6 +227,7 @@ function Workspace() {
       shouldRestoreConversationFocusRef.current = false;
     }
     return () => {
+      narrowActivity.removeEventListener('change', moveActivityFocus);
       if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
     };
   }, [activityOpen]);
