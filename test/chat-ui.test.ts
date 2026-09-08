@@ -1890,6 +1890,14 @@ it('offline operator review controls require live authority, keyboard focus, rea
   expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
   await page.keyboard.press('Tab');
   expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  const hiddenDetailsValue = expiredDetails.locator('..').locator('dd').first();
+  await hiddenDetailsValue.evaluate(element => element.setAttribute('tabindex', '0'));
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(false);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: collecting a focusable descendant from closed Details would let sequential Tab escape instead of wrapping to the heading.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await hiddenDetailsValue.evaluate(element => element.removeAttribute('tabindex'));
   await expiredDetails.click();
   expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(true);
   await expiredDetails.focus();
@@ -2955,6 +2963,7 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
     createdAt: '2026-09-08T00:00:00.000Z',
     updatedAt: '2026-09-08T00:00:00.000Z',
   };
+  let deleted = false;
   const conversationRequests: string[] = [];
   await page.route('**/conversations**', async route => {
     const request = route.request();
@@ -2966,7 +2975,7 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ conversations: record.archived === archived ? [record] : [] }),
+        body: JSON.stringify({ conversations: !deleted && record.archived === archived ? [record] : [] }),
       });
     }
     if (request.method() === 'GET' && path === `/conversations/${regularId}/events`) {
@@ -2982,6 +2991,7 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(record) });
     }
     if (request.method() === 'DELETE' && path === `/conversations/${regularId}`) {
+      deleted = true;
       record.archived = true;
       return route.fulfill({ status: 204, body: '' });
     }
@@ -3025,24 +3035,39 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
   await vi.waitFor(() => expect(record.archived).toBe(true));
   const restore = savedConversations.getByRole('button', { name: 'Restore conversation', exact: true });
   await restore.waitFor();
-  await restore.focus();
+  await newConversation.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: a restored row's action must be reached by sequential keyboard traversal, not only by a script-driven focus call.
+  expect(await restore.evaluate(element => element === document.activeElement)).toBe(true);
   // Production break caught: archived saved rows must expose a keyboard-reachable restore action.
   await expectKeyboardVisibleFocus(restore);
-  const deleteArchived = savedConversations.getByRole('button', { name: 'Delete conversation', exact: true });
-  await page.keyboard.press('Tab');
-  expect(await deleteArchived.evaluate(element => element === document.activeElement)).toBe(true);
-  await page.keyboard.press('Shift+Tab');
-  expect(await restore.evaluate(element => element === document.activeElement)).toBe(true);
   await page.keyboard.press('Enter');
   await vi.waitFor(() => expect(record.archived).toBe(false));
   const restoredOpen = savedConversations.getByRole('button', { name: 'Open Saved conversation', exact: true });
   await restoredOpen.waitFor();
-  await restoredOpen.focus();
+  const restoredRow = restoredOpen.locator('..');
+  const archiveRestored = restoredRow.getByRole('button', { name: 'Archive conversation', exact: true });
+  await newConversation.focus();
   await page.keyboard.press('Tab');
+  expect(await restoredOpen.evaluate(element => element === document.activeElement)).toBe(true);
   await page.keyboard.press('Tab');
-  expect(await deleteRegular.evaluate(element => element === document.activeElement)).toBe(true);
+  expect(await archiveRestored.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: archiving the restored row must remain a real keyboard action in the natural control state.
   await page.keyboard.press('Enter');
-  await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Open Saved conversation', exact: true }).count()).toBe(0));
+  await vi.waitFor(() => expect(record.archived).toBe(true));
+  const deleteArchived = savedConversations.getByRole('button', { name: 'Delete conversation', exact: true });
+  const restoreAgain = savedConversations.getByRole('button', { name: 'Restore conversation', exact: true });
+  await restoreAgain.waitFor();
+  await newConversation.focus();
+  await page.keyboard.press('Tab');
+  expect(await restoreAgain.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  // Production break caught: the archived Delete action must be activated from keyboard, not merely traversed.
+  expect(await deleteArchived.evaluate(element => element === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(deleteArchived);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(deleted).toBe(true));
+  await vi.waitFor(async () => expect(await page.getByRole('button', { name: /Open Saved conversation|Restore conversation/ }).count()).toBe(0));
   expect(conversationRequests).toContain(`PATCH /conversations/${regularId}`);
   expect(conversationRequests).toContain(`DELETE /conversations/${regularId}`);
 }, 15000);
