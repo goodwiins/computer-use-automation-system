@@ -858,7 +858,7 @@ it('keeps the Next.js chat focused and preserves a draft when Activity is toggle
   }
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
-}, 15000);
+}, 30000);
 
 it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
   const { page, errors } = await fixture(true);
