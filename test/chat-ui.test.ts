@@ -1833,7 +1833,7 @@ it('offline operator controls require live authority, submit browser-expired dec
   await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
-  await visible(page, '.approval', 'Intervention expired.');
+  await visible(page, '.approval', 'Estimated deadline passed.');
   const expiredRefuse = page.getByRole('button', { name: 'Refuse request', exact: true });
   expect(await expiredRefuse.isEnabled()).toBe(true);
   await expiredRefuse.click();
@@ -2393,6 +2393,7 @@ it('keeps exact-run locks through switch-away and unlocks only after fresh confi
   expect(await secondRetry.isDisabled()).toBe(false);
   expect(posts).toBe(1);
   await page.keyboard.press('Escape');
+  await page.clock.setFixedTime(Date.now() + 3_600_000);
   let releaseProbe!: () => void;
   const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
   let probes = 0;

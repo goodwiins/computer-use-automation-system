@@ -74,7 +74,7 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
   const key = `${run.runId}:${intervention.id}`;
   const attempt: ReviewAttempt = getReviewAttempt(key);
   const approval = intervention.request.kind === 'risk_approval';
-  const expired = now >= intervention.expiresAt;
+  const deadlinePassed = now >= intervention.expiresAt;
   const action = intervention.action;
   const submitted = useRef<HTMLParagraphElement>(null);
   const actionContextValid = hasActionContext(action, run, intervention);
@@ -100,7 +100,7 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     void request(`/runs/${segment(originalRunId)}`).then(response => response.json()).then((current: Run) => {
       const currentIntervention = interventionOf(current);
       if (current.runId === originalRunId && current.state === 'awaiting-human'
-        && currentIntervention?.id === originalInterventionId && Date.now() < currentIntervention.expiresAt) {
+        && currentIntervention?.id === originalInterventionId) {
         updateReviewAttempt(key, {
           uncertain: false,
           locked: false,
@@ -138,7 +138,9 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     <section className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
       <h3>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
       <p>{intervention.request.reason}</p>
-      <p>{expired ? 'Intervention expired.' : `Expires ${new Date(intervention.expiresAt).toLocaleString()}`}</p>
+      <p>{deadlinePassed
+        ? 'Estimated deadline passed. The server will confirm whether this intervention is still pending.'
+        : `Estimated deadline ${new Date(intervention.expiresAt).toLocaleString()}. The server decides availability.`}</p>
       {approval && action ? (
         <>
           <h4>Review the exact request</h4>
