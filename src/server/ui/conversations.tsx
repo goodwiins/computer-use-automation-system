@@ -77,6 +77,8 @@ export type ConversationSaveStatus =
   | 'saving'
   | 'saved'
   | 'unavailable'
+  | 'capacity'
+  | 'rate-limited'
   | 'conflict'
   | 'unsaved';
 
@@ -91,11 +93,13 @@ type RequestFailure = Error & { status?: number };
 
 class ConversationRequestError extends Error {
   readonly status: number;
+  readonly quotaRateLimited: boolean;
 
-  constructor(status: number) {
+  constructor(status: number, quotaRateLimited = false) {
     super(status === 503 ? 'Conversation storage is unavailable.' : `Conversation request failed (${status}).`);
     this.name = 'ConversationRequestError';
     this.status = status;
+    this.quotaRateLimited = quotaRateLimited;
   }
 }
 
@@ -283,15 +287,27 @@ function errorStatus(error: unknown): number | undefined {
 
 function statusError(status: ConversationSaveStatus): string | undefined {
   if (status === 'unavailable') return 'Conversation storage is unavailable; this chat is not saved.';
+  if (status === 'capacity') return 'Conversation storage capacity is full; this chat is not saved.';
+  if (status === 'rate-limited') return 'Conversation saving is temporarily rate-limited; this chat is not saved.';
   if (status === 'conflict') return 'Conversation changed elsewhere; saving stopped until it is refreshed.';
   if (status === 'unsaved') return 'This chat remains usable, but its conversation changes are not saved.';
   return undefined;
+}
+
+function requestFailureStatus(error: unknown, mutation = false): ConversationSaveStatus {
+  const status = errorStatus(error);
+  if (status === 503) return 'unavailable';
+  if (mutation && status === 507) return 'capacity';
+  if (mutation && status === 429 && error instanceof ConversationRequestError && error.quotaRateLimited) return 'rate-limited';
+  return 'unsaved';
 }
 
 export function conversationStatusText(status: ConversationSaveStatus, subject: boolean): string {
   if (!subject) return 'Conversations are not saved for this legacy session.';
   if (status === 'saving') return 'Saving conversation…';
   if (status === 'unavailable') return 'Conversations unavailable; this chat is not saved.';
+  if (status === 'capacity') return 'This item was not saved because conversation storage capacity is full.';
+  if (status === 'rate-limited') return 'This item was not saved because saving is temporarily rate-limited.';
   if (status === 'conflict') return 'Conversation changed elsewhere; saving stopped until it is refreshed.';
   if (status === 'unsaved') return 'Conversations not saved; this chat remains usable.';
   return 'Conversations ready.';
@@ -334,6 +350,9 @@ type Attempt = {
   completed: boolean;
 };
 
+type QuotaFailureStatus = Extract<ConversationSaveStatus, 'capacity' | 'rate-limited'>;
+type QuotaFailures = Map<string, QuotaFailureStatus>;
+
 export function createConversationController(options: {
   subjectId?: string;
   request: ConversationRequest;
@@ -349,6 +368,7 @@ export function createConversationController(options: {
   const state = new Map<string, ConversationState>();
   const queues = new Map<string, Promise<void>>();
   const attempts = new Map<string, Attempt>();
+  const quotaFailures = new Map<string, QuotaFailures>();
   const stopped = new Set<string>();
   const historyAdapters = new Map<string, ThreadHistoryAdapter>();
   const messageConversations = new Map<string, Set<string>>();
@@ -396,6 +416,64 @@ export function createConversationController(options: {
     notify();
   };
 
+  const quotaFailureStatus = (remoteId: string): QuotaFailureStatus | undefined => {
+    const failures = quotaFailures.get(remoteId);
+    if (!failures) return undefined;
+    // Capacity remains the strongest unresolved warning until every capacity
+    // operation succeeds, even when a rate-limited operation also remains.
+    if ([...failures.values()].some(status => status === 'capacity')) return 'capacity';
+    if ([...failures.values()].some(status => status === 'rate-limited')) return 'rate-limited';
+    return undefined;
+  };
+
+  const aggregateQuotaFailureStatus = (): QuotaFailureStatus | undefined => {
+    let hasRateLimited = false;
+    for (const failures of quotaFailures.values()) {
+      for (const status of failures.values()) {
+        if (status === 'capacity') return 'capacity';
+        hasRateLimited = true;
+      }
+    }
+    return hasRateLimited ? 'rate-limited' : undefined;
+  };
+
+  const failedReadStatus = (remoteId: string, error: unknown): ConversationSaveStatus => {
+    const quotaFailure = quotaFailureStatus(remoteId);
+    if (quotaFailure !== undefined) return stopped.has(remoteId) ? 'conflict' : quotaFailure;
+    return requestFailureStatus(error);
+  };
+
+  const failedListStatus = (error: unknown): ConversationSaveStatus => {
+    if (selectedRemoteId === undefined) return aggregateQuotaFailureStatus() ?? requestFailureStatus(error);
+    if (selectedRemoteId === null) return requestFailureStatus(error);
+    return failedReadStatus(selectedRemoteId, error);
+  };
+
+  const markQuotaFailure = (remoteId: string, operation: string, error: unknown): ConversationSaveStatus => {
+    const status = requestFailureStatus(error, true);
+    if (status === 'capacity' || status === 'rate-limited') {
+      const failures = quotaFailures.get(remoteId) ?? new Map<string, QuotaFailureStatus>();
+      failures.set(operation, status);
+      quotaFailures.set(remoteId, failures);
+    } else clearQuotaFailure(remoteId, operation);
+    return status;
+  };
+
+  const clearQuotaFailure = (remoteId: string, operation?: string) => {
+    if (operation === undefined) {
+      quotaFailures.delete(remoteId);
+      return;
+    }
+    const failures = quotaFailures.get(remoteId);
+    if (!failures) return;
+    failures.delete(operation);
+    if (failures.size === 0) quotaFailures.delete(remoteId);
+  };
+
+  const statusAfterSuccessfulMutation = (remoteId: string): ConversationSaveStatus => {
+    return quotaFailureStatus(remoteId) ?? 'saved';
+  };
+
   const selectConversation = (remoteId?: string) => {
     if (disposed) return;
     const nextRemoteId = remoteId && uuidPattern.test(remoteId) && remoteId === remoteId.toLowerCase()
@@ -409,11 +487,14 @@ export function createConversationController(options: {
   };
 
   const setOverallStatus = (status: ConversationSaveStatus) => {
-    const next = { ...unselectedState, status };
+    const next = {
+      ...(typeof selectedRemoteId === 'string' ? currentState(selectedRemoteId) : unselectedState),
+      status,
+    };
     const error = statusError(status);
     if (error === undefined) delete next.error;
     else next.error = error;
-    unselectedState = next;
+    if (selectedRemoteId === undefined || selectedRemoteId === null) unselectedState = next;
     overallState = next;
     notify();
   };
@@ -431,7 +512,11 @@ export function createConversationController(options: {
       throw error;
     }
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-    if (!response.ok) throw new ConversationRequestError(response.status);
+    if (!response.ok) {
+      // The durable write bucket emits this fixed marker; projection-busy 429s do not.
+      const quotaRateLimited = response.status === 429 && response.headers.get('Retry-After') === '1';
+      throw new ConversationRequestError(response.status, quotaRateLimited);
+    }
     if (response.status === 204) return undefined as T;
     try {
       const body = await response.json() as T;
@@ -446,14 +531,22 @@ export function createConversationController(options: {
   const remember = (record: ConversationRecord, preserveStatus = false) => {
     metadata.set(record.id, record);
     const existing = currentState(record.id);
-    const preserve = preserveStatus || stopped.has(record.id);
-    state.set(record.id, {
+    const quotaFailure = quotaFailureStatus(record.id);
+    const preserveQuota = quotaFailure !== undefined;
+    const preserve = preserveStatus || stopped.has(record.id) || preserveQuota;
+    const preservedStatus = stopped.has(record.id)
+      ? 'conflict'
+      : existing.status === 'saving' && preserveQuota ? 'saving' : quotaFailure ?? existing.status;
+    const nextState: ConversationState = {
       ...existing,
-      status: preserve ? existing.status : 'saved',
+      status: preserve ? preservedStatus : 'saved',
       revision: record.revision,
       archived: record.archived,
-      ...(preserve && existing.error ? { error: existing.error } : {}),
-    });
+    };
+    if (nextState.status === 'capacity' || nextState.status === 'rate-limited') nextState.error = statusError(nextState.status);
+    else if (preserve && existing.error) nextState.error = existing.error;
+    else delete nextState.error;
+    state.set(record.id, nextState);
     if (selectedRemoteId === undefined) {
       unselectedState = state.get(record.id)!;
       overallState = unselectedState;
@@ -494,21 +587,27 @@ export function createConversationController(options: {
     return task;
   };
 
-  const ensureConversation = (remoteId: string, capturedEpoch: number): Promise<void> => {
+  const ensureConversation = (remoteId: string, capturedEpoch: number, operation = `create:${remoteId}`): Promise<void> => {
     if (metadata.has(remoteId) || !locallyCreatedIds.has(remoteId)) return Promise.resolve();
     const existing = creationPromises.get(remoteId);
     if (existing) return existing;
     const creation = (async () => {
-      const raw = await requestJson<unknown>('/conversations', {
-        method: 'POST',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: remoteId }),
-      }, capturedEpoch);
-      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      const record = parseConversation(raw);
-      if (record.id !== remoteId) throw new Error('Conversation creation returned a different id.');
-      remember(record, currentState(remoteId).status === 'saving');
+      try {
+        const raw = await requestJson<unknown>('/conversations', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: remoteId }),
+        }, capturedEpoch);
+        if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        const record = parseConversation(raw);
+        if (record.id !== remoteId) throw new Error('Conversation creation returned a different id.');
+        clearQuotaFailure(remoteId, `create:${remoteId}`);
+        remember(record, currentState(remoteId).status === 'saving');
+      } catch (error) {
+        markQuotaFailure(remoteId, operation, error);
+        throw error;
+      }
     })();
     let retained: Promise<void>;
     retained = creation.finally(() => {
@@ -528,6 +627,7 @@ export function createConversationController(options: {
     if (stopped.has(remoteId)) return Promise.reject(new Error('Conversation saving stopped after a revision conflict.'));
     const attempt = attempts.get(attemptKey) ?? { descriptor, completed: false };
     attempts.set(attemptKey, attempt);
+    const operation = `event:${attemptKey}`;
     if (attempt.completed) return Promise.resolve();
     return enqueueWrite(remoteId, async () => {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
@@ -535,7 +635,7 @@ export function createConversationController(options: {
       if (attempt.completed) return;
       setState(remoteId, 'saving');
       try {
-        await ensureConversation(remoteId, capturedEpoch);
+        await ensureConversation(remoteId, capturedEpoch, operation);
         if (!attempt.body) {
           attempt.body = Object.freeze({ id: newUuid(), ...attempt.descriptor, expectedRevision: currentState(remoteId).revision });
         }
@@ -560,21 +660,19 @@ export function createConversationController(options: {
           metadata.set(remoteId, { ...previousRecord, revision: event.sequence, updatedAt: typeof event.createdAt === 'string' ? event.createdAt : previousRecord.updatedAt });
         }
         attempt.completed = true;
-        setState(remoteId, 'saved', { revision: event.sequence });
+        clearQuotaFailure(remoteId, operation);
+        setState(remoteId, statusAfterSuccessfulMutation(remoteId), { revision: event.sequence });
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         const status = errorStatus(error);
         if (status === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
           throw new Error('Conversation revision conflict; saving stopped.');
         }
-        if (status === 503) {
-          setState(remoteId, 'unavailable');
-        } else {
-          setState(remoteId, 'unsaved');
-        }
+        setState(remoteId, markQuotaFailure(remoteId, `event:${attemptKey}`, error));
         throw error;
       }
     });
@@ -644,12 +742,16 @@ export function createConversationController(options: {
         after = raw.nextCursor;
       }
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      setState(remoteId, stopped.has(remoteId) ? 'conflict' : 'saved');
+      const quotaFailure = quotaFailureStatus(remoteId);
+      const existing = currentState(remoteId);
+      const preservedStatus = quotaFailure !== undefined && existing.status === 'saving'
+        ? 'saving'
+        : quotaFailure ?? 'saved';
+      setState(remoteId, stopped.has(remoteId) ? 'conflict' : preservedStatus);
       return loaded;
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
+      setState(remoteId, failedReadStatus(remoteId, error));
       throw error;
     }
   };
@@ -723,9 +825,11 @@ export function createConversationController(options: {
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
       if (errorStatus(error) === 503) {
-        for (const record of metadata.values()) setState(record.id, 'unavailable');
-        setOverallStatus('unavailable');
-      } else setOverallStatus('unsaved');
+        for (const record of metadata.values()) {
+          setState(record.id, failedReadStatus(record.id, error));
+        }
+      }
+      setOverallStatus(failedListStatus(error));
       throw error;
     }
   };
@@ -734,6 +838,7 @@ export function createConversationController(options: {
     if (!subjectId) throw new Error('Saved conversations are unavailable for legacy sessions.');
     lowerUuid(remoteId, 'conversation id');
     const capturedEpoch = epoch;
+    const operation = `archive:${remoteId}`;
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
     if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
     return enqueueWrite(remoteId, async () => {
@@ -752,15 +857,16 @@ export function createConversationController(options: {
           throw new Error('Conversation archive response was invalid.');
         }
         metadata.set(remoteId, record);
-        setState(remoteId, 'saved', { revision: record.revision, archived: record.archived });
+        clearQuotaFailure(remoteId, operation);
+        setState(remoteId, statusAfterSuccessfulMutation(remoteId), { revision: record.revision, archived: record.archived });
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         if (errorStatus(error) === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
-        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-        else setState(remoteId, 'unsaved');
+        } else setState(remoteId, markQuotaFailure(remoteId, operation, error));
         throw error;
       }
     });
@@ -770,6 +876,7 @@ export function createConversationController(options: {
     if (!subjectId) throw new Error('Saved conversations are unavailable for legacy sessions.');
     lowerUuid(remoteId, 'conversation id');
     const capturedEpoch = epoch;
+    const operation = `delete:${remoteId}`;
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
     if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
     return enqueueWrite(remoteId, async () => {
@@ -783,6 +890,7 @@ export function createConversationController(options: {
           body: JSON.stringify({ expectedRevision }),
         }, capturedEpoch);
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        clearQuotaFailure(remoteId);
         metadata.delete(remoteId);
         state.delete(remoteId);
         stopped.add(remoteId);
@@ -792,11 +900,11 @@ export function createConversationController(options: {
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         if (errorStatus(error) === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
-        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-        else setState(remoteId, 'unsaved');
+        } else setState(remoteId, markQuotaFailure(remoteId, operation, error));
         throw error;
       }
     });
@@ -814,8 +922,7 @@ export function createConversationController(options: {
     // Event persistence joins the same promise and cannot overtake creation.
     void ensureConversation(id, capturedEpoch).catch(error => {
       if (!isCurrent(capturedEpoch)) return;
-      if (errorStatus(error) === 503) setState(id, 'unavailable');
-      else setState(id, 'unsaved');
+      setState(id, markQuotaFailure(id, `create:${id}`, error));
     });
     return { remoteId: id, externalId: undefined };
   };
@@ -833,8 +940,7 @@ export function createConversationController(options: {
       return toMetadata(record);
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
+      setState(remoteId, failedReadStatus(remoteId, error));
       throw error;
     }
   };
@@ -937,6 +1043,7 @@ export function createConversationController(options: {
       state.clear();
       queues.clear();
       attempts.clear();
+      quotaFailures.clear();
       stopped.clear();
       historyAdapters.clear();
       messageConversations.clear();
