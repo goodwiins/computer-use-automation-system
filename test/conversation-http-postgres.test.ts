@@ -116,14 +116,14 @@ describe.sequential('conversation HTTP API with PostgreSQL journal', () => {
     }
     await database.pool.query('INSERT INTO meridian_conversations (id, owner_id, revision) VALUES ($1, $2, 106)', [conversationId, ownerId]);
     const eventValues = linked.flatMap((runId, index) => [
-      randomUUID(), conversationId, index + 1, 'run_linked', 'assistant', runId,
+      randomUUID(), ownerId, conversationId, index + 1, 'run_linked', 'assistant', runId,
     ]);
     const eventPlaceholders = linked.map((_, index) => {
-      const offset = index * 6;
-      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::bigint, $${offset + 4}, $${offset + 5}, $${offset + 6}::uuid)`;
+      const offset = index * 7;
+      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::uuid, $${offset + 4}::bigint, $${offset + 5}, $${offset + 6}, $${offset + 7}::uuid)`;
     }).join(', ');
     await database.pool.query(
-      `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
+      `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
       eventValues,
     );
     await store.migrate();

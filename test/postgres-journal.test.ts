@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
@@ -24,6 +25,90 @@ describe.sequential('PostgresJournal', () => {
   });
 
   afterEach(async () => { await database.close(); });
+
+  it('R4-B1 rejects tampering before reads or quarantine decisions', async () => {
+    const run = await journal.reserve(caller, 'tamper', capability, version, {});
+    await journal.update(run.runId, 'dispatching');
+    await journal.update(run.runId, 'failure');
+    await database.pool.query("UPDATE meridian_runs SET state = 'success', capability = 'hidden' WHERE run_id = $1", [run.runId]);
+    await expect(journal.get(run.runId)).rejects.toThrow('Journal authentication failed');
+    await expect(journal.list()).rejects.toThrow('Journal authentication failed');
+    await expect(journal.hasUnknown(capability)).rejects.toThrow('Journal authentication failed');
+    await expect(journal.unknownCapabilities([capability])).rejects.toThrow('Journal authentication failed');
+    await expect(journal.reserve(caller, 'tamper-fresh', capability, version, {})).rejects.toThrow('Journal authentication failed');
+  });
+
+  it.each([
+    "caller = 'subject:other'", "capability = 'hidden'", "version = '2.0.0'",
+    "dispatch_intent = true", "created_at = created_at + interval '1 second'",
+    "invocation_scope = NULL", "recovery_request = repeat('f', 64)",
+  ])('R4-B1 authenticates %s before updating or recovering', async assignment => {
+    const run = await journal.reserve(caller, 'tamper-field', capability, version, {});
+    await database.pool.query(`UPDATE meridian_runs SET ${assignment} WHERE run_id = $1`, [run.runId]);
+    await expect(journal.get(run.runId)).rejects.toThrow('Journal authentication failed');
+    await expect(journal.update(run.runId, 'running')).rejects.toThrow('Journal authentication failed');
+    await expect(PostgresJournal.recover(database.pool, journal.ownerId, key)).rejects.toThrow('Journal authentication failed');
+    expect((await database.pool.query('SELECT owner_id FROM meridian_journal_authority')).rows[0].owner_id).toBe(journal.ownerId);
+  });
+
+  it('R4-B1 leaves preexisting unsigned rows unsigned across repeated migration', async () => {
+    const run = await journal.reserve(caller, 'unsigned', capability, version, {});
+    await database.pool.query('ALTER TABLE meridian_runs DROP COLUMN signature');
+    await PostgresJournal.migrate(database.pool);
+    await PostgresJournal.migrate(database.pool);
+    expect((await database.pool.query('SELECT signature FROM meridian_runs')).rows).toEqual([{ signature: null }]);
+    await expect(journal.get(run.runId)).rejects.toThrow('Journal authentication failed');
+    await expect(journal.reserve(caller, 'unsigned-fresh', capability, version, {})).rejects.toThrow('Journal authentication failed');
+  });
+
+  it('R4-B1 recovery CLI requires the correct key and preserves signed unknown outcomes', async () => {
+    const run = await journal.reserve(caller, 'cli-recover', capability, version, {});
+    await journal.update(run.runId, 'dispatching');
+    const env = { ...process.env, DATABASE_URL: database.connectionString, JOURNAL_HMAC_KEY: 'wrong'.repeat(16) };
+    const args = ['--import', 'tsx', 'cli.ts', 'journal-recover', '--owner', journal.ownerId, '--confirm-fenced'];
+    const rejected = spawnSync(process.execPath, args, { env, encoding: 'utf8' });
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('Request failed; inspect safe run evidence or server configuration');
+    expect((await database.pool.query('SELECT owner_id FROM meridian_journal_authority')).rows[0].owner_id).toBe(journal.ownerId);
+    const recovered = spawnSync(process.execPath, args, { env: { ...env, JOURNAL_HMAC_KEY: key }, encoding: 'utf8' });
+    expect(recovered.status).toBe(0);
+    const marker = (await database.pool.query('SELECT import_id, source_digest FROM meridian_journal_authority')).rows[0];
+    const replacement = await PostgresJournal.open(database.pool, key, marker.import_id, marker.source_digest);
+    expect(await replacement.get(run.runId)).toMatchObject({ state: 'POST_OUTCOME_UNKNOWN' });
+    await expect(replacement.reserve(caller, 'cli-fresh', capability, version, {})).rejects.toMatchObject({ status: 409 });
+    await replacement.close();
+  });
+
+  it('R4-B3 retries connection acquisition without poisoning', async () => {
+    const connect = vi.spyOn(database.pool, 'connect').mockRejectedValueOnce(new Error('offline'));
+    await expect(journal.reserve(caller, 'connect-retry', capability, version, {})).rejects.toMatchObject({ status: 503 });
+    expect(() => journal.assertHealthy()).not.toThrow();
+    connect.mockRestore();
+    await expect(journal.reserve(caller, 'connect-retry', capability, version, {})).resolves.toMatchObject({ state: 'reserved' });
+  });
+
+  it.each(['BEGIN', 'SET LOCAL'])('R4-B3 retries a %s failure before mutation', async statement => {
+    const originalConnect = database.pool.connect.bind(database.pool);
+    const connect = vi.spyOn(database.pool, 'connect').mockImplementationOnce((async () => {
+      const client = await originalConnect();
+      const query = client.query.bind(client);
+      client.query = (async (text: string, ...args: unknown[]) => {
+        if (text.startsWith(statement)) throw new Error('unavailable');
+        return (query as (...args: unknown[]) => Promise<unknown>)(text, ...args);
+      }) as typeof client.query;
+      return client;
+    }) as typeof database.pool.connect);
+    await expect(journal.reserve(caller, 'setup-retry', capability, version, {})).rejects.toMatchObject({ status: 503, message: 'Journal is unavailable; retry' });
+    expect(() => journal.assertHealthy()).not.toThrow();
+    connect.mockRestore();
+    await expect(journal.reserve(caller, 'setup-retry', capability, version, {})).resolves.toMatchObject({ state: 'reserved' });
+  });
+
+  it('R4-B4 rejects running to reserved', async () => {
+    const run = await journal.reserve(caller, 'backwards', capability, version, {});
+    await journal.update(run.runId, 'running');
+    await expect(journal.update(run.runId, 'reserved')).rejects.toMatchObject({ status: 409, message: 'Run state cannot move backwards' });
+  });
 
   it('serializes same-key reservations and rejects changed or competing active work', async () => {
     const request = { member: '42', amount: '1.00' };
@@ -131,14 +216,19 @@ describe.sequential('PostgresJournal', () => {
     expect((await journal.get(publicRun.runId))?.invocationScope).toBe('public');
     expect((await journal.get(privateRun.runId))?.invocationScope).toBe('member-identity');
     await journal.update(privateRun.runId, 'success');
-    await database.pool.query('UPDATE meridian_runs SET invocation_scope = NULL WHERE run_id = $1', [privateRun.runId]);
-    const legacy = await journal.get(privateRun.runId);
-    expect(legacy).not.toHaveProperty('invocationScope');
-    const rows = await database.pool.query<{ invocation_scope: string | null }>(
-      'SELECT invocation_scope FROM meridian_runs WHERE run_id IN ($1, $2) ORDER BY run_id',
-      [publicRun.runId, privateRun.runId],
-    );
-    expect(rows.rows.map(row => row.invocation_scope).sort()).toEqual([null, 'public']);
+    const legacyDatabase = await createPostgresFixture();
+    try {
+      const { invocationScope: _, ...legacyRecord } = privateRun;
+      const snapshot: JournalSnapshot = { records: [{ ...legacyRecord, state: 'success' }], aliases: [] };
+      const importId = randomUUID(), digest = journalDigest(key, snapshot);
+      await PostgresJournal.migrate(legacyDatabase.pool);
+      await PostgresJournal.importSnapshot(legacyDatabase.pool, key, snapshot, importId, digest);
+      const legacyJournal = await PostgresJournal.open(legacyDatabase.pool, key, importId, digest);
+      expect(await legacyJournal.get(privateRun.runId)).not.toHaveProperty('invocationScope');
+      expect((await legacyDatabase.pool.query('SELECT invocation_scope FROM meridian_runs')).rows).toEqual([{ invocation_scope: null }]);
+      await legacyJournal.close();
+    } finally { await legacyDatabase.close(); }
+
   });
 
   it('batches owner-scoped direct and alias requests in one transaction', async () => {
@@ -254,27 +344,23 @@ describe.sequential('PostgresJournal', () => {
     } finally { pool.connect = originalConnect; }
   });
 
-  it('poisons the instance after its authority lock exceeds the bounded budget', async () => {
+  it('R4-B2 reads without waiting for the authority row and retries read timeouts', async () => {
     const blocker = database.openPool();
-    const blockerClient = await blocker.connect();
-    await blockerClient.query('BEGIN');
-    await blockerClient.query('SELECT singleton FROM meridian_journal_authority WHERE singleton = true FOR UPDATE');
-    const started = Date.now();
+    const client = await blocker.connect();
     try {
-      const failure = await journal.list().then(() => undefined, error => error as Error);
-      expect(failure).toBeInstanceOf(Error);
-      expect(failure?.message).toBe('Journal storage outcome uncertain; restart or recover required');
-      expect(failure?.message).not.toContain('canceling statement');
-      expect(Date.now() - started).toBeLessThan(POSTGRES_LOCK_TIMEOUT_MS + 1_500);
-      expect(() => journal.assertHealthy()).toThrow('Journal storage outcome uncertain; restart or recover required');
-      const followUp = Date.now();
-      await expect(journal.get(randomUUID())).rejects.toThrow('Journal storage outcome uncertain; restart or recover required');
-      expect(Date.now() - followUp).toBeLessThan(500);
-      await expect(journal.reserve(caller, 'after-lock-timeout', capability, version, {}))
-        .rejects.toThrow('Journal storage outcome uncertain; restart or recover required');
+      await client.query('BEGIN');
+      await client.query('SELECT singleton FROM meridian_journal_authority WHERE singleton = true FOR UPDATE');
+      await expect(journal.list()).resolves.toEqual([]);
+      await client.query('ROLLBACK');
+      await client.query('BEGIN');
+      await client.query('LOCK TABLE meridian_runs IN ACCESS EXCLUSIVE MODE');
+      await expect(journal.list()).rejects.toMatchObject({ status: 503, message: 'Journal is busy; retry' });
+      expect(() => journal.assertHealthy()).not.toThrow();
+      await client.query('ROLLBACK');
+      await expect(journal.reserve(caller, 'after-lock-timeout', capability, version, {})).resolves.toMatchObject({ state: 'reserved' });
     } finally {
-      await blockerClient.query('ROLLBACK');
-      blockerClient.release();
+      await client.query('ROLLBACK');
+      client.release();
       await database.closePool(blocker);
     }
   });
@@ -313,13 +399,13 @@ describe.sequential('PostgresJournal', () => {
     );
     await expect(PostgresJournal.open(otherPool, key, marker.rows[0]!.import_id, marker.rows[0]!.source_digest))
       .rejects.toMatchObject({ status: 409 });
-    await PostgresJournal.recover(otherPool, oldOwner);
+    await PostgresJournal.recover(otherPool, oldOwner, key);
     await expect(journal.list()).rejects.toMatchObject({ status: 409 });
     await expect(journal.update(staleRun.runId, 'failure')).rejects.toMatchObject({ status: 409 });
     await expect(journal.bindReference(caller, 'stale-alias', staleRun.runId)).rejects.toMatchObject({ status: 409 });
     const replacement = await PostgresJournal.open(otherPool, key, marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
     expect(replacement.ownerId).not.toBe(oldOwner);
-    await expect(PostgresJournal.recover(otherPool, randomUUID())).rejects.toMatchObject({ status: 409 });
+    await expect(PostgresJournal.recover(otherPool, randomUUID(), key)).rejects.toMatchObject({ status: 409 });
     await replacement.close();
   });
 
@@ -327,7 +413,7 @@ describe.sequential('PostgresJournal', () => {
     const run = await journal.reserve(caller, 'active-key', capability, version, {});
     await expect(journal.close()).rejects.toMatchObject({ status: 409 });
     const recoveryPool = database.openPool();
-    await PostgresJournal.recover(recoveryPool, journal.ownerId);
+    await PostgresJournal.recover(recoveryPool, journal.ownerId, key);
     expect((await database.pool.query<{ state: string; dispatch_intent: boolean }>('SELECT state, dispatch_intent FROM meridian_runs')).rows[0]).toEqual({
       state: 'interrupted', dispatch_intent: false,
     });
@@ -335,7 +421,7 @@ describe.sequential('PostgresJournal', () => {
     const replacement = await PostgresJournal.open(recoveryPool, key, marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
     const intent = await replacement.reserve(caller, 'intent-key', capability, version, {});
     await replacement.update(intent.runId, 'dispatching');
-    await PostgresJournal.recover(recoveryPool, replacement.ownerId);
+    await PostgresJournal.recover(recoveryPool, replacement.ownerId, key);
     expect((await database.pool.query<{ state: string; dispatch_intent: boolean }>('SELECT state, dispatch_intent FROM meridian_runs WHERE run_id = $1', [intent.runId])).rows[0]).toEqual({
       state: 'POST_OUTCOME_UNKNOWN', dispatch_intent: true,
     });
@@ -435,8 +521,11 @@ describe.sequential('PostgresJournal', () => {
         state: 'POST_OUTCOME_UNKNOWN', dispatch_intent: true, recovery_request: source.recoveryRequest,
       });
       expect((await second.pool.query('SELECT identity, caller, request, run_id, is_alias FROM meridian_run_requests ORDER BY is_alias')).rows).toHaveLength(2);
+      const imported = await PostgresJournal.open(second.pool, key, importId, digest);
+      expect(await imported.get(source.runId)).toMatchObject({ state: 'POST_OUTCOME_UNKNOWN' });
+      await imported.close();
       await second.pool.query("UPDATE meridian_runs SET state = 'success' WHERE run_id = $1", [source.runId]);
-      await PostgresJournal.importSnapshot(second.pool, key, snapshot, importId, digest, false);
+      await expect(PostgresJournal.importSnapshot(second.pool, key, snapshot, importId, digest, false)).rejects.toThrow('Journal authentication failed');
       expect((await second.pool.query('SELECT count(*)::int AS count FROM meridian_runs')).rows[0]?.count).toBe(1);
       expect((await second.pool.query('SELECT state FROM meridian_runs WHERE run_id = $1', [source.runId])).rows[0]?.state).toBe('success');
     } finally { await second.close(); }
@@ -450,16 +539,16 @@ describe.sequential('PostgresJournal', () => {
     )).rejects.toThrow();
     const first = [randomUUID(), 'e'.repeat(64)];
     await database.pool.query(
-      `INSERT INTO meridian_runs (run_id, kind, caller, capability, version, request, identity, state)
-       VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'reserved')`,
+      `INSERT INTO meridian_runs (run_id, kind, caller, capability, version, request, identity, state, signature)
+       VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'reserved', 'constraint-test')`,
       [first[0], 'f'.repeat(64), first[1]],
     );
     await expect(database.pool.query(
       `UPDATE meridian_runs SET recovery_request = 'bad' WHERE run_id = $1`, [first[0]],
     )).rejects.toThrow();
     await expect(database.pool.query(
-      `INSERT INTO meridian_runs (run_id, kind, caller, capability, version, request, identity, state)
-       VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'running')`,
+      `INSERT INTO meridian_runs (run_id, kind, caller, capability, version, request, identity, state, signature)
+       VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'running', 'constraint-test')`,
       [randomUUID(), 'a'.repeat(64), 'b'.repeat(64)],
     )).rejects.toThrow();
   });

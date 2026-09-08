@@ -26,15 +26,23 @@ it('encrypts local text, preserves retry/quota/ownership rules, and fails closed
     await expect(store.events(subjects.operator, id)).rejects.toMatchObject({ status: 404 });
     const stored = await database.pool.query('SELECT text_ciphertext FROM meridian_conversation_events WHERE id=$1', [pending.id]);
     expect(stored.rows[0].text_ciphertext.includes(Buffer.from(pending.text))).toBe(false);
+    // Public IDs may coincide across owners without sharing encrypted text or retries.
+    await store.create(subjects.operator, id);
+    const operatorPending = { ...pending, text: 'Separate operator transcript' };
+    const operatorSaved = await store.append(subjects.operator, id, operatorPending);
+    expect(await store.append(subjects.operator, id, operatorPending)).toEqual(operatorSaved);
     const reopened = new ConversationStore(database.openPool(), key);
     await reopened.migrate();
     expect((await reopened.events(subjects.caller, id)).events).toEqual([saved]);
+    expect((await reopened.events(subjects.operator, id)).events).toEqual([operatorSaved]);
     await expect(new ConversationStore(database.pool).events(subjects.caller, id)).rejects.toMatchObject({ status: 503 });
     await expect(new ConversationStore(database.pool, 'f'.repeat(64)).events(subjects.caller, id)).rejects.toMatchObject({ status: 503 });
     await expect(store.append(subjects.caller, id, { ...pending, id: randomUUID(), text: 'x'.repeat(4001), expectedRevision: 1 })).rejects.toMatchObject({ status: 400 });
-    await database.pool.query('UPDATE meridian_conversation_events SET role=$1 WHERE id=$2', ['assistant', pending.id]);
+    await database.pool.query('UPDATE meridian_conversation_events SET role=$1 WHERE id=$2 AND owner_id=$3', ['assistant', pending.id, subjects.caller]);
     await expect(store.events(subjects.caller, id)).rejects.toMatchObject({ status: 503 });
     await store.delete(subjects.caller, id, 1);
+    expect((await store.events(subjects.operator, id)).events).toEqual([operatorSaved]);
+    await store.delete(subjects.operator, id, 1);
     expect((await database.pool.query('SELECT * FROM meridian_conversation_events')).rows).toEqual([]);
     await expect(store.create(subjects.caller, id)).rejects.toMatchObject({ status: 409 });
     expect(resolveServerStorageConfiguration({ LOCAL_TELLER_LOGIN: '1', LOCAL_CONVERSATION_SUBJECTS: JSON.stringify(subjects), DATABASE_URL: database.connectionString, CONVERSATION_TEXT_KEY: key })).toMatchObject({ enableConversations: true, mode: 'filesystem' });

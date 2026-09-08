@@ -18,11 +18,13 @@ CREATE TABLE IF NOT EXISTS meridian_runs (
   identity text NOT NULL UNIQUE CHECK (identity ~ '^[a-f0-9]{64}$'),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   state text NOT NULL CHECK (state IN ('reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN')),
+  signature text NOT NULL,
   dispatch_intent boolean NOT NULL DEFAULT false,
   invocation_scope text NULL,
   CHECK (state <> 'dispatching' OR dispatch_intent)
 );
 
+ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS signature text;
 ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS invocation_scope text;
 ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS recovery_request text;
 

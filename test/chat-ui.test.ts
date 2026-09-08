@@ -1368,6 +1368,7 @@ it('preserves a newer conversation scroll position when closing wide Activity', 
     (node as HTMLElement).style.minHeight = '1200px';
   });
   await activity.click();
+  await settleConversationLayout(page);
   await messages.evaluate((node) => {
     (node as HTMLElement).scrollTop = 120;
   });
@@ -2612,8 +2613,47 @@ it('offline operator review controls require live authority, keyboard focus, bro
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   await visible(page, '.approval', 'Estimated deadline passed.');
+  // Production break caught: exposing expiry only through styling would hide the actionable error from screen-reader users.
+  expect(await page.locator('.approval').innerText()).toContain('Estimated deadline passed.');
+  expect(await approve.isEnabled()).toBe(true);
   const expiredRefuse = page.getByRole('button', { name: 'Refuse request', exact: true });
   expect(await expiredRefuse.isEnabled()).toBe(true);
+  const expiredClose = dialog.getByRole('button', { name: 'Close', exact: true });
+  const expiredDetails = dialog.getByText('Details', { exact: true });
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  const hiddenDetailsValue = expiredDetails.locator('..').locator('dd').first();
+  await hiddenDetailsValue.evaluate(element => element.setAttribute('tabindex', '0'));
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(false);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // Closed Details descendants must stay out of the sequential focus order.
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
+  await hiddenDetailsValue.evaluate(element => element.removeAttribute('tabindex'));
+  await expiredDetails.click();
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(true);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // A browser-estimated deadline does not disable server-authorized actions.
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await expiredRefuse.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await expiredRefuse.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: Shift+Tab from the first control must wrap to the neutral heading, not escape the modal.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
   await expiredRefuse.click();
   await vi.waitFor(() => expect(state.requests.filter(request => request.path.endsWith('/decision'))).toHaveLength(2));
   expect(state.requests.filter(request => request.path.endsWith('/decision')).at(-1)?.body).toEqual({

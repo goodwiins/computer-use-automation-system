@@ -125,6 +125,49 @@ async function waitForBlockedActivity(
 }
 
 describe.sequential('ConversationStore prior-schema migration compatibility', () => {
+  it('upgrades the quota schema without changing rows or bucket state', async () => {
+    const database = await createPostgresFixture();
+    try {
+      await initializePriorSchema(database);
+      await database.pool.query(`
+        CREATE TABLE meridian_conversation_subject_quotas (
+          owner_id uuid PRIMARY KEY,
+          conversation_count bigint NOT NULL DEFAULT 0 CHECK (conversation_count >= 0),
+          event_count bigint NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+          rate_tokens double precision NOT NULL DEFAULT 20 CHECK (rate_tokens >= 0 AND rate_tokens <= 20),
+          rate_refilled_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        )
+      `);
+      await database.pool.query('INSERT INTO meridian_conversations (id, owner_id, revision) VALUES ($1, $2, 1)', [activeId, owner]);
+      await database.pool.query(
+        `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
+         VALUES ($1, $2, 1, 'message_omitted', 'user')`,
+        [activeEventId, activeId],
+      );
+      await database.pool.query(
+        `INSERT INTO meridian_conversation_subject_quotas
+           (owner_id, conversation_count, event_count, rate_tokens, rate_refilled_at)
+         VALUES ($1, 1, 1, 7.5, '2026-01-03T00:00:00.000Z')`,
+        [owner],
+      );
+      const before = await readSourceRows(database);
+      const store = new ConversationStore(database.pool);
+      await store.migrate();
+      await store.migrate();
+      expect(await readSourceRows(database)).toEqual(before);
+      expect(await readQuota(database, owner)).toMatchObject({
+        conversation_count: '1', event_count: '1', rate_tokens: 7.5,
+        rate_refilled_at: new Date('2026-01-03T00:00:00.000Z'),
+      });
+      await expect(store.create(otherOwner, activeId)).resolves.toMatchObject({ id: activeId });
+      await expect(store.append(otherOwner, activeId, {
+        id: activeEventId, kind: 'message_omitted', role: 'assistant', expectedRevision: 0,
+      })).resolves.toMatchObject({ id: activeEventId, sequence: 1 });
+    } finally {
+      await database.close();
+    }
+  });
+
   it('upgrades the exact prior schema, preserves legacy rows, and keeps quota/rate isolation', async () => {
     const database = await createPostgresFixture();
     try {
