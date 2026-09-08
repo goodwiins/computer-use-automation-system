@@ -5,7 +5,7 @@ import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Journal } from '../src/runtime/journal.js';
+import { Journal, RequestError } from '../src/runtime/journal.js';
 import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
 import type { SubjectCredential } from '../src/server/auth.js';
 import { ConversationStore } from '../src/server/conversations.js';
@@ -52,7 +52,7 @@ describe.sequential('conversation HTTP API', () => {
 
   const request = async (origin: string, path: string, options: {
     token?: string; method?: string; body?: unknown;
-  } = {}) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+  } = {}) => new Promise<{ status: number; body: any; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
     const url = new URL(path, origin);
     const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
     const request = httpRequest({
@@ -69,12 +69,54 @@ describe.sequential('conversation HTTP API', () => {
         const text = Buffer.concat(chunks).toString('utf8');
         let body: unknown;
         try { body = JSON.parse(text); } catch { body = undefined; }
-        resolve({ status: response.statusCode!, body });
+        const result = { status: response.statusCode!, body } as {
+          status: number; body: any; headers: Record<string, string | string[] | undefined>;
+        };
+        Object.defineProperty(result, 'headers', { value: response.headers, enumerable: false });
+        resolve(result);
       });
     });
     request.on('error', reject);
     request.end(payload);
   });
+
+  const quotaSnapshot = async (owner: string) => {
+    const result = await database.pool.query<{ conversation_count: string; event_count: string; rate_tokens: number; rate_refilled_at: Date }>(
+      `SELECT conversation_count, event_count, rate_tokens, rate_refilled_at
+       FROM meridian_conversation_subject_quotas WHERE owner_id = $1`, [owner],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('quota row missing');
+    return {
+      conversationCount: Number(row.conversation_count), eventCount: Number(row.event_count),
+      rateTokens: row.rate_tokens, rateRefilledAt: row.rate_refilled_at,
+    };
+  };
+
+  const setRate = async (owner: string, tokens: number) => {
+    await database.pool.query(
+      `UPDATE meridian_conversation_subject_quotas
+       SET rate_tokens = $2, rate_refilled_at = clock_timestamp() WHERE owner_id = $1`,
+      [owner, tokens],
+    );
+  };
+
+  const seedConversations = async (owner: string, count: number, prefix: string) => {
+    await database.pool.query(`
+      INSERT INTO meridian_conversations (id, owner_id)
+      SELECT ($3 || lpad(value::text, 12, '0'))::uuid, $1
+      FROM generate_series(1, $2::int) AS values(value)
+    `, [owner, count, prefix]);
+  };
+
+  const seedEvents = async (owner: string, conversationId: string, count: number, prefix: string) => {
+    await database.pool.query(`
+      INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
+      SELECT ($3 || lpad(value::text, 12, '0'))::uuid, $1, value, 'message_omitted', 'user'
+      FROM generate_series(1, $2::int) AS values(value)
+    `, [conversationId, count, prefix]);
+    await database.pool.query('UPDATE meridian_conversations SET revision = $2 WHERE id = $1', [conversationId, count]);
+  };
 
   beforeEach(async () => {
     database = await createPostgresFixture();
@@ -240,11 +282,21 @@ describe.sequential('conversation HTTP API', () => {
     for (let index = 0; index < 106; index += 1) {
       const runId = (index < 100 ? runs[0] : runs[(index - 100) % runs.length])!.runId;
       linkedRunIds.push(runId);
-      await store.append(ownerId, conversationId, {
-        id: `40000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
-        kind: 'run_linked', role: 'assistant', runId, expectedRevision: index,
-      });
     }
+    const eventValues = linkedRunIds.flatMap((runId, index) => [
+      `40000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      conversationId, index + 1, 'run_linked', 'assistant', runId,
+    ]);
+    const eventPlaceholders = linkedRunIds.map((_, index) => {
+      const offset = index * 6;
+      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::bigint, $${offset + 4}, $${offset + 5}, $${offset + 6}::uuid)`;
+    }).join(', ');
+    await database.pool.query(
+      `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
+      eventValues,
+    );
+    await database.pool.query('UPDATE meridian_conversations SET revision = 106 WHERE id = $1', [conversationId]);
+    await store.migrate();
     const before = [...journal.records.values()];
     const getMany = vi.spyOn(journal, 'getMany');
     const get = vi.spyOn(journal, 'get');
@@ -400,5 +452,135 @@ describe.sequential('conversation HTTP API', () => {
     const failure = await request(origin, '/conversations');
     expect(failure).toEqual({ status: 500, body: { error: 'Request failed; inspect safe run evidence or server configuration' } });
     expect(JSON.stringify(failure)).not.toContain('PRIVATE DATABASE ERROR CANARY');
+  });
+
+  it('returns fixed HTTP capacity responses before rate checks and bypasses capacity for exact retries', async () => {
+    const origin = await listen();
+    const firstId = '60000000-0000-4000-8000-000000000001';
+    expect((await request(origin, '/conversations', { method: 'POST', body: { id: firstId } })).status).toBe(201);
+    await seedConversations(ownerId, 127, '60010000-0000-4000-8000-');
+    await store.migrate();
+    await setRate(ownerId, 0);
+
+    const blocked = await request(origin, '/conversations', {
+      method: 'POST', body: { id: '60000000-0000-4000-8000-000000000002' },
+    });
+    expect(blocked).toMatchObject({ status: 507, body: { error: 'Conversation quota exceeded' } });
+    expect(blocked.headers['retry-after']).toBeUndefined();
+    expect(JSON.stringify(blocked)).not.toMatch(/60010000|conversation_count|rate_tokens|SELECT/);
+
+    const retried = await request(origin, '/conversations', { method: 'POST', body: { id: firstId } });
+    expect(retried).toMatchObject({ status: 201, body: { id: firstId, revision: 0 } });
+    expect(retried.headers['retry-after']).toBeUndefined();
+    await expect(quotaSnapshot(ownerId)).resolves.toMatchObject({ conversationCount: 128, eventCount: 0, rateTokens: 0 });
+  });
+
+  it('returns fixed HTTP responses at per-conversation and subject event capacity', async () => {
+    const origin = await listen();
+    const perConversation = '61000000-0000-4000-8000-000000000001';
+    expect((await request(origin, '/conversations', { method: 'POST', body: { id: perConversation } })).status).toBe(201);
+    await seedEvents(ownerId, perConversation, 512, '61010000-0000-4000-9000-');
+    await store.migrate();
+    await setRate(ownerId, 0);
+    const perConversationBlocked = await request(origin, `/conversations/${perConversation}/events`, {
+      method: 'POST', body: { id: '61020000-0000-4000-9000-000000000001', kind: 'message_omitted', role: 'user', expectedRevision: 512 },
+    });
+    expect(perConversationBlocked).toMatchObject({ status: 507, body: { error: 'Conversation quota exceeded' } });
+    expect(perConversationBlocked.headers['retry-after']).toBeUndefined();
+    expect(JSON.stringify(perConversationBlocked)).not.toMatch(/512|event_count|rate_tokens|SELECT/);
+    const perConversationRetry = await request(origin, `/conversations/${perConversation}/events`, {
+      method: 'POST', body: { id: '61010000-0000-4000-9000-000000000001', kind: 'message_omitted', role: 'user', expectedRevision: 0 },
+    });
+    expect(perConversationRetry).toMatchObject({ status: 201, body: { sequence: 1, content: 'Message text was not saved.' } });
+
+    const subjectCapacity = '62000000-0000-4000-8000-000000000001';
+    await setRate(ownerId, 20);
+    expect((await request(origin, '/conversations', { method: 'POST', body: { id: subjectCapacity } })).status).toBe(201);
+    await seedConversations(ownerId, 8, '62010000-0000-4000-8000-');
+    await seedEvents(ownerId, subjectCapacity, 1, '62020000-0000-4000-9000-');
+    for (let index = 0; index < 7; index += 1) {
+      const id = `62010000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+      await seedEvents(ownerId, id, 512, `${(0x63 + index).toString(16).padStart(8, '0')}-0000-4000-9000-`);
+    }
+    await seedEvents(ownerId, '62010000-0000-4000-8000-000000000008', 511, '6a000000-0000-4000-9000-');
+    await store.migrate();
+    await setRate(ownerId, 0);
+    const subjectBlocked = await request(origin, `/conversations/${subjectCapacity}/events`, {
+      method: 'POST', body: { id: '62030000-0000-4000-9000-000000000001', kind: 'message_omitted', role: 'assistant', expectedRevision: 1 },
+    });
+    expect(subjectBlocked).toMatchObject({ status: 507, body: { error: 'Conversation quota exceeded' } });
+    expect(subjectBlocked.headers['retry-after']).toBeUndefined();
+    expect(JSON.stringify(subjectBlocked)).not.toMatch(/4096|event_count|rate_tokens|SELECT/);
+    const subjectRetry = await request(origin, `/conversations/${subjectCapacity}/events`, {
+      method: 'POST', body: { id: '62020000-0000-4000-9000-000000000001', kind: 'message_omitted', role: 'user', expectedRevision: 0 },
+    });
+    expect(subjectRetry).toMatchObject({ status: 201, body: { sequence: 1, content: 'Message text was not saved.' } });
+  });
+
+  it('exhausts the real HTTP write bucket and exact retries do not consume another mutation', async () => {
+    const origin = await listen();
+    const conversationId = '63000000-0000-4000-8000-000000000001';
+    const created = await request(origin, '/conversations', { method: 'POST', body: { id: conversationId } });
+    expect(created.status).toBe(201);
+    const events = [] as Array<{ id: string; kind: 'message_omitted'; role: 'user'; expectedRevision: number }>;
+    for (let expectedRevision = 0; expectedRevision < 19; expectedRevision += 1) {
+      const body = { id: `63010000-0000-4000-9000-${String(expectedRevision + 1).padStart(12, '0')}`, kind: 'message_omitted' as const, role: 'user' as const, expectedRevision };
+      const response = await request(origin, `/conversations/${conversationId}/events`, { method: 'POST', body });
+      expect(response.status).toBe(201);
+      events.push(body);
+    }
+    // Keep the real HTTP mutation count, but make the next request deterministic
+    // without overriding production PostgreSQL refill behavior.
+    await setRate(ownerId, 0);
+    const blocked = await request(origin, '/conversations', {
+      method: 'POST', body: { id: '63000000-0000-4000-8000-000000000002' },
+    });
+    expect(blocked).toMatchObject({ status: 429, body: { error: 'Conversation write rate limit exceeded' } });
+    expect(blocked.headers['retry-after']).toBe('1');
+    expect(JSON.stringify(blocked)).not.toMatch(/63000000|rate_tokens|SELECT|owner/);
+
+    const beforeCreateRetry = await quotaSnapshot(ownerId);
+    const createRetry = await request(origin, '/conversations', { method: 'POST', body: { id: conversationId } });
+    expect(createRetry).toMatchObject({ status: 201, body: { id: conversationId } });
+    expect(createRetry.headers['retry-after']).toBeUndefined();
+    const beforeEventRetry = await quotaSnapshot(ownerId);
+    const eventRetry = await request(origin, `/conversations/${conversationId}/events`, { method: 'POST', body: events.at(-1) });
+    expect(eventRetry).toMatchObject({ status: 201, body: { id: events.at(-1)!.id, sequence: 19 } });
+    expect(eventRetry.headers['retry-after']).toBeUndefined();
+    expect(await quotaSnapshot(ownerId)).toEqual(beforeEventRetry);
+    expect(await quotaSnapshot(ownerId)).toEqual(beforeCreateRetry);
+  });
+
+  it('rolls back conflicting HTTP writes without leaking quota or rate state', async () => {
+    const origin = await listen();
+    const first = '64000000-0000-4000-8000-000000000001';
+    const second = '64000000-0000-4000-8000-000000000002';
+    await expect(request(origin, '/conversations', { method: 'POST', body: { id: first } })).resolves.toMatchObject({ status: 201 });
+    await expect(request(origin, '/conversations', { method: 'POST', body: { id: second } })).resolves.toMatchObject({ status: 201 });
+    const conflictId = '64010000-0000-4000-9000-000000000001';
+    const original = { id: conflictId, kind: 'message_omitted' as const, role: 'user' as const, expectedRevision: 0 };
+    await expect(request(origin, `/conversations/${first}/events`, { method: 'POST', body: original })).resolves.toMatchObject({ status: 201 });
+    const before = await quotaSnapshot(ownerId);
+    const conflict = await request(origin, `/conversations/${second}/events`, { method: 'POST', body: original });
+    expect(conflict).toEqual(expect.objectContaining({ status: 409, body: { error: 'Conversation event conflicts with an existing event' } }));
+    expect(conflict.headers['retry-after']).toBeUndefined();
+    expect(await quotaSnapshot(ownerId)).toEqual(before);
+    const valid = await request(origin, `/conversations/${second}/events`, {
+      method: 'POST', body: { id: '64010000-0000-4000-9000-000000000002', kind: 'message_omitted', role: 'user', expectedRevision: 0 },
+    });
+    expect(valid).toMatchObject({ status: 201, body: { sequence: 1 } });
+    expect((await quotaSnapshot(ownerId)).eventCount).toBe(before.eventCount + 1);
+  });
+
+  it('emits only the allowlisted server-authored retry header', async () => {
+    const origin = await listen();
+    vi.spyOn(store, 'list').mockRejectedValueOnce(new RequestError(429, 'Synthetic rate failure', {
+      'Retry-After': '1', 'X-Private-Canary': 'do-not-emit', 'Content-Type': 'text/plain',
+    }));
+    const response = await request(origin, '/conversations');
+    expect(response).toMatchObject({ status: 429, body: { error: 'Synthetic rate failure' } });
+    expect(response.headers['retry-after']).toBe('1');
+    expect(response.headers['x-private-canary']).toBeUndefined();
+    expect(response.headers['content-type']).toMatch(/^application\/json/);
   });
 });

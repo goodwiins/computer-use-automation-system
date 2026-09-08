@@ -378,6 +378,316 @@ describe('safe conversation UI adapter', () => {
     expect(conversationStatusText('unsaved', false)).toBe('Conversations are not saved for this legacy session.');
   });
 
+  it.each([
+    [507, 'capacity', 'This item was not saved because conversation storage capacity is full.'],
+    [429, 'rate-limited', 'This item was not saved because saving is temporarily rate-limited.'],
+  ] as const)('keeps %s failures truthful and waits for an explicit exact retry', async (status, expectedStatus, expectedText) => {
+    vi.useFakeTimers();
+    try {
+      let eventAttempts = 0;
+      const { calls, request } = requestRecorder((path, options) => {
+        if (path !== `/conversations/${conversationId}/events`) throw new Error(`unexpected request ${path}`);
+        eventAttempts += 1;
+        if (eventAttempts === 1) {
+          return response({
+            error: 'Conversation quota exceeded',
+            ownerId: subjectId,
+            count: 4096,
+            sql: 'SELECT private details',
+          }, status);
+        }
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      });
+      const controller = createConversationController({ subjectId, request });
+      const message = { id: `manual-retry-${status}`, role: 'user', parts: [{ type: 'text', text: 'PRIVATE body' }] } as UIMessage;
+      const history = controller.historyFor(conversationId);
+
+      await expect(history.append({ parentId: null, message })).rejects.toThrow();
+      expect(controller.getState(conversationId)).toMatchObject({ status: expectedStatus, revision: 0 });
+      expect(conversationStatusText(expectedStatus, true)).toBe(expectedText);
+      expect(conversationStatusText(expectedStatus, true)).not.toContain('delete');
+      expect(controller.isConfirmed(conversationId)).toBe(false);
+      expect(calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toHaveLength(1);
+
+      await history.append({ parentId: null, message });
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.options?.body).toBe(calls[0]?.options?.body);
+      expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+      expect(JSON.stringify(calls)).not.toContain('PRIVATE');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['list', 'capacity', 507],
+    ['list', 'rate-limited', 429],
+    ['fetch', 'capacity', 507],
+    ['fetch', 'rate-limited', 429],
+  ] as const)('preserves a %s %s state through refresh until an exact manual retry succeeds', async (refreshKind, expectedStatus, failureStatus) => {
+    let eventAttempts = 0;
+    const { calls, request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}/events`) {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'PRIVATE quota details', ownerId: subjectId, count: 4096 }, failureStatus);
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+
+    const message = { id: `refresh-${refreshKind}-${expectedStatus}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    const failure = controller.getState(conversationId);
+    expect(failure).toMatchObject({ status: expectedStatus, revision: 0 });
+    expect(failure.error).toContain('not saved');
+
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: expectedStatus, revision: 0, error: failure.error });
+    expect(calls.filter(call => call.path === `/conversations/${conversationId}/events`)).toHaveLength(1);
+
+    await history.append({ parentId: null, message });
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+    const eventBodies = calls
+      .filter(call => call.path === `/conversations/${conversationId}/events`)
+      .map(call => call.options?.body);
+    expect(eventBodies[1]).toBe(eventBodies[0]);
+  });
+
+  it.each([
+    ['archive', 'list'],
+    ['delete', 'fetch'],
+  ] as const)('preserves a rate-limited %s failure through %s refresh', async (mutation, refreshKind) => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'DELETE') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const mutationPromise = mutation === 'archive'
+      ? controller.adapter.archive(conversationId)
+      : controller.adapter.delete(conversationId);
+    await expect(mutationPromise).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
+  it.each(['list', 'fetch'] as const)('preserves a rate-limited append during an explicit retry and %s refresh', async refreshKind => {
+    let eventAttempts = 0;
+    let releaseRetry!: () => void;
+    const retryReleased = new Promise<void>(resolve => { releaseRetry = resolve; });
+    const { request } = requestRecorder(async (path, options) => {
+      if (path === `/conversations/${conversationId}/events`) {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        await retryReleased;
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    const message = { id: `retry-refresh-${refreshKind}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    const retry = history.append({ parentId: null, message });
+    await vi.waitFor(() => expect(eventAttempts).toBe(2));
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saving' });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+
+    releaseRetry();
+    await expect(retry).resolves.toBeUndefined();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+  });
+
+  it.each(['archive', 'event'] as const)('does not hide an unresolved append failure after an unrelated successful %s', async unrelatedMutation => {
+    let eventAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        const body = JSON.parse(String(options.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ ...metadata, archived: true, revision: 1 }, 200);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({
+      parentId: null,
+      message: { id: `unresolved-${unrelatedMutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    if (unrelatedMutation === 'archive') {
+      await controller.adapter.archive(conversationId);
+    } else {
+      await history.append({
+        parentId: null,
+        message: { id: `unrelated-${unrelatedMutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+      } as never);
+    }
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
+  it('keeps an older rate failure after a capacity failure and only retries the matching operation', async () => {
+    let archiveAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private rate details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        archiveAttempts += 1;
+        if (archiveAttempts === 1) return response({ error: 'private capacity details' }, 507);
+        return response({ ...metadata, archived: true, revision: 1 }, 200);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'coexist-rate', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'capacity' });
+    await controller.adapter.archive(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('temporarily rate-limited');
+  });
+
+  it('preserves an unresolved append failure through history hydration', async () => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}/events?after=0&limit=100`) return response({ events: [] });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({
+      parentId: null,
+      message: { id: 'load-unresolved', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await history.load();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
+  it('does not treat a read-side projection-busy 429 as a save rate limit', async () => {
+    const { request } = requestRecorder(path => {
+      if (path === `/conversations/${conversationId}/events?after=0&limit=100`) {
+        return response({ error: 'Linked-run projection is busy' }, 429);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+
+    await expect(controller.historyFor(conversationId).load()).rejects.toThrow();
+
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 0 });
+    expect(conversationStatusText(controller.getState(conversationId).status, true)).toBe(
+      'Conversations not saved; this chat remains usable.',
+    );
+    expect(JSON.stringify(controller.getState(conversationId))).not.toContain('Linked-run projection is busy');
+  });
+
+  it.each([
+    [409, 'conflict', 'conflict', 'list'],
+    [409, 'conflict', 'conflict', 'fetch'],
+    [503, 'unavailable', 'saved', 'list'],
+    [503, 'unavailable', 'saved', 'fetch'],
+  ] as const)('does not resurrect a quota marker after a retry %s and %s refresh', async (retryStatus, retryState, refreshedState, refreshKind) => {
+    let eventAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        return response({ error: `private ${retryState} details` }, retryStatus);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        return response({ ...metadata, revision: retryStatus === 409 ? 4 : 0 });
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [{ ...metadata, revision: retryStatus === 409 ? 4 : 0 }] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    const message = { id: `retry-${retryStatus}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: retryState });
+
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: refreshedState });
+    expect(JSON.stringify(controller.getState(conversationId))).not.toContain('private quota details');
+  });
+
+  it.each([
+    [409, 'conflict'],
+    [503, 'rate-limited'],
+  ] as const)('applies deterministic precedence when an independent rate failure coexists with %s', async (newStatus, refreshedState) => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private rate details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: `private ${newStatus} details` }, newStatus);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        return response({ ...metadata, revision: 4 });
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [{ ...metadata, revision: 4 }] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: `coexist-${newStatus}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: newStatus === 409 ? 'conflict' : 'unavailable' });
+    await controller.adapter.list();
+    expect(controller.getState(conversationId)).toMatchObject({ status: refreshedState });
+  });
+
   it('scopes the formatted history cache to its remote conversation', async () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],

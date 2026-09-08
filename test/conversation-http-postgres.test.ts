@@ -33,7 +33,7 @@ describe.sequential('conversation HTTP API with PostgreSQL journal', () => {
   let origin: string;
 
   const request = async (path: string, options: { token?: string; method?: string; body?: unknown } = {}) =>
-    new Promise<{ status: number; body: any }>((resolve, reject) => {
+    new Promise<{ status: number; body: any; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
       const url = new URL(path, origin);
       const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
       const pending = httpRequest({
@@ -50,7 +50,11 @@ describe.sequential('conversation HTTP API with PostgreSQL journal', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           let body: unknown;
           try { body = JSON.parse(text); } catch { body = undefined; }
-          resolve({ status: response.statusCode!, body });
+          const result = { status: response.statusCode!, body } as {
+            status: number; body: any; headers: Record<string, string | string[] | undefined>;
+          };
+          Object.defineProperty(result, 'headers', { value: response.headers, enumerable: false });
+          resolve(result);
         });
       });
       pending.on('error', reject);
@@ -105,15 +109,24 @@ describe.sequential('conversation HTTP API with PostgreSQL journal', () => {
       approval: { pending: undefined, cancel() {} },
     } as never);
     const conversationId = randomUUID();
-    await store.create(ownerId, conversationId);
     const linked: string[] = [];
     for (let index = 0; index < 106; index += 1) {
       const runId = (index < 100 ? runs[0] : runs[(index - 100) % runs.length])!.runId;
       linked.push(runId);
-      await store.append(ownerId, conversationId, {
-        id: randomUUID(), kind: 'run_linked', role: 'assistant', runId, expectedRevision: index,
-      });
     }
+    await database.pool.query('INSERT INTO meridian_conversations (id, owner_id, revision) VALUES ($1, $2, 106)', [conversationId, ownerId]);
+    const eventValues = linked.flatMap((runId, index) => [
+      randomUUID(), conversationId, index + 1, 'run_linked', 'assistant', runId,
+    ]);
+    const eventPlaceholders = linked.map((_, index) => {
+      const offset = index * 6;
+      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::bigint, $${offset + 4}, $${offset + 5}, $${offset + 6}::uuid)`;
+    }).join(', ');
+    await database.pool.query(
+      `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
+      eventValues,
+    );
+    await store.migrate();
     const getMany = vi.spyOn(journal, 'getMany');
     const get = vi.spyOn(journal, 'get');
     const transaction = vi.spyOn(journal as unknown as {

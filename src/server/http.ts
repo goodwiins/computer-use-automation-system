@@ -150,6 +150,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
     const bodyError = typeof parserError.type === 'string' && typeof parserStatus === 'number' && parserStatus >= 400 && parserStatus < 500;
     const bodyStatus = bodyError ? parserStatus as number : undefined;
     const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : bodyStatus ?? 500;
+    if (error instanceof RequestError && error.headers?.['Retry-After'] === '1') res.set('Retry-After', '1');
     res.status(status).json({ error: error instanceof RequestError ? error.message : bodyError ? 'Request body is not acceptable' : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration',
       ...(error instanceof InvocationRejected ? { acceptance: error.acceptance } : {}) });
   });
