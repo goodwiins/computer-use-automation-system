@@ -1,6 +1,6 @@
 import { authenticatedFetch, pending, segment, type Run } from './session';
 
-export async function signOn(token: string, signal: AbortSignal) {
+export async function signOn(token: string, signal: AbortSignal, branch?: string) {
   const request = async (path: string, options: RequestInit = {}) => {
     const response = await authenticatedFetch(token, path, { ...options, signal });
     if (!response.ok) throw new Error(`Sign-on could not be confirmed (${response.status}). Connect again to check your access.`);
@@ -18,7 +18,8 @@ export async function signOn(token: string, signal: AbortSignal) {
     if (run.state === 'success' && run.result?.status === 'success') {
       const outputs = run.result.outputs;
       if (!outputs || typeof outputs.operator !== 'string' || !outputs.operator.trim()
-        || typeof outputs.branch !== 'string' || !outputs.branch.trim() || outputs.role !== 'TELLER') {
+        || typeof outputs.branch !== 'string' || !outputs.branch.trim() || outputs.role !== 'TELLER'
+        || (branch !== undefined && outputs.branch !== branch)) {
         throw new Error('Sign-on did not confirm the requested operator role and branch.');
       }
       return `Signed in as ${outputs.operator} · ${outputs.role} · Branch ${outputs.branch}.`;

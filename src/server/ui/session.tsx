@@ -29,6 +29,7 @@ export type Session = {
   operationContracts: OperationContract[];
   readinessRequired?: boolean;
   supervisorVerified?: boolean;
+  selectedBranch?: string;
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

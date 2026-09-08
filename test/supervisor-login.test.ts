@@ -156,12 +156,12 @@ it('uses fresh target sign-on without proof or pending state, and rejects contex
   expect((await f.login()).status).toBe(429);
 });
 
-async function realServiceFixture() {
+async function realServiceFixture(allowlist: string[] = []) {
   vi.stubEnv('MERIDIAN_TELLER_OPERATOR', 'TELLER1'); vi.stubEnv('MERIDIAN_TELLER_PASSWORD', 'offline-teller-password');
   const dir = mkdtempSync(join(tmpdir(), 'supervisor-reconnect-'));
   const journal = new Journal(join(dir, 'journal'), 'offline-journal-key-at-least-32-characters');
   const profile = loadProfile('meridian');
-  const service = new InvocationService(journal, profilePolicy(profile), profile, join(dir, 'evidence'), []);
+  const service = new InvocationService(journal, profilePolicy(profile), profile, join(dir, 'evidence'), allowlist);
   cleanups.push(async () => { await service.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); });
   let options!: Parameters<typeof runtime.createRuntime>[0];
   const construct = vi.spyOn(runtime, 'createRuntime').mockImplementation(input => {
@@ -279,4 +279,56 @@ it('requires fresh target verification in a new app instance while the old servi
   expect((await restarted.login()).status).toBe(429);
   expect(f.invoke).toHaveBeenCalledTimes(2);
   expect(f.construct).toHaveBeenCalledTimes(2);
+});
+
+
+it('binds local login tokens to branches for later runs without changing other sessions or the environment', async () => {
+  const f = await realServiceFixture(['meridian-sign-on']);
+  f.replay.mockImplementation(async (_artifact, params) => ({
+    status: 'success', outputs: { operator: params.operator, branch: params.branch, role: 'TELLER' },
+  }) as any);
+  const tokens: string[] = [];
+  for (const branch of ['WEST-014', 'EAST-022']) {
+    const response = await fetch(f.origin + '/session/teller', { method: 'POST',
+      headers: { Origin: f.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ branch }) });
+    expect(response.status).toBe(200);
+    tokens.push((await response.json()).token);
+  }
+  expect(tokens[0]).not.toBe(tokens[1]);
+  for (const [token, branch] of [[tokens[0], 'WEST-014'], [tokens[1], 'EAST-022'], [tokens[0], 'WEST-014']] as const) {
+    const response = await fetch(f.origin + '/capabilities/meridian-sign-on/invoke', { method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+      body: JSON.stringify({ args: {} }) });
+    expect(response.status).toBe(202);
+    const { runId } = await response.json();
+    await vi.waitFor(() => expect(f.service.live.get(runId)?.finished).toBeDefined());
+    expect(f.construct.mock.calls.at(-1)?.[0]).toMatchObject({ operator: { branch }, params: { branch } });
+    expect(process.env.MERIDIAN_BRANCH).toBe('MAIN');
+    expect(runtime.operatorBranch.getStore()).toBeUndefined();
+  }
+  const denied = await fetch(f.origin + '/session/teller', { method: 'POST',
+    headers: { Origin: f.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: 'UNKNOWN' }) });
+  expect(denied.status).toBe(400);
+  expect(await denied.text()).not.toContain('token');
+});
+
+it('verifies the selected supervisor branch and retains it for subsequent teller execution', async () => {
+  const f = await realServiceFixture();
+  f.replay.mockImplementation(async (_artifact, params) => ({
+    status: 'success', outputs: { operator: params.operator, branch: params.branch,
+      role: params.operator === 'SUPER1' ? 'SUPERVISOR' : 'TELLER' },
+  }) as any);
+  const response = await f.login({ operator: 'SUPER1', password: 'offline-supervisor-password', branch: 'WEST-014' });
+  expect(response.status).toBe(200);
+  const signedIn = await response.json();
+  expect(signedIn.branch).toBe('WEST-014');
+  expect(f.construct.mock.calls[0]?.[0].operator?.branch).toBe('WEST-014');
+  const next = await fetch(f.origin + '/capabilities/meridian-sign-on/invoke', { method: 'POST',
+    headers: { Authorization: `Bearer ${signedIn.token}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+    body: JSON.stringify({ args: {}, operator: 'TELLER' }) });
+  expect(next.status).toBe(202);
+  const { runId } = await next.json();
+  await vi.waitFor(() => expect(f.service.live.get(runId)?.finished).toBeDefined());
+  expect(f.construct.mock.calls.at(-1)?.[0].operator).toMatchObject({ role: 'TELLER', branch: 'WEST-014' });
+  expect(process.env.MERIDIAN_BRANCH).toBe('MAIN');
 });

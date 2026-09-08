@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type { CapabilityArtifact } from '../artifact/schema.js';
 import { ControlSession, type InterventionDecision, type InterventionRequest } from '../escalation/session.js';
@@ -12,12 +13,15 @@ import { holdFactsFromParams, memberUpdateFactsFromParams, meridianMemberContact
 import type { ActionContext } from './approval.js';
 import { FaultScenario, type AppProfile } from './profile.js';
 
+// Local login tokens bind branch selection to each asynchronous request, including chat runs.
+export const operatorBranch = new AsyncLocalStorage<string | undefined>();
+
 export interface OperatorContext { operator: string; password: string; branch: string; role: 'TELLER' | 'SUPERVISOR' }
 export function operatorContext(role: 'TELLER' | 'SUPERVISOR'): OperatorContext {
   const prefix = `MERIDIAN_${role}`;
   const operator = process.env[`${prefix}_OPERATOR`];
   const password = process.env[`${prefix}_PASSWORD`];
-  const branch = process.env.MERIDIAN_BRANCH;
+  const branch = operatorBranch.getStore() ?? process.env.MERIDIAN_BRANCH;
   if (!operator || !password || !branch) throw new Error(`${prefix}_OPERATOR, ${prefix}_PASSWORD and MERIDIAN_BRANCH are required`);
   return { operator, password, branch, role };
 }
