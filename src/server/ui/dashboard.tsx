@@ -5,6 +5,7 @@ import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
+import { ApiRequestError } from './transport';
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
 type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
@@ -83,6 +84,13 @@ export function CapabilityCatalog() {
       bindAction(retained.key, accepted.runId, retained.capabilityId);
       watch(accepted.runId);
     } catch (e) {
+      if (!lookupOnly && e instanceof ApiRequestError && e.invocationRejected) {
+        clearAction(retained.key);
+        attempt.current = undefined;
+        setRecoveryAvailable(false);
+        setError(`${e.message} This request was not accepted. Review the request before submitting again.`);
+        return;
+      }
       markActionUncertain(retained.key);
       setRecoveryAvailable(true);
       const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
@@ -444,7 +452,7 @@ export function RunHistory() {
         <div>
           <h2 id="history-heading">{operator ? 'Operator Activity' : 'Run history'}</h2>
           <p>{operator ? 'Review requests first, then browse recent authenticated runs.' : 'Recent authoritative discovery and replay records.'}</p>
-          <p>History returns up to 100 recent records, prioritizing pending reviews. Runs already followed in this session remain visible; older records are retained.</p>
+          <p>History returns up to 100 recent records, prioritizing pending reviews. Up to 32 followed runs, including the current action and open review, remain visible; older records are retained.</p>
         </div>
         <button id="refresh" onClick={() => void refresh()}>
           Refresh

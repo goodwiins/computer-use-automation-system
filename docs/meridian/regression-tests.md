@@ -19,10 +19,13 @@ the combined implementation must be reviewed and tested as one source head.
 | --- | --- |
 | `chat.test.ts` | Server-observed clarification, edited/forged history, private accepted boundaries, subject isolation, status replies, and bounded history projection. |
 | `chat-ui.test.ts` | Real Chromium direct/chat completion, exact-run review, response loss, role changes, and unknown outcomes. Non-MERIDIAN profiles work even with MERIDIAN-style capability names. |
+| `invocation-rejection.test.ts`, `chat-rejection-lifecycle.test.ts` | Explicit pre-reservation rejection proof, accepted-key and uncertain-outcome holds, complete tool-output accounting and clean stream completion. Real Chromium direct/chat rejection recovery is covered in `chat-ui.test.ts`. |
+| `src/server/ui/run-watch.test.ts` | Bounded watch retention under more than 100 terminal or stale active runs, current action/review pins, linked pending identity, bounded fallback concurrency and in-flight failure settlement. |
 | `ui-readiness.test.ts`, `src/server/ui/session-readiness.test.tsx` | Explicit server readiness policy, conservative missing metadata, catalog binding, pending identity, and unknown-state holds. |
 | `journal-read-batch.test.ts` | Filesystem/PostgreSQL parity, nineteen aliases in one authority transaction, private accepted markers, foreign exclusion, input bounds, global quarantine, and per-principal/global nonqueueing read admission. |
 | `journal-recent-history.test.ts` | Storage-level ownership and privacy filtering before the 100-row history bound, deterministic ordering, pending private operator review discoverability, and retained older exact-run access. |
 | `postgres-journal.test.ts`, `journal-alias.test.ts` | Durable direct/alias identity, restart authentication, ownership, unchanged records, and storage failures. |
+| `postgres-projection-locks.test.ts` | Real PostgreSQL shared projection readers, exclusive writer/owner-recovery fencing, and stale-owner fail-closed behavior. |
 | `meridian-cli.test.ts`, `cli-pool.test.ts` | CLI replay/discovery error handling, dispatch fencing, safe evidence, once-only cleanup, and retained recovery ownership. |
 | `cli-pool-postgres.test.ts` | Terminates only its own isolated idle test connection and checks real PostgreSQL authority and dispatch-intent retention. |
 | `browser-startup-cleanup.test.ts` | Cleanup waits for delayed Chromium launch, prevents further initialization, closes once, and retains close failures. |
@@ -46,7 +49,17 @@ Recent history returns at most 100 authorized records, with pending operator
 reviews taking priority. Ownership and private-record visibility are applied
 before selection; the selected records retain ascending chronological order.
 Older records are not deleted and remain available through authorized exact-run
-reads. The UI supplements recent history with the runs it is already following.
+reads. The UI supplements recent history with at most 32 followed runs, reserving
+space for the current bound action and open review. Remaining slots prioritize
+unobserved and active/pending runs, then recency. Fallback reads use at most four
+concurrent requests; a failed batch settles started requests before returning.
+
+An HTTP status alone does not prove rejection. Only a pre-reservation invocation
+failure with a healthy exact-key lookup confirming absence emits
+`acceptance: rejected`. Existing keys, lookup-only requests, reservation-stage
+failures and unavailable authority retain the uncertain-outcome hold. Chat also
+requires a clean stream ending and confirmed rejection for every action tool;
+mixed, duplicate, incomplete or unmarked outputs cannot release the hold.
 
 Deterministic model fixtures verify context and tool boundaries, not live-model
 classification accuracy. Browser and database tests are local regression evidence;

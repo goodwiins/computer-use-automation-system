@@ -14,6 +14,7 @@ import { AssistantChatTransport, useChatRuntime } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
 import {
   ChatRequestError,
+  allActionToolsRejected,
   chatRequest,
   observeGuardedChatStream,
   type ChatLifecycle,
@@ -190,6 +191,8 @@ export function Chat() {
             || !current.finishSeen
             || (current.finishReason !== 'stop' && current.finishReason !== 'tool-calls')) {
             markActionUncertain(current.key);
+          } else if (allActionToolsRejected(current)) {
+            clearAction(current.key);
           } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;

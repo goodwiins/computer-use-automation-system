@@ -27,6 +27,9 @@ export type MemberIdentity =
   | { status: 'pending' | 'unavailable'; inquiryRunId?: string }
   | { status: 'verified'; inquiryRunId?: string; memberNumber: string; name: string };
 export type RequestContext = { accepted: true } | { runId: string; capability: string; state: string };
+export class InvocationRejected extends RequestError {
+  readonly acceptance = 'rejected' as const;
+}
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
@@ -137,13 +140,26 @@ export class InvocationService {
     }
   }
   async invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
-    return this.withAdmission(() => this.invokeRun(principal, id, args, key, role, false, lookupOnly));
+    return this.withAdmission(async () => {
+      const admission = { attempted: false };
+      try { return await this.invokeRun(principal, id, args, key, role, false, lookupOnly, admission); }
+      catch (error) {
+        if (!lookupOnly && !admission.attempted && error instanceof RequestError
+          && [400, 403, 404, 409, 429].includes(error.status)) {
+          let confirmedMissing = false;
+          try { confirmedMissing = !await this.journal.findRequest(principalKey(principal), key); }
+          catch { /* A failed journal check cannot prove non-acceptance. */ }
+          if (confirmedMissing) throw new InvocationRejected(error.status, error.message);
+        }
+        throw error;
+      }
+    });
   }
   private async invokeInternal(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR') {
     return this.withAdmission(() => this.invokeRun(principal, id, args, key, role, true));
   }
   private async invokeRun(principal: Principal, id: string, args: Record<string, string | number>, key: string,
-    role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean, lookupOnly = false) {
+    role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean, lookupOnly = false, admission?: { attempted: boolean }) {
     if (principalRole(principal) !== 'operator' && (role !== 'TELLER' || !this.allowlist.includes(id))) throw new RequestError(403, 'Capability or operator context is not authorized');
     const owner = principalKey(principal);
     const recoveryRequest = { capability: id, args, role };
@@ -188,6 +204,7 @@ export class InvocationService {
     if (await this.journal.hasUnknown(id))
       throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
+    if (admission) admission.attempted = true;
     const record = await this.journal.reserve(owner, key, id, artifact.version, request, 'replay', {
       invocationScope: privateInvocation ? 'member-identity' : 'public',
       ...(privateInvocation ? {} : { recoveryRequest }),

@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { InvocationService } from '../service.js';
+import { ApiRequestError } from './transport';
+import { fetchMissingRuns, RunWatch } from './run-watch';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
 export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
@@ -147,8 +149,9 @@ export function RunProvider({
   const abort = useRef(new AbortController());
   const busy = useRef(false);
   const queued = useRef(false);
-  const watched = useRef(new Set<string>());
+  const watched = useRef(new RunWatch<Run>({ maxEntries: 32 }));
   const [reviewRunId, setReviewRunId] = useState<string>();
+  const reviewRunIdRef = useRef<string | undefined>(undefined);
   const reviewAttempts = useRef(new Map<string, ReviewAttempt>());
   const [, rerenderReview] = useState(0);
   const updateAction = useCallback((key: string, update: (current: ActionHold) => ActionHold | undefined) => {
@@ -191,7 +194,7 @@ export function RunProvider({
       }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(typeof data.error === 'string' ? data.error : `Request failed (${response.status})`);
+        throw new ApiRequestError(response.status, data);
       }
       return response;
     },
@@ -226,10 +229,19 @@ export function RunProvider({
       const nextAvailability = hasCapabilities && Array.isArray(metadata.availability)
         ? metadata.availability as Availability[]
         : undefined;
-      const missing = [...watched.current].filter((id) => !history.some((run) => run.runId === id));
-      const extra: Run[] = await Promise.all(
-        missing.map(async (id) => (await request(`/runs/${segment(id)}`)).json()),
+      const pinned = new Set<string>();
+      const held = actionHoldRef.current;
+      if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+      if (reviewRunIdRef.current) pinned.add(reviewRunIdRef.current);
+      const missing = watched.current.missing(history, pinned);
+      const extra: Run[] = await fetchMissingRuns(
+        missing,
+        async id => (await request(`/runs/${segment(id)}`)).json() as Promise<Run>,
+        4,
       );
+      for (const run of history) watched.current.observe(run);
+      for (const run of extra) watched.current.observe(run);
+      watched.current.prune(pinned);
       if (!abort.current.signal.aborted) {
         setRuns([...history, ...extra]);
         setRefreshVersion(version => version + 1);
@@ -264,19 +276,30 @@ export function RunProvider({
   }, [disconnect, request, session]);
   const watch = useCallback(
     (id: string) => {
-      watched.current.add(id);
+      const pinned = new Set<string>();
+      const held = actionHoldRef.current;
+      if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+      if (reviewRunIdRef.current) pinned.add(reviewRunIdRef.current);
+      watched.current.watch(id, pinned);
       void refresh();
     },
     [refresh],
   );
   const openReview = useCallback((runId: string) => {
+    reviewRunIdRef.current = runId;
     setReviewRunId(runId);
+    const pinned = new Set<string>([runId]);
+    const held = actionHoldRef.current;
+    if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+    watched.current.watch(runId, pinned);
     if (!runs.some(run => run.runId === runId)) {
-      watched.current.add(runId);
       void refresh();
     }
   }, [refresh, runs]);
-  const closeReview = useCallback(() => setReviewRunId(undefined), []);
+  const closeReview = useCallback(() => {
+    reviewRunIdRef.current = undefined;
+    setReviewRunId(undefined);
+  }, []);
   const getReviewAttempt = useCallback((key: string): ReviewAttempt => reviewAttempts.current.get(key) ?? {
     locked: false,
     uncertain: false,
@@ -290,6 +313,7 @@ export function RunProvider({
   }, [getReviewAttempt]);
   useEffect(() => {
     reviewAttempts.current.clear();
+    reviewRunIdRef.current = undefined;
     setReviewRunId(undefined);
     watched.current.clear();
     actionHoldRef.current = undefined;
@@ -320,7 +344,7 @@ export function RunProvider({
   }, [runs, error, loading, refresh, actionHold?.state]);
   const currentSession = { ...session, capabilities, availability };
   return (
-    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, actionHold,
+    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current.ids, loading, error, actionHold,
       beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>
       {children}
     </Context.Provider>

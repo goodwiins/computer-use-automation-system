@@ -8,7 +8,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createApp } from '../src/server/http.js';
-import { RequestError } from '../src/runtime/journal.js';
+import { Journal, RequestError } from '../src/runtime/journal.js';
 import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
 import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import type { InvocationService } from '../src/server/service.js';
@@ -822,7 +822,8 @@ it('recovers a real PostgreSQL chat action after the browser loses its response 
       body: JSON.stringify({ args: { searchMode: 'number', searchValue: '9011' } }),
     });
     expect(blocked.status).toBe(409);
-    expect(await blocked.json()).toEqual({ error: 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.' });
+    expect(await blocked.json()).toEqual({ error: 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.', acceptance: 'rejected' });
+    expect(await journal.findRequest('caller', 'local-inquiry-fresh')).toBeUndefined();
     expect(invoke).toHaveBeenCalledTimes(beforeUnknown.invokes + 1);
     expect(create).toHaveBeenCalledTimes(beforeUnknown.creates);
     expect(replay).toHaveBeenCalledTimes(beforeUnknown.replays);
@@ -2424,6 +2425,38 @@ it('allows a separate direct inquiry after unknown posting without replaying the
     `/capabilities/${capability.id}/invoke`, `/capabilities/${inquiry.id}/invoke`,
   ]);
 }, 15000);
+
+it.each(['direct', 'chat'] as const)('releases a confirmed pre-admission %s rejection without original-key recovery', async kind => {
+  const { page, state, service, connect } = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'rejected-browser-'));
+  const journal = new Journal(join(dir, 'journal'), 'r'.repeat(64));
+  const profile = loadProfile('meridian');
+  const actual = new RealInvocationService(journal, profilePolicy(profile), profile, dir, []);
+  cleanup.push(async () => { journal.close(); rmSync(dir, { recursive: true, force: true }); });
+  // Use the real admission boundary; the displayed capability is no longer authorized.
+  service.invoke.mockImplementation((principal, id, args, key, role, lookupOnly) =>
+    actual.invoke(principal as 'caller', id, args as Record<string, string | number>, key, role as 'TELLER', lookupOnly) as never);
+  await connect();
+  if (kind === 'direct') {
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'not authorized' }).waitFor();
+    await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true));
+  } else {
+    await page.locator('#message').fill('Read this member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledOnce());
+    await page.locator('#message').fill('Read another member');
+    await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Send', exact: true }).isEnabled()).toBe(true));
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.requests.filter(item => item.path === '/api/chat')).toHaveLength(2));
+    expect(state.requests.filter(item => item.path === '/api/chat').at(-1)?.body.intent).toBe('auto');
+  }
+  expect(state.requests.filter(item => item.path === '/api/chat/request')).toHaveLength(0);
+  expect(state.requests.filter(item => item.body?.lookupOnly)).toHaveLength(0);
+  expect(journal.list()).toEqual([]);
+}, 20000);
 
 it('keeps polling after a terminal run waits on another operation to release readiness', async () => {
   const { page, state, service, connect } = await fixture();

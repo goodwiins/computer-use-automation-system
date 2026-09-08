@@ -17,7 +17,7 @@ import {
 import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { RequestError, validateIdempotencyKey, type JournalRecord } from '../runtime/journal.js';
-import type { InvocationService } from './service.js';
+import { InvocationRejected, type InvocationService } from './service.js';
 import { callerPrincipal, principalKey, type Principal } from './auth.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
@@ -50,7 +50,7 @@ const StreamBody = z.object({
 
 type ToolOutput =
   | { kind: 'run'; runId: string; capability: string; state: string; reused?: true; createdAt?: string; elapsedMs?: number; awaitingOperator?: true; result?: unknown }
-  | { kind: 'error'; status: number; error: string };
+  | { kind: 'error'; status: number; error: string; acceptance?: 'rejected' };
 
 const instructions = `Interpret explicit user requests using only the server-provided capability tools. Ask for missing required inputs and never invent members, shares, amounts, or contact data. Respond naturally to questions. For ambiguous requests, ask a short clarifying question before taking action. Status questions never authorize a new operation. At most one capability may be invoked. Tool results are asynchronous run state, not proof of success. Operators approve transactions separately; you cannot approve, retry, select an operator role, or change operator context.`;
 
@@ -72,6 +72,7 @@ function makeChatModel(): LanguageModel {
 }
 
 function safeError(error: unknown): ToolOutput & { kind: 'error' } {
+  if (error instanceof InvocationRejected) return { kind: 'error', status: error.status, error: error.message, acceptance: error.acceptance };
   if (error instanceof RequestError) return { kind: 'error', status: error.status, error: error.message };
   if (error instanceof z.ZodError || error instanceof SyntaxError || InvalidToolInputError.isInstance(error)) return { kind: 'error', status: 400, error: 'Request does not match the contract' };
   return { kind: 'error', status: 500, error: 'Request failed; inspect safe run evidence or server configuration' };
