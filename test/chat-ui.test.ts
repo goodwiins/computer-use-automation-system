@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { chromium, type Locator, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
 import { MockLanguageModelV3 } from 'ai/test';
 import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -43,6 +43,14 @@ const readinessLabels = [
   ['meridian-update-member', 'Update contact'],
   ['meridian-place-hold', 'Supervisor hold'],
 ] as const;
+
+function walkthroughScreenshotPath(name: string) {
+  const outputDir = process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR
+    ? resolve(process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR)
+    : evidencePath;
+  mkdirSync(outputDir, { recursive: true });
+  return join(outputDir, name);
+}
 
 function nativeLifecycle(key: string, intent: 'action' | 'status' = 'action') {
   return {
@@ -293,7 +301,11 @@ afterEach(async () => {
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
-  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean } = {},
+  options: {
+    subjectTokens?: typeof subjectCaller[];
+    holdRefreshCapabilities?: boolean;
+    nativeZoom200?: boolean;
+  } = {},
 ) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
@@ -548,8 +560,32 @@ async function fixture(
     });
     app(req, res);
   });
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
+  let browser: Browser | BrowserContext;
+  let nativeProfileDir: string | undefined;
+  if (options.nativeZoom200) {
+    nativeProfileDir = mkdtempSync(join(tmpdir(), 'assistant-ui-native-zoom-'));
+    mkdirSync(join(nativeProfileDir, 'Default'), { recursive: true });
+    const zoomLevel200 = Math.log(2) / Math.log(1.2);
+    const preferences = {
+      partition: { default_zoom_level: { x: zoomLevel200 } },
+    };
+    writeFileSync(join(nativeProfileDir, 'Default', 'Preferences'), JSON.stringify(preferences));
+    try {
+      browser = await chromium.launchPersistentContext(nativeProfileDir, {
+        headless: false,
+        viewport: null,
+        args: ['--window-size=1440,900'],
+      });
+    } catch (error) {
+      rmSync(nativeProfileDir, { recursive: true, force: true });
+      throw error;
+    }
+  } else {
+    browser = await chromium.launch();
+  }
+  const page = 'pages' in browser
+    ? (browser.pages()[0] ?? await browser.newPage())
+    : await browser.newPage();
   const errors: string[] = [];
   await page.addInitScript(() => {
     (window as any).cspViolations = [];
@@ -575,6 +611,7 @@ async function fixture(
     await browser.close();
     await new Promise<void>((r) => server.close(() => r()));
     rmSync(evidenceDir, { recursive: true, force: true });
+    if (nativeProfileDir) rmSync(nativeProfileDir, { recursive: true, force: true });
   });
   const url = `http://127.0.0.1:${port}`;
   const documentResponse = await page.goto(url);
@@ -886,6 +923,9 @@ it('preserves the conversation across responsive Activity navigation', async () 
     await activity.focus();
     await page.keyboard.press('Enter');
     expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+    if (width === 320 || width === 1440) {
+      await page.screenshot({ path: walkthroughScreenshotPath(`activity-${width}.png`), fullPage: true });
+    }
     if (width <= 768) {
       expect(await back.isVisible()).toBe(true);
       expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
@@ -914,6 +954,61 @@ it('preserves the conversation across responsive Activity navigation', async () 
   }
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
+}, 30000);
+
+it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoom at 200%', async () => {
+  const { page, state, connect, errors } = await fixture(false, undefined, { nativeZoom200: true });
+  state.runs.push(initialRun());
+  await connect();
+  const metrics = await page.evaluate(() => ({
+    devicePixelRatio,
+    visualViewportScale: visualViewport?.scale ?? null,
+    innerWidth,
+    innerHeight,
+    outerWidth,
+    outerHeight,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  console.info(`[native-zoom] ${JSON.stringify(metrics)}`);
+  expect(metrics.devicePixelRatio).toBe(2);
+  expect(metrics.visualViewportScale).toBe(1);
+  expect(metrics.innerWidth).toBeLessThanOrEqual(720);
+  expect(metrics.documentWidth).toBeLessThanOrEqual(metrics.innerWidth);
+  const catalogHeading = page.getByRole('heading', { name: 'Capability catalog', exact: true });
+  await catalogHeading.waitFor();
+  const catalogBounds = await catalogHeading.boundingBox();
+  expect(catalogBounds).not.toBeNull();
+  expect(catalogBounds!.x + catalogBounds!.width).toBeLessThanOrEqual(metrics.innerWidth);
+  const catalogOverflow = await catalogHeading.evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+  }));
+  expect(catalogOverflow.scrollWidth).toBeLessThanOrEqual(catalogOverflow.clientWidth);
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+  const status = page.locator('#runs [role="status"]').first();
+  expect(await back.isVisible()).toBe(true);
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await message.fill('Native zoom draft survives Activity');
+  expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+  const requestsBeforeNavigation = state.requests.length;
+  await activity.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('heading', { name: 'Capability catalog', exact: true }).waitFor();
+  expect(await back.isVisible()).toBe(true);
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(back);
+  await page.screenshot({ path: walkthroughScreenshotPath('native-zoom-200.png'), fullPage: true });
+  await page.keyboard.press('Enter');
+  expect(await message.inputValue()).toBe('Native zoom draft survives Activity');
+  expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+  const navigationPosts = state.requests.slice(requestsBeforeNavigation).filter(request =>
+    request.method === 'POST' && /(?:\/api\/chat|\/invoke|\/decision|\/cancel|\/transaction)/.test(request.path),
+  );
+  expect(navigationPosts).toEqual([]);
+  expect(errors).toEqual([]);
 }, 30000);
 
 it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
@@ -1864,7 +1959,7 @@ it('offline operator review controls require live authority, keyboard focus, rea
   expect(await dialog.innerText()).not.toMatch(/short-secret|hidden-body|hidden-token|visibleFacts|businessValues/);
   await page.screenshot({ path: join(evidencePath, 'review-dialog-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 320, height: 900 });
-  await page.screenshot({ path: join(evidencePath, 'review-dialog-320.png'), fullPage: true });
+  await page.screenshot({ path: walkthroughScreenshotPath('review-320.png'), fullPage: true });
   await page.setViewportSize({ width: 1280, height: 900 });
   await approve.focus();
   await page.keyboard.press('Enter');
