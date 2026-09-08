@@ -2745,6 +2745,30 @@ it('keeps the dispatched outcome unknown after repeated extraction failures and 
   expect(escalate).not.toHaveBeenCalled();
 });
 
+it('answers a failed tool call exactly once when consecutive failures escalate and the operator retries', async () => {
+  const click = { name: 'click', args: { nameAttr: 'missing', reason: 'open transfer', risk: 'read' } };
+  const calls = [click, click, click, { name: 'done', args: { summary: 'complete' } }];
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  const stub = guarded({ describeTarget: async () => { throw new Error('no such control'); } }, async () => true, {}, (event, data) => logger.log(event, data));
+  const create = vi.fn(async ({ messages }: { messages: Array<{ role: string; tool_call_id?: string }> }) => {
+    // The OpenAI API rejects a tool reply that does not directly answer an assistant tool call.
+    messages.forEach((message, index) => {
+      if (message.role === 'tool' && messages[index - 1]?.role !== 'assistant') throw new Error("400 Invalid parameter: messages with role 'tool' must be a response to a preceeding message with 'tool_calls'.");
+    });
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const escalate = vi.fn(async () => 'retry' as const);
+  const result = await runDiscovery('transfer', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger, openai: { chat: { completions: { create } } } as never, model: 'fixture', maxSteps: 6, escalate,
+  });
+  expect(escalate).toHaveBeenCalledOnce();
+  // The model call after the retry succeeds; a repaired run then ends escalated by design.
+  expect(create).toHaveBeenCalledTimes(4);
+  expect(result).toMatchObject({ status: 'escalated', stopReason: 'Human repair requires a fresh complete recording' });
+  expect(stub.dispatch).not.toHaveBeenCalled();
+});
+
 it('runs discovery completion validation before emitting success', async () => {
   const calls = [{ name: 'done', args: { summary: 'complete' } }];
   const stub = guarded();

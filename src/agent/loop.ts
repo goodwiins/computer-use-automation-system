@@ -275,10 +275,10 @@ export async function runDiscovery(
         consecutiveFailures++;
         const message = err instanceof Error ? err.message : String(err);
         logger.log('discovery.action_error', { turn, error: message, consecutiveFailures });
-        respond(
-          `ERROR: ${deps.sanitizeObservation?.(message) ?? message}. Re-observe and try a DIFFERENT targeting strategy — ` +
-            `nameAttr for form fields, exact visible text for links/buttons, css as last resort.`,
-        );
+        // Exactly one tool reply per failed call: a second reply for the same tool_call_id is
+        // rejected by the model API ("messages with role 'tool' must be a response to a
+        // preceding message with 'tool_calls'") and would fail the run on the next turn.
+        const error = `ERROR: ${deps.sanitizeObservation?.(message) ?? message}.`;
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           // No human repair on a live posted page; finish() maps this to POST_OUTCOME_UNKNOWN.
           if (deps.escalate && !surface.mutationDispatched) {
@@ -292,14 +292,15 @@ export async function runDiscovery(
               screenshot: shot,
             });
             if (decision !== 'abort') {
-                repaired = true;
+              repaired = true;
               consecutiveFailures = 0;
-              respond('A human operator intervened on the live session. Re-observe and continue.');
+              respond(`${error} A human operator intervened on the live session. Re-observe and continue.`);
               continue;
             }
           }
           return finish('stopped', `stuck: ${consecutiveFailures} consecutive action failures (last: ${message})`);
         }
+        respond(`${error} Re-observe and try a DIFFERENT targeting strategy — nameAttr for form fields, exact visible text for links/buttons, css as last resort.`);
       }
     }
     return finish('stopped', `max steps (${deps.maxSteps}) reached`);
