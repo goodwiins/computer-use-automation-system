@@ -186,3 +186,67 @@ The full 85-test chat UI suite had one unrelated/flaky failure in that same
 capability-catalog refresh test (84 passed); its isolated rerun passed. No
 conversation quota test failed. The initial full-suite invocation without
 `TEST_DATABASE_URL` was not used as evidence.
+
+## Fix round 2/5 — durable quota-failure state
+
+RED: the new archive-list and delete-fetch regressions showed a failed 429
+mutation becoming `saved` after refresh. The list/fetch append-retry
+regressions likewise showed a concurrent refresh becoming `saved` while the
+explicit retry request was still pending.
+
+GREEN: the controller now keeps a quota-failure marker keyed by conversation
+and mutation operation for creation, event append, archive/unarchive, and
+delete. List, fetch, and event hydration preserve an unresolved quota status;
+an explicit retry may show truthful `saving` while in flight, and a failed
+retry restores `rate-limited`/`capacity`. Matching successful mutation clears
+the marker and stale error; successful delete and controller disposal clear
+the record's lifecycle state. Conflict, epoch, no-auto-retry, and frozen-body
+behavior remain unchanged.
+
+Targeted RED/GREEN result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'preserves a rate-limited'
+RED: 4 failed (archive-list, delete-fetch, append/list, append/fetch)
+GREEN: 4 passed
+```
+
+### Fix-round 2 verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 42 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 78 tests passed on rerun
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
+```
+
+The first combined invocation had one transient fresh-browser assistant-event
+failure (77/78); the unchanged combined rerun passed 78/78. No quota-state
+test failed in either run.
+
+Final post-review self-check after the creation-to-event marker correction:
+
+```text
+focused UI: 42/42 passed
+real PostgreSQL/Chromium acceptance: 12/12 passed
+combined quota/UI: 78/78 passed
+npm run typecheck:ui: passed
+npm run typecheck: passed
+npm run test:smoke: 2 files, 19 tests passed
+```

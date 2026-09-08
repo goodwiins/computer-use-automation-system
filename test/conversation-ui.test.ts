@@ -466,6 +466,71 @@ describe('safe conversation UI adapter', () => {
     expect(eventBodies[1]).toBe(eventBodies[0]);
   });
 
+  it.each([
+    ['archive', 'list'],
+    ['delete', 'fetch'],
+  ] as const)('preserves a rate-limited %s failure through %s refresh', async (mutation, refreshKind) => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'DELETE') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const mutationPromise = mutation === 'archive'
+      ? controller.adapter.archive(conversationId)
+      : controller.adapter.delete(conversationId);
+    await expect(mutationPromise).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
+  it.each(['list', 'fetch'] as const)('preserves a rate-limited append during an explicit retry and %s refresh', async refreshKind => {
+    let eventAttempts = 0;
+    let releaseRetry!: () => void;
+    const retryReleased = new Promise<void>(resolve => { releaseRetry = resolve; });
+    const { request } = requestRecorder(async (path, options) => {
+      if (path === `/conversations/${conversationId}/events`) {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        await retryReleased;
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    const message = { id: `retry-refresh-${refreshKind}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    const retry = history.append({ parentId: null, message });
+    await vi.waitFor(() => expect(eventAttempts).toBe(2));
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saving' });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+
+    releaseRetry();
+    await expect(retry).resolves.toBeUndefined();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+  });
+
   it('scopes the formatted history cache to its remote conversation', async () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],
