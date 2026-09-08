@@ -13,9 +13,12 @@ import { openRunJournal } from '../runtime/open-journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
 import { InvocationRejected, InvocationService } from './service.js';
-import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
+import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential, type SubjectPrincipal } from './auth.js';
 import { conversationRouter } from './conversation-http.js';
 import { ConversationStore } from './conversations.js';
+
+const LocalConversationSubjects = z.object({ caller: z.string().uuid().transform(value => value.toLowerCase()), operator: z.string().uuid().transform(value => value.toLowerCase()) }).strict().refine(value => value.caller !== value.operator);
+type LocalConversationSubjects = z.infer<typeof LocalConversationSubjects>;
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional(), lookupOnly: z.literal(true).optional() }).strict();
@@ -28,21 +31,34 @@ export type ServerStorageConfiguration = {
   databaseUrl?: string;
   subjectTokens?: SubjectCredential[];
   enableConversations: boolean;
+  localConversationSubjects?: LocalConversationSubjects;
+  conversationTextKey?: string;
 };
 
 export function resolveServerStorageConfiguration(env: NodeJS.ProcessEnv = process.env): ServerStorageConfiguration {
   const mode = env.RUN_JOURNAL ?? 'filesystem';
   if (mode !== 'filesystem' && mode !== 'postgres') throw new Error('RUN_JOURNAL must be filesystem or postgres');
   const subjectTokens = parseSubjectCredentials(env.SUBJECT_API_TOKENS);
+  let localConversationSubjects: LocalConversationSubjects | undefined;
+  if (env.LOCAL_CONVERSATION_SUBJECTS !== undefined) {
+    try { localConversationSubjects = LocalConversationSubjects.parse(JSON.parse(env.LOCAL_CONVERSATION_SUBJECTS)); }
+    catch { throw new Error('Invalid local conversation subjects'); }
+    if (env.LOCAL_TELLER_LOGIN !== '1' || subjectTokens) throw new Error('Local conversation subjects require local login without subject tokens');
+  }
+  const conversationTextKey = env.CONVERSATION_TEXT_KEY;
+  if (conversationTextKey !== undefined && (!localConversationSubjects || !/^[a-f0-9]{64}$/.test(conversationTextKey))) throw new Error('Conversation text saving requires local subjects and a 32-byte hex key');
   const databaseUrl = env.DATABASE_URL || undefined;
-  if (databaseUrl && !subjectTokens && mode !== 'postgres') throw new Error('Conversation storage configuration is invalid');
+  if ((localConversationSubjects || conversationTextKey) && !databaseUrl) throw new Error('Local conversation saving requires DATABASE_URL');
+  if (databaseUrl && !subjectTokens && !localConversationSubjects && mode !== 'postgres') throw new Error('Conversation storage configuration is invalid');
   if (mode === 'postgres' && !databaseUrl) throw new Error('PostgreSQL journal requires DATABASE_URL');
-  return { mode, databaseUrl, subjectTokens, enableConversations: Boolean(databaseUrl && subjectTokens) };
+  return { mode, databaseUrl, subjectTokens, enableConversations: Boolean(databaseUrl && (subjectTokens || localConversationSubjects)), ...(localConversationSubjects ? { localConversationSubjects } : {}), ...(conversationTextKey ? { conversationTextKey } : {}) };
 }
 
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; localConversationSubjects?: LocalConversationSubjects; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
   const authenticate = createAuthenticator(config);
   const localTellerLogin = config.subjectTokens ? undefined : config.localTellerLogin;
+  const localSubjects = config.localConversationSubjects ? LocalConversationSubjects.parse(config.localConversationSubjects) : undefined;
+  if (localSubjects && !localTellerLogin) throw new Error('Local conversation subjects require local login');
   const uiDir = config.uiDir ?? resolve('out');
   const html = existsSync(join(uiDir, 'index.html')) ? readFileSync(join(uiDir, 'index.html'), 'utf8') : '';
   // Next's exported bootstrap scripts are immutable; authorize their exact contents.
@@ -115,11 +131,21 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
     const principal = authenticate(token) ?? (localSupervisorToken && timingSafeEqual(hash(token), hash(localSupervisorToken)) ? 'operator' : undefined) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
-    res.locals.principal = principal; next();
+    res.locals.principal = principal;
+    // Local role credentials keep their existing run authority; only saved chats use stable ownership.
+    if (localSubjects && typeof principal === 'string') {
+      const localToken = principal === 'operator' ? localSupervisorToken : localTellerToken;
+      if (localToken && timingSafeEqual(hash(token), hash(localToken))) {
+        res.locals.conversationPrincipal = { subjectId: localSubjects[principal].toLowerCase(), role: principal } satisfies SubjectPrincipal;
+      }
+    }
+    next();
   });
   app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;
-    res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+    const conversationPrincipal = res.locals.conversationPrincipal ?? (typeof principal === 'string' ? undefined : principal);
+    res.json({ principal: principalRole(principal), ...(conversationPrincipal ? { subjectId: conversationPrincipal.subjectId } : {}), capabilities: service.catalog(principal),
+      ...(config.conversations?.textEnabled ? { conversationText: true } : {}),
       readinessRequired: service.profile?.appId ? service.profile.appId === 'meridian' : true,
       availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
   }));
@@ -188,7 +214,7 @@ export async function serve(profileName = 'meridian') {
         pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
         pool.on('error', () => { process.exitCode = 1; shutdownOnDatabaseError?.(); });
         if (storage.enableConversations) {
-          conversations = new ConversationStore(pool);
+          conversations = new ConversationStore(pool, storage.conversationTextKey);
           await conversations.migrate();
         }
       } catch { throw new Error('Conversation storage startup failed'); }
@@ -210,7 +236,7 @@ export async function serve(profileName = 'meridian') {
     service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
-    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens, conversations, port, uiDir,
+    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens, conversations, localConversationSubjects: storage.localConversationSubjects, port, uiDir,
       localTellerLogin: subjectTokens ? undefined : process.env.LOCAL_TELLER_LOGIN === '1' ? {
         teller: process.env.MERIDIAN_TELLER_OPERATOR ?? 'TELLER',
         supervisor: process.env.MERIDIAN_SUPERVISOR_OPERATOR ?? 'SUPERVISOR',

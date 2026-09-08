@@ -2,8 +2,8 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod';
 import { safeResult } from '../evidence/safe-event.js';
 import { MAX_RUN_BATCH, RequestError } from '../runtime/journal.js';
-import { principalKey, type SubjectPrincipal } from './auth.js';
-import { ConversationStore, type ConversationEvent } from './conversations.js';
+import { principalKey, type Principal, type SubjectPrincipal } from './auth.js';
+import { ConversationStore, appendEvent, type ConversationEvent } from './conversations.js';
 import type { InvocationService } from './service.js';
 
 const uuid = z.string().uuid().refine(value => value === value.toLowerCase());
@@ -19,16 +19,7 @@ const listQuery = z.object({
 const idParams = z.object({ id: uuid }).strict();
 const archiveBody = z.object({ archived: z.boolean(), expectedRevision: revision }).strict();
 const deleteBody = z.object({ expectedRevision: revision }).strict();
-const appendBody = z.object({
-  id: uuid,
-  kind: z.enum(['message_omitted', 'run_linked']),
-  role: z.enum(['user', 'assistant']),
-  runId: uuid.optional(),
-  expectedRevision: revision,
-}).strict().superRefine((event, context) => {
-  if ((event.kind === 'run_linked') !== (event.runId !== undefined))
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'runId does not match kind' });
-});
+const appendBody = appendEvent;
 const eventQuery = z.object({ after: integerQuery.default('0'), limit: limitQuery }).strict();
 
 const asyncRoute = (handler: (req: Request, res: Response) => Promise<void>) =>
@@ -44,13 +35,13 @@ export function conversationRouter(service: InvocationService, store?: Conversat
   const router = Router();
   const projectingSubjects = new Set<string>();
   router.use((_req, res, next) => {
-    if (typeof res.locals.principal === 'string') return next(new RequestError(403, 'Conversation access requires subject authentication'));
+    if (typeof (res.locals.conversationPrincipal ?? res.locals.principal) === 'string') return next(new RequestError(403, 'Conversation access requires subject authentication'));
     if (!store) return next(new RequestError(503, 'Conversation storage is unavailable'));
     next();
   });
 
-  const subject = (res: Response) => res.locals.principal as SubjectPrincipal;
-  const withProjectionCapacity = async <T>(principal: SubjectPrincipal, work: () => Promise<T>): Promise<T> => {
+  const subject = (res: Response) => (res.locals.conversationPrincipal ?? res.locals.principal) as SubjectPrincipal;
+  const withProjectionCapacity = async <T>(principal: Principal, work: () => Promise<T>): Promise<T> => {
     const owner = principalKey(principal);
     if (projectingSubjects.has(owner)) throw new RequestError(429, 'Linked-run projection is busy');
     projectingSubjects.add(owner);
@@ -65,10 +56,13 @@ export function conversationRouter(service: InvocationService, store?: Conversat
     return { runId: run.runId, capability: run.capability, version: run.version, state: run.state, result };
   };
   type ProjectedRun = ReturnType<typeof projectRun>;
-  const projectRuns = async (principal: SubjectPrincipal, runIds: string[]): Promise<Map<string, ProjectedRun>> => {
+  const projectRuns = async (principal: Principal, runIds: string[]): Promise<Map<string, ProjectedRun>> => {
     if (runIds.length === 0) return new Map();
     return withProjectionCapacity(principal, async () => {
-      const owned = await service.getOwnedMany(principal, runIds);
+      // Local roles retain their existing run visibility, including operator access to teller runs.
+      const owned = typeof principal === 'string'
+        ? new Map(await Promise.all(runIds.map(async runId => [runId, await service.get(principal, runId)] as const)))
+        : await service.getOwnedMany(principal, runIds);
       return new Map([...owned].map(([runId, run]) => [runId, projectRun(run)]));
     });
   };
@@ -77,11 +71,11 @@ export function conversationRouter(service: InvocationService, store?: Conversat
     if (event.runId !== undefined && run === undefined) throw new RequestError(404, 'Unknown run');
     return {
       ...event,
-      content: event.kind === 'message_omitted' ? 'Message text was not saved.' : 'Linked run.',
+      content: event.kind === 'message_saved' ? event.text : event.kind === 'message_omitted' ? 'Message text was not saved.' : 'Linked run.',
       ...(run === undefined ? {} : { run }),
     };
   };
-  const projectEvents = async (principal: SubjectPrincipal, events: ConversationEvent[]) => {
+  const projectEvents = async (principal: Principal, events: ConversationEvent[]) => {
     const runIds = [...new Set(events.flatMap(event => event.runId === undefined ? [] : [event.runId]))];
     const runs = await projectRuns(principal, runIds);
     return events.map(event => projectEvent(event, runs));
@@ -111,14 +105,14 @@ export function conversationRouter(service: InvocationService, store?: Conversat
     const principal = subject(res);
     const id = parse(idParams, req.params).id;
     const body = parse(appendBody, req.body);
-    const runs = await projectRuns(principal, body.runId === undefined ? [] : [body.runId]);
+    const runs = await projectRuns(res.locals.principal, body.runId === undefined ? [] : [body.runId]);
     const event = await store!.append(principal.subjectId, id, body);
     res.status(201).json(projectEvent(event, runs));
   }));
   router.get('/:id/events', asyncRoute(async (req, res) => {
     const principal = subject(res);
     const page = await store!.events(principal.subjectId, parse(idParams, req.params).id, parse(eventQuery, req.query));
-    res.json({ ...page, events: await projectEvents(principal, page.events) });
+    res.json({ ...page, events: await projectEvents(res.locals.principal, page.events) });
   }));
   return router;
 }
