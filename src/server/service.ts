@@ -98,10 +98,10 @@ export class InvocationService {
         const authorized = principalRole(principal) === 'operator' || this.allowlist.includes(id);
         if (!authorized) return { id, label, state: 'restricted' as const, reason: 'Not authorized for this caller' };
         const artifact = this.artifacts.get(id);
-        if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
         if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
         if (this.cleanupFailed) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Runtime cleanup failed; operator recovery is required' };
         if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
+        if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
         if (!unknown) {
           return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
         }
@@ -426,7 +426,10 @@ export class InvocationService {
               timeoutMs: this.policy.maxDiscoveryMs, detectors: this.profile.detectors,
               boundParams: { operator: context.operator, password: context.password, branch: context.branch },
               sanitizeObservation: text => running.promptRedactor.redactString(text),
-              validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : running.validateCompletion,
+              validateCompletion: expectedTransfer ? outputs => {
+                if (!running.surface.mutationDispatched) throw new Error('Transfer mutation was not dispatched');
+                assertTransferOutputs(expectedTransfer, outputs);
+              } : running.validateCompletion,
               escalate: async req => {
                 const detach = await new OperatorConsole(running.browser.page, running.logger, session).recordHumanActions();
                 try { return await approval.wait(req) === 'retry' ? 'retry' : 'abort'; }

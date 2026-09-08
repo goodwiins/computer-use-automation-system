@@ -101,3 +101,10 @@ GROUP BY conversations.owner_id
 ON CONFLICT (owner_id) DO UPDATE
 SET conversation_count = EXCLUDED.conversation_count,
     event_count = EXCLUDED.event_count;
+
+-- One durable binding survives deletion of all conversations. Migration holds the
+-- advisory and source-table locks while validating any pre-binding ciphertext.
+CREATE TABLE IF NOT EXISTS meridian_conversation_text_key (
+  singleton boolean PRIMARY KEY CHECK (singleton),
+  verifier bytea NOT NULL CHECK (octet_length(verifier) = 32)
+);

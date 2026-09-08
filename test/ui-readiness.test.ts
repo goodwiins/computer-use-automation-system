@@ -103,7 +103,9 @@ it('reports active and shutdown availability without changing the fixed public c
   const profile = loadProfile('meridian');
   const journal = new Journal(join(root, 'journal'), 'k'.repeat(32));
   const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record'], artifacts);
+  expect((await service.availability('operator')).find(item => item.id === 'meridian-funds-transfer')).toMatchObject({ state: 'not_recorded' });
   (service as unknown as { active?: string }).active = 'active-run';
+  expect((await service.availability('operator')).find(item => item.id === 'meridian-funds-transfer')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
   expect((await service.availability('caller')).find(item => item.id === 'meridian-member-record')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
   expect((await service.availability('caller')).map(item => item.id)).toHaveLength(7);
   expect((await service.availability('caller')).map(item => item.id)).not.toContain('hidden-capability');

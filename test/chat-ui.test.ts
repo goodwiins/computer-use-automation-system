@@ -4460,3 +4460,27 @@ it('gives callers history and operator-support guidance without takeover control
   await page.getByRole('dialog').waitFor();
   expect(await page.getByRole('dialog').getByRole('button', { name: /Confirm|Refuse|Retry|Stop/ }).count()).toBe(0);
 }, 15000);
+
+it.each(['running', 'awaiting-human'] as const)('blocks unrecorded discovery after reconnect while a run is %s', async (runState) => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({ ...initialRun(), state: runState });
+  await connect(operatorToken);
+  for (const reconnect of [false, true]) {
+    if (reconnect) {
+      await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+      await connect(operatorToken);
+    }
+
+    const guided = page.locator('.guided-operations');
+    expect(await guided.getByLabel('Operation').inputValue()).toBe('meridian-funds-transfer');
+    await vi.waitFor(async () => expect(await guided.textContent()).toContain('Another operation is active. Resolve its current run before starting another operation.'));
+    expect(await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).count()).toBe(0);
+
+  }
+  state.runs[0]!.state = 'success';
+  await page.locator('#refresh').click();
+  const guided = page.locator('.guided-operations');
+  await vi.waitFor(async () => expect(await guided.getByRole('button', { name: 'Preview request', exact: true }).isDisabled()).toBe(false));
+  await guided.getByText('No approved recording exists. An operator may explicitly start supervised discovery for a private draft.', { exact: true }).waitFor();
+  expect(state.requests.filter(request => request.path.endsWith('/discover'))).toEqual([]);
+}, 20000);

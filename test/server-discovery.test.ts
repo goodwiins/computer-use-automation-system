@@ -153,6 +153,7 @@ it('shares the replay busy slot and exposes exact native facts for one current a
   });
   const accepted = await f.start(); const run = await f.service.get('operator', accepted.runId);
   expect(run.state).toBe('awaiting-human');
+  expect((await f.service.availability('operator')).find(item => item.id === 'meridian-funds-transfer')).toMatchObject({ state: 'temporarily_unavailable', reason: 'Another operation is active' });
   expect(run.intervention).toMatchObject({ action: { runId: accepted.runId, artifact: id, version: '1.0.0', facts: { share: args.share, reason: args.reason } } });
   expect(JSON.stringify(run)).not.toContain('private native field');
   expect(f.service.live.get(accepted.runId)!.approval.pending!.action).toBe(native);
@@ -244,4 +245,23 @@ it('authenticates strict discovery HTTP admission and exposes canonical form met
   expect(metadata.operationContracts.find(value => value.id === id)).toEqual({ id, parameters: meridianContracts[id].parameters, discovery: true });
   expect(metadata.operationContracts.find(value => value.id === 'meridian-open-share')!.discovery).toBe(false);
   expect(JSON.stringify(metadata)).not.toContain(context.password);
+});
+
+it('rejects matching transfer outputs until the authoritative surface reports dispatch', async () => {
+  const f = fixture();
+  let validated = false;
+  const input = { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'fixture transfer' };
+  f.run.mockImplementation(async (_goal, _url, _params, _origins, options) => {
+    const outputs = { confirmation: 'FIXTURE-1', transaction: [{ ...input, confirmation: 'FIXTURE-1' }] };
+    expect(() => options!.validateCompletion!(outputs)).toThrow('Transfer mutation was not dispatched');
+    Object.assign(f.active().surface, { mutationDispatched: true });
+    expect(() => options!.validateCompletion!(outputs)).not.toThrow();
+    expect(() => options!.validateCompletion!({ ...outputs, confirmation: 'WRONG' })).toThrow();
+    validated = true;
+    return stopped();
+  });
+  const accepted = await f.service.discover('operator', 'meridian-funds-transfer', input, 'transfer-dispatch');
+  expect((await f.settle(accepted.runId)).state).toBe('POST_OUTCOME_UNKNOWN');
+  expect(f.run).toHaveBeenCalledOnce();
+  expect(validated).toBe(true);
 });

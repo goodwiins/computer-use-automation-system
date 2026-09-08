@@ -293,7 +293,10 @@ async function discover(argv: string[]) {
         escalate: headful
           ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
           : undefined,
-        validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : runtime.validateCompletion,
+        validateCompletion: expectedTransfer ? outputs => {
+          if (!surface.mutationDispatched) throw new Error('Transfer mutation was not dispatched');
+          assertTransferOutputs(expectedTransfer, outputs);
+        } : runtime.validateCompletion,
       });
 
       const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched, opened.isPoisoned);
