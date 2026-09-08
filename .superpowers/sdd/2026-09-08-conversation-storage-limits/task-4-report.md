@@ -209,3 +209,64 @@ whitespace check passed:
 git diff --check 7fb01a7f82ea8db1a18ca256a4ab411b38a176a2
 exit 0
 ```
+
+## Fix round 1: over-limit legacy compatibility
+
+Added a second compatibility test using the same hash-guarded exact prior
+schema fixture. It seeds legacy data with SQL `generate_series`, before the
+current migration, rather than creating thousands of rows through the store:
+
+- one subject has 129 conversation rows, including a retained tombstone;
+  all 128 active rows paginate and remain readable, deletion is allowed, and
+  a subsequent distinct create remains fixed 507 because the tombstone keeps
+  the conversation count at 129;
+- a separate subject has nine conversations and 4,097 retained events,
+  distributed as eight 512-event rows plus one one-event row; source rows and
+  metadata survive migration, the over-capacity append is fixed 507, deleting
+  a 512-event conversation releases exactly its events while retaining the
+  conversation/tombstone count, and a valid append then succeeds;
+- both subjects remain isolated, and quota counters are checked against
+  retained source rows after each mutation boundary.
+
+The new test's pre-migration source assertions recorded 138 conversations and
+4,097 events in total, including 129 conversations for the conversation-over-
+limit subject and 9/4,097 for the event-over-limit subject.
+
+Exact results after the test-only change:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-migration-compatibility.test.ts
+Run 1: exit 0; Test Files 1 passed (1); Tests 2 passed (2)
+Run 2: exit 0; Test Files 1 passed (1); Tests 2 passed (2)
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts
+Run 1: exit 0; Test Files 1 passed (1); Tests 13 passed (13)
+Run 2: exit 0; Test Files 1 passed (1); Tests 13 passed (13)
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-migration-compatibility.test.ts test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-http-postgres.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+exit 0
+Test Files 6 passed (6)
+Tests 92 passed (92)
+```
+
+### Independent-review diagnostic supplied by reviewer (not run by this task)
+
+The reviewer supplied the following separate diagnostic; it is not local
+evidence from this task and is not claimed as agent-executed verification:
+
+```text
+HEAD 37ebe86
+Node 22.22
+PostgreSQL 16.15
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- --no-file-parallelism
+exit 0
+Test Files 39 passed (39)
+Tests 994 passed (994)
+Duration 354.27s
+```
+
+The reviewer noted that this command expanded to the build first and did not
+separately run typechecks. It is independent-review context only; the default
+CI blocker remains explicit: local full `npm run ci` still times out in the
+approval CLI test at 993/994 even though two isolated approval-cli reruns pass
+56/56.

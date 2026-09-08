@@ -20,6 +20,8 @@ const otherEventId = '94000000-0000-4000-8000-000000000004';
 const currentId = '95000000-0000-4000-8000-000000000001';
 const currentEventId = '96000000-0000-4000-8000-000000000001';
 const subjectIsolatedId = '95000000-0000-4000-8000-000000000002';
+const overConversationOwner = 'a1111111-1111-4111-8111-111111111111';
+const overEventOwner = 'a2222222-2222-4222-8222-222222222222';
 
 type SourceConversation = {
   id: string;
@@ -50,6 +52,12 @@ async function readSourceRows(database: Awaited<ReturnType<typeof createPostgres
     FROM meridian_conversation_events ORDER BY id
   `);
   return { conversations: conversations.rows, events: events.rows };
+}
+
+async function initializePriorSchema(database: Awaited<ReturnType<typeof createPostgresFixture>>) {
+  const priorSchema = await readFile(new URL('./fixtures/conversations-prior.sql', import.meta.url), 'utf8');
+  expect(createHash('sha256').update(priorSchema).digest('hex'), `fixture provenance: ${priorSchemaSource}`).toBe(priorSchemaSha256);
+  await database.pool.query(priorSchema);
 }
 
 async function readQuota(database: Awaited<ReturnType<typeof createPostgresFixture>>, subject: string) {
@@ -85,9 +93,7 @@ describe.sequential('ConversationStore prior-schema migration compatibility', ()
   it('upgrades the exact prior schema, preserves legacy rows, and keeps quota/rate isolation', async () => {
     const database = await createPostgresFixture();
     try {
-      const priorSchema = await readFile(new URL('./fixtures/conversations-prior.sql', import.meta.url), 'utf8');
-      expect(createHash('sha256').update(priorSchema).digest('hex'), `fixture provenance: ${priorSchemaSource}`).toBe(priorSchemaSha256);
-      await database.pool.query(priorSchema);
+      await initializePriorSchema(database);
       await database.pool.query(`
         INSERT INTO meridian_conversations
           (id, owner_id, archived, revision, created_at, updated_at, deleted_at)
@@ -204,6 +210,120 @@ describe.sequential('ConversationStore prior-schema migration compatibility', ()
       expect(tombstone.rows[0]).toEqual(legacyBeforeMigration.conversations.find(row => row.id === tombstoneId));
       expect(tombstone.rows[0]!.deleted_at).not.toBeNull();
       await expect(store.create(owner, tombstoneId)).rejects.toMatchObject({ status: 409 });
+    } finally {
+      await database.close();
+    }
+  });
+
+  it('keeps over-limit legacy conversations and events readable, deletable, and isolated after migration', async () => {
+    const database = await createPostgresFixture();
+    try {
+      await initializePriorSchema(database);
+      await database.pool.query(`
+        INSERT INTO meridian_conversations
+          (id, owner_id, archived, revision, created_at, updated_at, deleted_at)
+        SELECT
+          ('a1000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid,
+          $1,
+          false,
+          0,
+          '2026-02-01T00:00:00.000Z'::timestamptz + value * interval '1 second',
+          '2026-02-01T00:00:00.000Z'::timestamptz + value * interval '1 second',
+          CASE WHEN value = 129 THEN '2026-02-01T03:00:00.000Z'::timestamptz ELSE NULL END
+        FROM generate_series(1, 129) AS values(value)
+      `, [overConversationOwner]);
+      await database.pool.query(`
+        INSERT INTO meridian_conversations
+          (id, owner_id, archived, revision, created_at, updated_at, deleted_at)
+        SELECT
+          ('a2000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid,
+          $1,
+          false,
+          CASE WHEN value = 9 THEN 1 ELSE 512 END,
+          '2026-02-02T00:00:00.000Z'::timestamptz + value * interval '1 second',
+          '2026-02-02T00:00:00.000Z'::timestamptz + value * interval '1 second',
+          NULL
+        FROM generate_series(1, 9) AS values(value)
+      `, [overEventOwner]);
+      await database.pool.query(`
+        INSERT INTO meridian_conversation_events
+          (id, conversation_id, sequence, kind, role, run_id, created_at)
+        SELECT
+          ('a3000000-0000-4000-9000-' || lpad(((conversations.value - 1) * 512 + events.value)::text, 12, '0'))::uuid,
+          ('a2000000-0000-4000-8000-' || lpad(conversations.value::text, 12, '0'))::uuid,
+          events.value,
+          'message_omitted',
+          CASE WHEN events.value % 2 = 0 THEN 'assistant' ELSE 'user' END,
+          NULL,
+          '2026-02-02T00:00:00.000Z'::timestamptz + ((conversations.value - 1) * 512 + events.value) * interval '1 second'
+        FROM generate_series(1, 9) AS conversations(value)
+        CROSS JOIN LATERAL generate_series(1, CASE WHEN conversations.value = 9 THEN 1 ELSE 512 END) AS events(value)
+      `);
+      const legacyBeforeMigration = await readSourceRows(database);
+      expect(legacyBeforeMigration.conversations).toHaveLength(138);
+      expect(legacyBeforeMigration.events).toHaveLength(4097);
+      expect(legacyBeforeMigration.conversations.filter(row => row.owner_id === overConversationOwner)).toHaveLength(129);
+      expect(legacyBeforeMigration.events.filter(row => row.conversation_id === 'a2000000-0000-4000-8000-000000000001')).toHaveLength(512);
+
+      const store = new ConversationStore(database.pool);
+      await store.migrate();
+      await store.migrate();
+      expect(await readSourceRows(database)).toEqual(legacyBeforeMigration);
+      expect(await readQuota(database, overConversationOwner)).toMatchObject({
+        owner_id: overConversationOwner,
+        conversation_count: '129',
+        event_count: '0',
+      });
+      expect(await readQuota(database, overEventOwner)).toMatchObject({
+        owner_id: overEventOwner,
+        conversation_count: '9',
+        event_count: '4097',
+      });
+
+      const overConversationPage = await store.list(overConversationOwner, { limit: 100 });
+      const overConversationTail = await store.list(overConversationOwner, { after: overConversationPage.nextCursor, limit: 100 });
+      expect(overConversationPage.conversations).toHaveLength(100);
+      expect(overConversationTail.conversations).toHaveLength(28);
+      expect(overConversationPage.conversations.concat(overConversationTail.conversations).map(item => item.id)).not.toContain('a1000000-0000-4000-8000-000000000129');
+      await expect(store.get(overConversationOwner, 'a1000000-0000-4000-8000-000000000001')).resolves.toMatchObject({ revision: 0 });
+      await expect(store.get(overConversationOwner, 'a1000000-0000-4000-8000-000000000129')).rejects.toMatchObject({ status: 404 });
+
+      await store.delete(overConversationOwner, 'a1000000-0000-4000-8000-000000000001', 0);
+      expect(await readQuota(database, overConversationOwner)).toMatchObject({ conversation_count: '129', event_count: '0' });
+      await expect(store.create(overConversationOwner, 'a1000000-0000-4000-8000-000000000130')).rejects.toMatchObject({
+        status: 507,
+        message: 'Conversation quota exceeded',
+      });
+      const deletedLegacyConversation = await database.pool.query<{ deleted_at: Date | null }>(
+        'SELECT deleted_at FROM meridian_conversations WHERE id = $1',
+        ['a1000000-0000-4000-8000-000000000001'],
+      );
+      expect(deletedLegacyConversation.rows[0]!.deleted_at).not.toBeNull();
+
+      const eventConversationIds = Array.from({ length: 9 }, (_, index) =>
+        `a2000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, '0')}`,
+      );
+      await expect(store.get(overEventOwner, eventConversationIds[8]!)).resolves.toMatchObject({ revision: 1 });
+      await expect(store.events(overEventOwner, eventConversationIds[8]!)).resolves.toMatchObject({
+        events: [{ sequence: 1, role: 'user', kind: 'message_omitted' }],
+      });
+      await expect(store.append(overEventOwner, eventConversationIds[8]!, {
+        id: 'a4000000-0000-4000-9000-000000000001', kind: 'message_omitted', role: 'assistant', expectedRevision: 1,
+      })).rejects.toMatchObject({ status: 507, message: 'Conversation quota exceeded' });
+
+      await store.delete(overEventOwner, eventConversationIds[0]!, 512);
+      expect(await readQuota(database, overEventOwner)).toMatchObject({ conversation_count: '9', event_count: '3585' });
+      await expect(store.create(overConversationOwner, 'a1000000-0000-4000-8000-000000000131')).rejects.toMatchObject({ status: 507 });
+      await expect(store.append(overEventOwner, eventConversationIds[8]!, {
+        id: 'a4000000-0000-4000-9000-000000000002', kind: 'message_omitted', role: 'assistant', expectedRevision: 1,
+      })).resolves.toMatchObject({ sequence: 2, role: 'assistant' });
+      expect(await readQuota(database, overEventOwner)).toMatchObject({ conversation_count: '9', event_count: '3586' });
+      await expectQuotaMatchesSource(database, overConversationOwner);
+      await expectQuotaMatchesSource(database, overEventOwner);
+      const retainedRows = await readSourceRows(database);
+      expect(retainedRows.conversations.filter(row => row.owner_id === overConversationOwner)).toHaveLength(129);
+      expect(retainedRows.events.filter(row => row.conversation_id === eventConversationIds[0]!)).toHaveLength(0);
+      expect(retainedRows.events.filter(row => row.conversation_id === eventConversationIds[8]!)).toHaveLength(2);
     } finally {
       await database.close();
     }
