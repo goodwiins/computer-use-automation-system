@@ -581,7 +581,7 @@ async function journalRecover(argv: string[]): Promise<void> {
   }
   const owner = requireUuid(flags.owner, '--owner');
   const pool = new Pool({ connectionString: requiredEnv('DATABASE_URL'), connectionTimeoutMillis: 5_000 });
-  try { await PostgresJournal.recover(pool, owner); }
+  try { await PostgresJournal.recover(pool, owner, requiredEnv('JOURNAL_HMAC_KEY')); }
   finally { await pool.end().catch(() => undefined); }
 }
 
