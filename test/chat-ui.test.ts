@@ -1536,7 +1536,7 @@ it('connects a local teller without input and exposes supervisor sign-on fields'
   expect(await page.locator('#workspace').count()).toBe(0);
   const operator = page.getByLabel('Operator', { exact: true });
   const password = page.getByLabel('Password', { exact: true });
-  expect(await operator.inputValue()).toBe('SUPER1');
+  expect(await operator.inputValue()).toBe('');
   expect(await password.inputValue()).toBe('');
   expect(await page.locator('#credential').count()).toBe(0);
   for (const width of [320, 768, 1024, 1440]) {
@@ -1606,7 +1606,8 @@ it('connects a local supervisor using operator and password, clearing the passwo
     expect(await page.locator('#credential').count()).toBe(0);
     const operator = page.getByLabel('Operator', { exact: true });
     const password = page.getByLabel('Password', { exact: true });
-    expect(await operator.inputValue()).toBe('SUPER1');
+    expect(await operator.inputValue()).toBe('');
+    await operator.fill('SUPER1');
     await password.fill('wrong-password');
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await visible(page, '#status', 'Check operator and password');
@@ -1614,6 +1615,7 @@ it('connects a local supervisor using operator and password, clearing the passwo
     expect(await page.locator('#workspace').count()).toBe(0);
     expect(service.invoke).not.toHaveBeenCalled();
     await page.waitForTimeout(1100); // Local login throttle intentionally covers failed attempts.
+    await operator.fill('SUPER1');
     await password.fill('offline-supervisor-password');
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
@@ -2466,7 +2468,7 @@ it('keeps historical timeline data on refresh errors and cancels late active rea
   expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(disconnectedReads);
   expect(errors).toEqual([]);
 }, 30000);
-it('offline operator review controls require live authority, keyboard focus, readable error and never retry unknown posting', async () => {
+it('offline operator review controls require live authority, keyboard focus, browser-expired submission and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -2558,19 +2560,24 @@ it('offline operator review controls require live authority, keyboard focus, rea
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
+  const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
+  await submitted.waitFor();
+  expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
   expect(state.requests.find(request => request.path.endsWith('/decision'))?.body).toEqual({ approvalId, decision: 'approve' });
   state.runs[0] = {
     ...initialRun(),
     state: 'awaiting-human',
-    intervention: { ...intervention, expiresAt: Date.now() - 1 },
+    intervention: { ...intervention, id: '66666666-6666-4666-8666-666666666666', expiresAt: Date.now() - 1 },
   };
   await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
-  await visible(page, '.approval', 'Intervention expired.');
+  await visible(page, '.approval', 'Estimated deadline passed.');
   // Production break caught: exposing expiry only through styling would hide the actionable error from screen-reader users.
-  expect(await page.locator('.approval').innerText()).toContain('Intervention expired.');
-  expect(await approve.isDisabled()).toBe(true);
+  expect(await page.locator('.approval').innerText()).toContain('Estimated deadline passed.');
+  expect(await approve.isEnabled()).toBe(true);
+  const expiredRefuse = page.getByRole('button', { name: 'Refuse request', exact: true });
+  expect(await expiredRefuse.isEnabled()).toBe(true);
   const expiredClose = dialog.getByRole('button', { name: 'Close', exact: true });
   const expiredDetails = dialog.getByText('Details', { exact: true });
   await heading.focus();
@@ -2583,31 +2590,42 @@ it('offline operator review controls require live authority, keyboard focus, rea
   expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(false);
   await expiredDetails.focus();
   await page.keyboard.press('Tab');
-  // Production break caught: collecting a focusable descendant from closed Details would let sequential Tab escape instead of wrapping to the heading.
-  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  // Closed Details descendants must stay out of the sequential focus order.
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
   await hiddenDetailsValue.evaluate(element => element.removeAttribute('tabindex'));
   await expiredDetails.click();
   expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(true);
   await expiredDetails.focus();
   await page.keyboard.press('Tab');
-  // Production break caught: a disabled approval or hidden details child must not enter the sequential focus order.
+  // A browser-estimated deadline does not disable server-authorized actions.
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await expiredRefuse.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
   expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
-  expect(await approve.evaluate(element => element === document.activeElement)).toBe(false);
   await page.keyboard.press('Shift+Tab');
-  // Production break caught: reverse traversal from the neutral heading must skip the disabled actions and return to the visible Details disclosure.
+  expect(await expiredRefuse.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
   expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
   await page.keyboard.press('Shift+Tab');
   expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
   await page.keyboard.press('Shift+Tab');
   // Production break caught: Shift+Tab from the first control must wrap to the neutral heading, not escape the modal.
   expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await expiredRefuse.click();
+  await vi.waitFor(() => expect(state.requests.filter(request => request.path.endsWith('/decision'))).toHaveLength(2));
+  expect(state.requests.filter(request => request.path.endsWith('/decision')).at(-1)?.body).toEqual({
+    approvalId: '66666666-6666-4666-8666-666666666666', decision: 'abort',
+  });
   state.runs[0] = {
-    ...initialRun(),
+    ...initialRun(), step: 'submit-transfer',
     state: 'awaiting-human',
     intervention: {
       ...intervention,
       id: '33333333-3333-4333-8333-333333333333',
-      request: { kind: 'locator_failed', reason: 'Repair the exact active page' },
+      request: { kind: 'locator_failed', reason: 'Repair the exact active page', capability: capability.id, goal: 'Repair fixture', url: 'https://offline.example/review' },
     },
   };
   await page.keyboard.press('Escape');
@@ -2615,6 +2633,8 @@ it('offline operator review controls require live authority, keyboard focus, rea
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
+  await dialog.getByText('submit-transfer', { exact: true }).waitFor();
+  await dialog.getByText('https://offline.example/review', { exact: true }).waitFor();
   await heading.focus();
   await page.keyboard.press('Tab');
   await page.keyboard.press('Tab');
@@ -2657,7 +2677,7 @@ it('offline operator review controls require live authority, keyboard focus, rea
   await page.screenshot({ path: join(evidencePath, 'offline-unknown.png'), fullPage: true });
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
-}, 20000);
+}, 30000);
 
 it('neutral replacement focus resets when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();
@@ -3172,6 +3192,7 @@ it('keeps exact-run locks through switch-away and unlocks only after fresh confi
   expect(await secondRetry.isDisabled()).toBe(false);
   expect(posts).toBe(1);
   await page.keyboard.press('Escape');
+  await page.clock.setFixedTime(Date.now() + 3_600_000);
   let releaseProbe!: () => void;
   const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
   let probes = 0;

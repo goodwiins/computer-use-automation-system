@@ -68,6 +68,17 @@ it.each([true, false].flatMap(profileBound => ['window.open', 'target=_blank', '
   expect(posted).toEqual([]);
 });
 
+it('closes popup descendants', async () => {
+  await browser.start(`${origin}/signon`);
+  const context = browser.page.context();
+  await browser.page.evaluate(() => {
+    const popup = window.open('about:blank');
+    popup?.document.write('<script>window.open("about:blank")<\/script>');
+  });
+  await vi.waitFor(() => expect(context.pages()).toEqual([browser.page]));
+  expect(collected).toEqual([]);
+});
+
 it.each(['_blank', 'sibling'])('a %s form cannot consume the primary frame native POST allowance', async target => {
   await browser.start(`${origin}/signon`);
   const context = browser.page.context();

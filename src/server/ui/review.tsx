@@ -74,13 +74,17 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
   const key = `${run.runId}:${intervention.id}`;
   const attempt: ReviewAttempt = getReviewAttempt(key);
   const approval = intervention.request.kind === 'risk_approval';
-  const expired = now >= intervention.expiresAt;
+  const deadlinePassed = now >= intervention.expiresAt;
   const action = intervention.action;
+  const submitted = useRef<HTMLParagraphElement>(null);
   const actionContextValid = hasActionContext(action, run, intervention);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  useLayoutEffect(() => {
+    if (attempt.sent) submitted.current?.focus();
+  }, [attempt.sent]);
   useEffect(() => {
     if (!attempt.uncertain) return;
     if (!attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
@@ -96,7 +100,7 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     void request(`/runs/${segment(originalRunId)}`).then(response => response.json()).then((current: Run) => {
       const currentIntervention = interventionOf(current);
       if (current.runId === originalRunId && current.state === 'awaiting-human'
-        && currentIntervention?.id === originalInterventionId && Date.now() < currentIntervention.expiresAt) {
+        && currentIntervention?.id === originalInterventionId) {
         updateReviewAttempt(key, {
           uncertain: false,
           locked: false,
@@ -111,7 +115,7 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     const originalRunId = run.runId;
     const originalInterventionId = intervention.id;
     const current = getReviewAttempt(key);
-    if (connectionError || current.locked || Date.now() >= intervention.expiresAt || (decision === 'approve' && !actionContextValid)) return;
+    if (connectionError || current.locked || (decision === 'approve' && !actionContextValid)) return;
     updateReviewAttempt(key, { locked: true, sent: true, error: undefined });
     try {
       await request(`/runs/${segment(originalRunId)}/decision`, {
@@ -134,7 +138,9 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     <section className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
       <h3>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
       <p>{intervention.request.reason}</p>
-      <p>{expired ? 'Intervention expired.' : `Expires ${new Date(intervention.expiresAt).toLocaleString()}`}</p>
+      <p>{deadlinePassed
+        ? 'Estimated deadline passed. The server will confirm whether this intervention is still pending.'
+        : `Estimated deadline ${new Date(intervention.expiresAt).toLocaleString()}. The server decides availability.`}</p>
       {approval && action ? (
         <>
           <h4>Review the exact request</h4>
@@ -146,24 +152,30 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
           )}
         </>
       ) : approval ? <p className="warning">Confirmation is unavailable until the server provides the exact action context.</p>
-        : <p>Repair the active browser session, then request one bounded retry.</p>}
+        : <>
+          <p>Repair the active browser session, then request one bounded retry.</p>
+          <dl className="review-facts">
+            <div><dt>Step</dt><dd>{run.step}</dd></div>
+            <div><dt>Page</dt><dd>{intervention.request.url}</dd></div>
+          </dl>
+        </>}
       <ReviewDetails run={run} intervention={intervention} />
       <div className="actions">
         <button
-          disabled={Boolean(connectionError) || expired || attempt.sent || attempt.locked || (approval && !actionContextValid)}
+          disabled={Boolean(connectionError) || attempt.sent || attempt.locked || (approval && !actionContextValid)}
           onClick={() => void decide(approval ? 'approve' : 'retry')}
         >
           {approval ? confirmLabel(intervention.request.capability) : 'Retry after repair'}
         </button>
         <button
           className="abort"
-          disabled={Boolean(connectionError) || expired || attempt.sent || attempt.locked}
+          disabled={Boolean(connectionError) || attempt.sent || attempt.locked}
           onClick={() => void decide('abort')}
         >
           {approval ? 'Refuse request' : 'Stop request'}
         </button>
       </div>
-      {attempt.sent && <p>Decision submitted. Waiting for authoritative run updates.</p>}
+      {attempt.sent && <p ref={submitted} role="status" tabIndex={-1}>Decision submitted. Waiting for authoritative run updates.</p>}
       {attempt.error && <p role="alert">{attempt.error}</p>}
     </section>
   );
