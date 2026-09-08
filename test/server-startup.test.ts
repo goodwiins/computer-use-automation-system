@@ -7,9 +7,9 @@ import { Journal } from '../src/runtime/journal.js';
 import { InvocationService } from '../src/server/service.js';
 import { serve } from '../src/server/http.js';
 
-const { build } = vi.hoisted(() => ({ build: vi.fn() }));
-vi.mock('vite', () => ({ build }));
-afterEach(() => { vi.unstubAllEnvs(); build.mockReset(); });
+const { copy } = vi.hoisted(() => ({ copy: vi.fn() }));
+vi.mock('node:fs', async importOriginal => ({ ...await importOriginal<typeof import('node:fs')>(), cpSync: copy }));
+afterEach(() => { vi.unstubAllEnvs(); copy.mockReset(); });
 
 it('rejects a second server before it can rebuild live assets', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'server-build-lock-'));
@@ -18,23 +18,23 @@ it('rejects a second server before it can rebuild live assets', async () => {
   const journal = new Journal(join(dir, 'journal'), 'h'.repeat(64));
   const asset = join(dir, 'live-index.html');
   writeFileSync(asset, 'live dashboard');
-  build.mockImplementation(() => { writeFileSync(asset, 'replaced'); throw new Error('unexpected build'); });
+  copy.mockImplementation(() => { writeFileSync(asset, 'replaced'); throw new Error('unexpected build'); });
   try {
     await expect(serve('cu-nexus')).rejects.toThrow('Journal already in use');
-    expect(build).not.toHaveBeenCalled();
+    expect(copy).not.toHaveBeenCalled();
     expect(readFileSync(asset, 'utf8')).toBe('live dashboard');
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('releases its acquired journal lock when the dashboard build fails', async () => {
+it('releases its acquired journal lock when the dashboard snapshot fails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'server-build-failure-'));
   vi.stubEnv('EVIDENCE_DIR', dir);
   vi.stubEnv('JOURNAL_HMAC_KEY', 'h'.repeat(64));
-  build.mockRejectedValue(new Error('offline build failure'));
+  copy.mockImplementation(() => { throw new Error('offline snapshot failure'); });
   try {
-    await expect(serve('cu-nexus')).rejects.toThrow('offline build failure');
-    expect(build).toHaveBeenCalledOnce();
-    expect(existsSync(build.mock.calls[0]![0].build.outDir)).toBe(false);
+    await expect(serve('cu-nexus')).rejects.toThrow('offline snapshot failure');
+    expect(copy).toHaveBeenCalledOnce();
+    expect(existsSync(copy.mock.calls[0]![1])).toBe(false);
     const replacement = new Journal(join(dir, 'journal'), 'h'.repeat(64));
     replacement.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -47,11 +47,11 @@ it('serves isolated builds for different journals and cleans up only its own ass
   vi.stubEnv('OPERATOR_API_TOKEN', 'o'.repeat(32));
   const servers: Awaited<ReturnType<typeof serve>>[] = [];
   const outputs: string[] = [];
-  build.mockImplementation(async ({ build: { outDir } }) => {
+  copy.mockImplementation((_source, outDir) => {
     outputs.push(outDir);
-    mkdirSync(join(outDir, 'assets'));
+    mkdirSync(join(outDir, '_next'));
     writeFileSync(join(outDir, 'index.html'), `dashboard ${outputs.length}`);
-    writeFileSync(join(outDir, 'assets', 'app.js'), `asset ${outputs.length}`);
+    writeFileSync(join(outDir, '_next', 'app.js'), `asset ${outputs.length}`);
   });
   try {
     for (let index = 0; index < 2; index++) {
@@ -69,11 +69,11 @@ it('serves isolated builds for different journals and cleans up only its own ass
     for (const [index, server] of servers.entries()) {
       const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       expect(await (await fetch(origin)).text()).toBe(`dashboard ${index + 1}`);
-      expect(await (await fetch(`${origin}/assets/app.js`)).text()).toBe(`asset ${index + 1}`);
+      expect(await (await fetch(`${origin}/_next/app.js`)).text()).toBe(`asset ${index + 1}`);
     }
     await new Promise<void>(done => servers[0]!.close(() => done()));
     await vi.waitFor(() => expect(existsSync(outputs[0]!)).toBe(false));
-    expect(readFileSync(join(outputs[1]!, 'assets/app.js'), 'utf8')).toBe('asset 2');
+    expect(readFileSync(join(outputs[1]!, '_next/app.js'), 'utf8')).toBe('asset 2');
     const origin = `http://127.0.0.1:${(servers[1]!.address() as AddressInfo).port}`;
     expect(await (await fetch(origin)).text()).toBe('dashboard 2');
     const socket = connect((servers[1]!.address() as AddressInfo).port, '127.0.0.1');

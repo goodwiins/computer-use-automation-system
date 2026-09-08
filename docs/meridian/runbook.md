@@ -6,6 +6,10 @@ The user-selected Vercel AI SDK and assistant-ui stack merged through PR #84. Ge
 
 ## Setup
 
+For a private local demo, set `LOCAL_TELLER_LOGIN=1` before starting `serve`. The login page then offers the configured teller and supervisor names. Select the teller and Connect without entering a credential; the supervisor still requires `OPERATOR_API_TOKEN` (not the target application's password). The default is credential-only login.
+
+This opt-in trusts local users with the existing caller allowlist and caller history. Teller login accepts only same-origin requests over loopback and issues a separate process-lifetime bearer token; it never returns either configured API key. The token stays in page memory and is invalid after a server restart. Switching operators or disconnecting clears the page session. Caller sessions cannot approve decisions or select supervisor execution; chat remains caller-bound even after supervisor login. Do not enable this mode for a shared or remotely exposed deployment.
+
 Use Node 22.12+ (22.x), 24.x, or 26+ and the repository's existing dependencies:
 
 ```sh
@@ -175,12 +179,13 @@ cu replay --profile meridian \
 `--attended` is required for a replay that can post. Repeat the same command/key only after a transport failure where the existing run can safely be returned; an unknown outcome is terminal and is never retried.
 
 ```sh
+npm run build
 cu serve --profile meridian
 ```
 
 Open `http://127.0.0.1:4180` exactly. Caller and operator tokens stay in page memory; reload signs out. Chat always has caller authority and cannot approve or select supervisor context. The dashboard shows authorized catalog/history, active steps, safe evidence, status/result and pending interventions; operator decisions remain server-side. CLI risk approval follows the Terminal handoff above.
 
-The merged assistant-ui/Vercel AI SDK chat renders authoritative run results from the same API. Chat defaults to **Check run status** on connection and after a run: it can inspect an existing run without executing another capability. Choose **New operation** explicitly for a new request, including a deliberate repeat with identical arguments. Status uses the original signed run; it never retries an unknown posting. Separate server instances build isolated UI assets. Historical runs show recorded input/output field names and types with values withheld; files created before this metadata existed remain explicitly unavailable. Discovery business outcomes retain their category after service restart.
+The merged assistant-ui/Vercel AI SDK chat renders authoritative run results from the same API. Chat infers intent from each message; there is no request-type selector. A server-side model call with no executable capability tools classifies the latest message as a new request, a status question, or conversation. Only a new request exposes approved caller capability tools to the response model; status exposes only `run_status`, and conversation exposes no tools. Unclear requests should prompt clarification. A repeat must be explicitly requested in the message. Classification is model-based, while authorization, input validation, request identity, unknown-outcome blocking, and transaction approval remain enforced by the server. Status uses the original signed run; it never retries an unknown posting. The Next.js App Router frontend is statically exported by `npm run build`; `npm run serve` builds it automatically. Separate server instances snapshot the export into isolated directories. The default view is a full-height assistant-ui conversation; Activity opens the existing capability catalog, run history, evidence and operator approval controls. Exported bootstrap scripts use exact CSP hashes; no API credentials are included in the frontend build. Historical runs show recorded input/output field names and types with values withheld; files created before this metadata existed remain explicitly unavailable. Discovery business outcomes retain their category after service restart.
 
 ## Faults, restart and result classes
 

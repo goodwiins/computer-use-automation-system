@@ -121,6 +121,34 @@ const uiBody = (parts: unknown[] = [{ type: 'text', text: 'Put a hold on member 
 });
 
 describe('AI SDK chat boundary', () => {
+  it.each(['invoke', 'status', 'conversation'] as const)('routes automatic %s intent before exposing executable tools', async intent => {
+    const chatService = service();
+    const model = mockModel(toolContent('route_request', { intent }), [
+      { type: 'stream-start', warnings: [] },
+      // Even a response model attempting a mutation cannot invoke it in status/conversation mode.
+      ...toolContent('member-hold', { member: '123', share: '1-A' }),
+      { type: 'finish', finishReason: finish('tool-calls'), usage },
+    ]);
+    const { request } = await start(model, chatService);
+    const response = await request('/api/chat', { ...uiBody(), intent: 'auto' });
+    expect(response.status).toBe(200);
+    expect(model.doGenerateCalls[0]?.tools?.map(tool => tool.name)).toEqual(['route_request']);
+    expect(model.doGenerateCalls[0]?.toolChoice).toEqual({ type: 'tool', toolName: 'route_request' });
+    expect(model.doStreamCalls[0]?.tools?.map(tool => tool.name) ?? []).toEqual(
+      intent === 'invoke' ? ['member-hold', 'run_status'] : intent === 'status' ? ['run_status'] : [],
+    );
+    if (intent === 'conversation') expect(model.doStreamCalls[0]?.providerOptions).toBeUndefined();
+    expect(chatService.invoke).toHaveBeenCalledTimes(intent === 'invoke' ? 1 : 0);
+  });
+
+  it('fails closed when automatic intent classification is invalid', async () => {
+    const model = mockModel(textContent('Maybe invoke something'));
+    const { request, service } = await start(model);
+    expect(await request('/api/chat', { ...uiBody(), intent: 'auto' })).toMatchObject({ status: 500 });
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(service.invoke).not.toHaveBeenCalled();
+  });
+
   it('returns model text for missing capability inputs through the legacy contract', async () => {
     const model = mockModel(textContent('Please supply the member number and share.'));
     const { request } = await start(model);

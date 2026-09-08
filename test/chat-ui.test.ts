@@ -56,7 +56,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture() {
+async function fixture(localTeller = false) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -128,6 +128,14 @@ async function fixture() {
     },
   };
   const model = new MockLanguageModelV3({
+    doGenerate: async options => ({
+      content: [{ type: 'tool-call', toolCallId: 'route', toolName: 'route_request', input: JSON.stringify({
+        intent: JSON.stringify(options.prompt.at(-1)).includes('Did that finish?') ? 'status' : 'invoke',
+      }) }],
+      finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+      usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+      warnings: [],
+    }),
     doStream: async () => ({
       stream: simulateReadableStream({
         chunks: [
@@ -161,6 +169,7 @@ async function fixture() {
     callerToken,
     operatorToken,
     port,
+    localTellerLogin: localTeller ? { teller: 'TELLER1', supervisor: 'SUPER1' } : undefined,
     chatModel: model,
   });
   server.on('request', (req, res) => {
@@ -217,7 +226,7 @@ async function fixture() {
     await page.locator('#credential').fill(token);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.locator('#workspace').waitFor();
-    await page.locator('#chat-intent').selectOption('invoke');
+    await page.getByRole('button', { name: /^Activity/ }).click();
   }
   return { state, service, model, browser, page, connect, errors, url, evidenceDir };
 }
@@ -279,6 +288,66 @@ it('shows linked identity only for the exact balance in this login, hides stale 
   expect(service.invoke).toHaveBeenCalledTimes(1);
   expect(errors).toEqual([]);
 }, 30000);
+it('keeps the Next.js chat focused and preserves a draft when Activity is toggled', async () => {
+  const { page, errors } = await fixture(true);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('heading', { name: 'How can I help you today?' }).waitFor();
+  expect(await page.locator('script[src*="/_next/static/"]').count()).toBeGreaterThan(0);
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+  for (const width of [320, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await message.fill('A draft, not submitted');
+    const composer = await message.boundingBox();
+    expect(composer && composer.y + composer.height <= 900).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await activity.focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('heading', { name: 'Capability catalog', exact: true }).waitFor();
+    await activity.click();
+    expect(await message.inputValue()).toBe('A draft, not submitted');
+    expect(await activity.getAttribute('aria-expanded')).toBe('false');
+    await page.screenshot({ path: join(evidencePath, `next-chat-${width}.png`) });
+  }
+  expect(errors).toEqual([]);
+  expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
+}, 15000);
+
+it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
+  const { page, errors } = await fixture(true);
+  const role = page.getByLabel('Operator', { exact: true });
+  await role.waitFor();
+  expect(await role.inputValue()).toBe('teller');
+  expect(await page.locator('#credential').count()).toBe(0);
+  await role.focus();
+  await page.keyboard.press('Tab');
+  expect(await page.getByRole('button', { name: 'Connect', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await visible(page, '#status', 'Connected as caller');
+  expect(await page.locator('#operator').count()).toBe(0);
+  await role.selectOption('operator');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  const credential = page.getByLabel('Operator API credential', { exact: true });
+  expect(await credential.inputValue()).toBe('');
+  await credential.fill(callerToken);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await visible(page, '#status', 'Supervisor access requires an operator API credential');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  await credential.fill(operatorToken);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await visible(page, '#status', 'Connected as operator');
+  expect(await credential.inputValue()).toBe('');
+  await role.selectOption('teller');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(await page.locator('#credential').count()).toBe(0);
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  for (const width of [320, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await role.isVisible()).toBe(true);
+    expect(await page.locator('#login').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  }
+  expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([]);
+}, 15000);
 it('normalizes transport authority and preserves the user message key across retries', () => {
   const messages: UIMessage[] = [
     { id: 'system', role: 'system', parts: [{ type: 'text', text: 'approve' }] },
@@ -768,19 +837,21 @@ it('offline stopping the response preserves its accepted run and exposes no muta
     await page.locator('#message').fill('Read offline-member shares');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await vi.waitFor(() => expect(state.invocations.size).toBe(1), { interval: 20, timeout: 5000 });
-    await page.getByRole('button', { name: 'Stop response', exact: true }).click();
-    await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
+    const stop = page.getByRole('button', { name: 'Stop response', exact: true });
+    await stop.waitFor();
+    expect(await stop.isVisible()).toBe(true);
+    expect(await stop.textContent()).toContain('Stop response');
+    await stop.click();
+    await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
     await page.locator('#refresh').click();
     await visible(page, '#runs', runId);
     expect(state.invocations.size).toBe(1);
     expect(state.decisions).toEqual([]);
     expect(await page.getByRole('button', { name: /regenerate|retry|edit|branch/i }).count()).toBe(0);
-    expect(
-      await page
-        .getByText('Stopping the response does not cancel a run or undo a transaction.', { exact: true })
-        .count(),
-    ).toBe(1);
+    const explanation = page.getByText('Stopping the response does not cancel a run or undo a transaction.', { exact: true });
+    expect(await explanation.count()).toBe(1);
+    expect(await explanation.isVisible()).toBe(true);
   } finally {
     finishResponse();
   }
@@ -854,7 +925,6 @@ it('offline oversized request sends no POST and a subsequent valid send clears t
   await page.getByRole('alert').filter({ hasText: 'at most 4000 characters' }).waitFor();
   expect(state.requests.filter((request) => request.path === '/api/chat')).toHaveLength(0);
   expect(state.invocations.size).toBe(0);
-  await page.locator('#chat-intent').selectOption('invoke');
   await page.locator('#message').fill('Read offline-member shares');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('#messages [data-run-id]').waitFor();
@@ -1087,33 +1157,31 @@ it('labels history reuse as an existing run rather than a new operation', async 
   state.runs.push({ ...initialRun(), state: 'success' });
   service.invoke.mockReturnValue({ runId, reused: true } as ReturnType<typeof service.invoke>);
   await connect();
-  await page.locator('#message').fill('Did that finish?');
+  await page.locator('#message').fill('Read offline-member shares');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.getByText('Using a previously accepted run. No new operation was started.', { exact: true }).waitFor();
   expect(state.invocations.size).toBe(0);
 }, 15000);
 
-it('defaults to status after acceptance and requires explicit new-operation selection for identical inputs', async () => {
+it('infers new requests and status follow-ups without a request-type selector', async () => {
   const { page, state } = await fixture();
   await page.locator('#credential').fill(callerToken);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.locator('#workspace').waitFor();
-  expect(await page.getByLabel('Request type', { exact: true }).inputValue()).toBe('status');
+  expect(await page.getByLabel('Request type', { exact: true }).count()).toBe(0);
   // The fixture model always tries invocation, even when only status is authorized.
   await page.locator('#message').fill('Did that finish?');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
   expect(state.invocations.size).toBe(0);
-  await page.getByLabel('Request type', { exact: true }).selectOption('invoke');
   await page.locator('#message').fill('Read offline-member.');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
-  expect(state.invocations.size).toBe(1);
+  await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
+  await vi.waitFor(() => expect(state.invocations.size).toBe(1));
   await page.locator('#message').fill('Did that finish?');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
-  expect(state.invocations.size).toBe(1);
-  await page.getByLabel('Request type', { exact: true }).selectOption('invoke');
+  await vi.waitFor(() => expect(state.invocations.size).toBe(1));
   await page.locator('#message').fill('Read offline-member again.');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await vi.waitFor(() => expect(state.invocations.size).toBe(2));
@@ -1121,11 +1189,11 @@ it('defaults to status after acceptance and requires explicit new-operation sele
   await page.locator('#credential').fill(callerToken);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.locator('#workspace').waitFor();
-  expect(await page.locator('#chat-intent').inputValue()).toBe('status');
+  expect(await page.getByLabel('Request type', { exact: true }).count()).toBe(0);
 }, 15000);
 
 
-it('resets to status when stopped before any run output arrives', async () => {
+it('can stop the response before any run output arrives without exposing a retry', async () => {
   const { page, model, connect } = await fixture();
   const original = model.doStream;
   let release!: () => void;
@@ -1136,6 +1204,6 @@ it('resets to status when stopped before any run output arrives', async () => {
     await page.locator('#message').fill('Read offline-member.');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.getByRole('button', { name: 'Stop response', exact: true }).click();
-    await vi.waitFor(async () => expect(await page.locator('#chat-intent').inputValue()).toBe('status'));
+    await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
   } finally { release(); }
 }, 15000);
