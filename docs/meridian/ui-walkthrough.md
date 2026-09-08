@@ -3,7 +3,7 @@
 ## Provenance
 
 The application, test, and four-image evidence source for this walkthrough is
-`b573274e073051381ef04e467e91f3035d3e2148`. It is checked out on
+`a3a1827fac444d05036dd1ee9a2200a7a908d802`. It is checked out on
 `codex/meridian-ui-accessibility`. This is the source/evidence SHA, not the
 documentation commit: the final documentation commit and PR head necessarily
 include a later SHA because this file is committed afterward.
@@ -15,7 +15,7 @@ and package output was:
 
 ```text
 git rev-parse HEAD
-b573274e073051381ef04e467e91f3035d3e2148
+a3a1827fac444d05036dd1ee9a2200a7a908d802
 node --version
 v22.22.0
 npm --version
@@ -44,12 +44,12 @@ output above.
 ✓ Running next.config.mjs took 25ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 13.6s
+✓ Compiled successfully in 13.5s
   Running TypeScript ...
-  Finished TypeScript in 10.2s ...
+  Finished TypeScript in 15.6s ...
   Collecting page data using 4 workers ...
   Generating static pages using 4 workers (0/3) ...
-✓ Generating static pages using 4 workers (3/3) in 1044ms
+✓ Generating static pages using 4 workers (3/3) in 1414ms
   Finalizing page optimization ...
 Route (app)
 ┌ ○ /
@@ -77,12 +77,17 @@ image below as genuine authenticated demo acceptance.
 
 ## Keyboard walkthrough
 
-1. Connect from the login form. With local access, leave `Dashboard access` at
-   the teller/caller option for caller coverage. `Tab` from the role selector
-   reaches `Connect`; `Enter` submits it. Selecting the operator dashboard
-   reveals `Operator API credential`; only the operator fixture credential is
-   accepted for that view. Credentials are cleared from the form and remain
-   in page memory only.
+1. Connect from the login form. With local access, leave `Role` at the
+   `TELLER1 · Teller` option for caller coverage. `Tab` from the role selector
+   reaches `Connect`; `Enter` submits it. Once connected, the login form is
+   hidden and the sidebar shows the large `Disconnect`-only control. To use
+   local supervisor sign-on, activate `Disconnect`, select `SUPER1 ·
+   Supervisor`, enter `Operator` and `Password`, and submit `Connect`; the
+   workspace opens only after the verified operator, role, and branch are
+   returned. Failed passwords are cleared and locally throttled. In credential
+   mode, enter the API credential and submit `Connect`; credentials remain only
+   in page memory and the connected state also shows the large `Disconnect`
+   control.
 
 2. After connection, focus `Activity` and press `Enter`. At narrow widths,
    focus moves to `Back to conversation`; press `Enter` to close and return
@@ -118,13 +123,17 @@ The test also asserts `document.documentElement.scrollWidth <= innerWidth` at
 each width and records no new `POST` to `/api/chat`, `/invoke`, `/decision`,
 `/cancel`, or `/transaction` during Activity navigation.
 
+The connected screenshots below show the current authenticated layout: the
+login form is hidden and the sidebar contains only the large `Disconnect`
+control for session exit.
+
 ![Activity open at 1440px — offline synthetic fixture](evidence/ui-walkthrough/activity-1440.png)
 
 *Activity open at 1440×900 — offline synthetic fixture.*
 
 ![Activity open at 320px — offline synthetic fixture](evidence/ui-walkthrough/activity-320.png)
 
-*Activity open at 320×1241 full-page capture — offline synthetic fixture.*
+*Activity open at 320×1359 full-page capture — offline synthetic fixture.*
 
 ## Dialog walkthrough
 
@@ -139,7 +148,7 @@ intervention and verified action context.
 
 ![Review request at 320px — offline synthetic fixture](evidence/ui-walkthrough/review-320.png)
 
-*Review request at 320×900 — offline synthetic fixture.*
+*Review request at 320×902 — offline synthetic fixture.*
 
 ## Status and evidence walkthrough
 
@@ -198,22 +207,26 @@ mockup.
 ## Checks performed
 
 The focused browser checks passed from the source/evidence SHA. The merged
-`test/chat-ui.test.ts` file contains 92 tests; the offline file run passed 90
+`test/chat-ui.test.ts` file contains 100 tests; the offline file run passed 98
 with the native-zoom opt-in and live PostgreSQL case skipped:
 
 ```text
 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'preserves the conversation across responsive Activity navigation|offline operator review controls require live authority'
 Test Files  1 passed (1)
-Tests       2 passed | 90 skipped (92)
+Tests       2 passed | 98 skipped (100)
+
+npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%|registers idempotent teardown|preserves the conversation across responsive Activity navigation|offline operator review controls require live authority|neutral replacement focus resets|Connect signs on directly|Connect does not open chat after sign-on|connects a local supervisor using operator and password|reconciles a clean tool-bearing chat stream|offline direct invocation keeps an uncertain request key|status text shows the authoritative step|operator Activity filters start in a review-first queue'
+Test Files  1 passed (1)
+Tests       14 passed | 86 skipped (100)
 
 xvfb-run -a env MERIDIAN_NATIVE_ZOOM=1 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%'
 Test Files  1 passed (1)
-Tests       1 passed | 91 skipped (92)
+Tests       1 passed | 99 skipped (100)
 
 npx vitest run test/chat-ui.test.ts --testNamePattern='^(?!recovers a real PostgreSQL)'
 Test Files  1 passed (1)
-Tests       90 passed | 2 skipped (92)
-Duration    150.07s (transform 1.28s, setup 0ms, import 2.60s, tests 147.13s, environment 0ms)
+Tests       98 passed | 2 skipped (100)
+Duration    191.53s (transform 1.38s, setup 0ms, import 2.67s, tests 188.55s, environment 0ms)
 ```
 
 The required evidence/link/hygiene checks also passed: all four evidence
