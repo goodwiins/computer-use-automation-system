@@ -351,6 +351,7 @@ export function Chat() {
                 </div>
               </ThreadPrimitive.Empty>
               <ThreadPrimitive.Messages components={{ Message }} />
+              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} inlineApproval /></div>}
               <AuiIf condition={s => s.thread.isRunning}><p className="thinking" role="status">Working…</p></AuiIf>
             </div>
             <ThreadPrimitive.ViewportFooter className="composer-footer">
@@ -368,7 +369,6 @@ export function Chat() {
                   <button type="button" disabled={lookupBusy} onClick={abandonUnknownChat}>Start a separate inquiry</button>
                 </AuiIf>
               </p>}
-              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} inlineApproval /></div>}
               {error && <p role="alert">{error}</p>}
               <ComposerPrimitive.Root className="composer">
                 <label htmlFor="message" className="sr-only">Your request</label>

@@ -76,6 +76,8 @@ export function ApprovalPanel({ run, intervention, inline = false }: { run: Run;
   const approval = intervention.request.kind === 'risk_approval';
   const deadlinePassed = now >= intervention.expiresAt;
   const action = intervention.action;
+  const panel = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const submitted = useRef<HTMLParagraphElement>(null);
   const activeSubmission = useRef(false);
   const actionContextValid = hasActionContext(action, run, intervention);
@@ -83,6 +85,9 @@ export function ApprovalPanel({ run, intervention, inline = false }: { run: Run;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  useLayoutEffect(() => {
+    if (inline && panel.current?.contains(document.activeElement)) heading.current?.focus();
+  }, [inline, key]);
   useLayoutEffect(() => {
     if (attempt.sent && activeSubmission.current) submitted.current?.focus();
   }, [attempt.sent]);
@@ -146,8 +151,8 @@ export function ApprovalPanel({ run, intervention, inline = false }: { run: Run;
     }
   }
   return (
-    <section className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
-      <h3>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
+    <section ref={panel} className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
+      <h3 ref={heading} tabIndex={-1}>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
       <p>{intervention.request.reason}</p>
       <p>{deadlinePassed
         ? 'Estimated deadline passed. The server will confirm whether this intervention is still pending.'

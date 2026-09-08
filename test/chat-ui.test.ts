@@ -1575,7 +1575,7 @@ it('connects a local teller without input and exposes supervisor sign-on fields'
   expect(await page.locator('#workspace').count()).toBe(0);
   const operator = page.getByLabel('Operator', { exact: true });
   const password = page.getByLabel('Password', { exact: true });
-  expect(await operator.inputValue()).toBe('SUPER1');
+  expect(await operator.inputValue()).toBe('');
   expect(await password.inputValue()).toBe('');
   expect(await page.locator('#credential').count()).toBe(0);
   for (const width of [320, 768, 1024, 1440]) {
@@ -2828,6 +2828,90 @@ it('claims one shared recovery probe across inline and dialog panels before a ne
   await page.waitForTimeout(50);
   expect(await dialogConfirm.isDisabled()).toBe(true);
   expect(posts).toBe(2);
+}, 30000);
+
+it.each(['chat', 'guided'] as const)('resets only the active %s inline panel on replacement without approving newly presented facts', async surface => {
+  const capabilityId = 'meridian-funds-transfer';
+  const { page, state, service, connect, errors } = await fixture(false, undefined, { capabilityId });
+  page.setDefaultTimeout(5000);
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capabilityId, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capabilityId, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { amount: '25.00' }, visibleFacts: { amount: '25.00', memo: 'original' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    service.invoke('caller', capabilityId, { member: 'offline-member' }, route.request().headers()['idempotency-key'] ?? '');
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(operatorToken);
+  await page.locator('#message').fill('Transfer fixture');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor();
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capabilityId, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`);
+  const guidedCard = page.locator(`.guided-operations [data-run-id="${runId}"]`);
+  const activeCard = surface === 'chat' ? chatCard : guidedCard;
+  await chatCard.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  await guidedCard.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  async function replace(id: string) {
+    state.runs[0] = { ...state.runs[0], intervention: publicIntervention({
+      ...intervention, id,
+      action: { ...intervention.action!, visibleFacts: { amount: '99.00', memo: id } },
+    }) };
+    // Authenticated polling refreshes both mounted copies without moving focus through a refresh-button click.
+    await chatCard.getByText(id, { exact: true }).waitFor();
+    await guidedCard.getByText(id, { exact: true }).waitFor();
+  }
+  const message = page.locator('#message');
+  await message.focus();
+  await replace('33333333-3333-4333-8333-333333333333');
+  expect(await message.evaluate(element => element === document.activeElement)).toBe(true);
+  const refresh = page.locator('#refresh');
+  await refresh.focus();
+  await replace('44444444-4444-4444-8444-444444444444');
+  expect(await refresh.evaluate(element => element === document.activeElement)).toBe(true);
+  const review = activeCard.getByRole('button', { name: 'Review request', exact: true });
+  await review.scrollIntoViewIfNeeded();
+  const geometry = await review.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    const footer = document.querySelector('.composer-footer')!.getBoundingClientRect();
+    return { button: rect.toJSON(), footer: footer.toJSON(), hit: hit?.outerHTML, unobscured: Boolean(hit && element.contains(hit)), viewport: { width: innerWidth, height: innerHeight } };
+  });
+  writeFileSync(walkthroughScreenshotPath(`replacement-${surface}-geometry.json`), JSON.stringify(geometry, null, 2));
+  await page.screenshot({ path: walkthroughScreenshotPath(`replacement-${surface}.png`) });
+  expect(geometry.unobscured).toBe(true);
+  await review.click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Confirm transfer', exact: true }).focus();
+  await replace('55555555-5555-4555-8555-555555555555');
+  expect(await dialog.getByRole('heading', { name: 'Review request', exact: true }).evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Escape');
+
+  const decision = activeCard.getByRole('button', { name: surface === 'chat' ? 'Accept' : 'Reject', exact: true });
+  await decision.focus();
+  await replace(secondApprovalId);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  expect(state.requests.filter(request => request.path.endsWith('/decision'))).toEqual([]);
+  expect(await activeCard.getByRole('heading', { name: 'Operator approval required', exact: true }).evaluate(element => element === document.activeElement)).toBe(true);
+  await decision.click();
+  const expectedDecision = surface === 'chat' ? 'approve' : 'abort';
+  await vi.waitFor(() => expect(state.decisions).toEqual([expectedDecision]));
+  expect(state.requests.filter(request => request.path.endsWith('/decision')).map(request => ({ path: request.path, body: request.body }))).toEqual([
+    { path: `/runs/${runId}/decision`, body: { approvalId: secondApprovalId, decision: expectedDecision } },
+  ]);
+  expect(errors).toEqual([]);
 }, 30000);
 
 it('neutral replacement focus resets when an open review receives a replacement intervention', async () => {
