@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { operatorContext } from '../runtime/run.js';
+import { operatorBranch, operatorContext } from '../runtime/run.js';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -16,6 +16,12 @@ import { InvocationRejected, InvocationService } from './service.js';
 import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential, type SubjectPrincipal } from './auth.js';
 import { conversationRouter } from './conversation-http.js';
 import { ConversationStore } from './conversations.js';
+
+const MERIDIAN_BRANCHES = [
+  { value: 'MAIN-001', label: 'MAIN-001 - Main Office' },
+  { value: 'WEST-014', label: 'WEST-014 - Westside' },
+  { value: 'EAST-022', label: 'EAST-022 - Eastgate' },
+];
 
 const LocalConversationSubjects = z.object({ caller: z.string().uuid().transform(value => value.toLowerCase()), operator: z.string().uuid().transform(value => value.toLowerCase()) }).strict().refine(value => value.caller !== value.operator);
 type LocalConversationSubjects = z.infer<typeof LocalConversationSubjects>;
@@ -70,6 +76,16 @@ export function createApp(service: InvocationService, config: { callerToken: str
   // Local demo callers share the existing caller principal; restart revokes this token.
   const localTellerToken = localTellerLogin ? randomBytes(32).toString('hex') : undefined;
   const localSupervisorToken = localTellerToken ? randomBytes(32).toString('hex') : undefined;
+  const defaultBranch = process.env.MERIDIAN_BRANCH ?? 'MAIN-001';
+  const branches = MERIDIAN_BRANCHES.some(branch => branch.value === defaultBranch)
+    ? MERIDIAN_BRANCHES : [...MERIDIAN_BRANCHES, { value: defaultBranch, label: defaultBranch }];
+  const Branch = z.string().refine(value => branches.some(branch => branch.value === value), 'Unknown branch');
+  // A fixed set of branch credentials preserves local role ownership without changing other logins.
+  const branchTokens = localTellerLogin ? branches.flatMap(({ value: branch }) =>
+    (['caller', 'operator'] as const).map(role => ({ branch, role, token: randomBytes(32).toString('hex') }))) : [];
+  const localTokenFor = (role: 'caller' | 'operator', branch?: string) => branch === undefined
+    ? role === 'caller' ? localTellerToken! : localSupervisorToken!
+    : branchTokens.find(entry => entry.role === role && entry.branch === branch)!.token;
   app.use((req, res, next) => {
     if (req.headers.host !== `127.0.0.1:${config.port}` || (req.headers.origin && req.headers.origin !== origin)) return res.status(403).json({ error: 'Host or Origin is not allowed' });
     res.set({ 'Content-Security-Policy': `default-src 'self'; script-src 'self' ${scriptHashes}; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
@@ -78,14 +94,14 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use(express.json({ limit: '32kb' }));
   app.get('/', (_req, res) => res.sendFile(join(uiDir, 'index.html')));
   app.use('/_next', express.static(join(uiDir, '_next'), { index: false, dotfiles: 'deny' }));
-  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: localTellerLogin ? { teller: true, supervisor: true } : null }));
+  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: localTellerLogin ? { teller: true, supervisor: true, branches, defaultBranch } : null }));
   app.post('/session/teller', (req, res) => {
     if (!localTellerToken) return res.status(404).json({ error: 'Local teller login is disabled' });
     if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
       return res.status(403).json({ error: 'Local same-origin login required' });
     }
-    z.object({}).strict().parse(req.body);
-    res.json({ token: localTellerToken });
+    const input = z.object({ branch: Branch.optional() }).strict().parse(req.body);
+    res.json({ token: localTokenFor('caller', input.branch) });
   });
   // ponytail: one local supervisor sign-on at a time; per-account limits if more accounts are supported.
   let supervisorLoginPending = false, supervisorLoginAfter = 0;
@@ -93,14 +109,17 @@ export function createApp(service: InvocationService, config: { callerToken: str
   const supervisorContextDigest = (context = operatorContext('SUPERVISOR')) => hash(JSON.stringify([
     context.operator.toUpperCase(), context.password, context.branch, context.role, service.profile?.appId, service.profile?.entryUrl,
   ]));
-  app.post('/session/supervisor', (req, res, next) => { void (async () => {
+  app.post('/session/supervisor', (req, _res, next) => {
+    const branch = Branch.optional().parse(req.body?.branch);
+    operatorBranch.run(branch, next);
+  }, (req, res, next) => { void (async () => {
     if (!localSupervisorToken) throw new RequestError(404, 'Local supervisor login is disabled');
     if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
       throw new RequestError(403, 'Local same-origin login required');
     }
     if (supervisorLoginPending || Date.now() < supervisorLoginAfter) throw new RequestError(429, 'Please wait before signing in again');
     supervisorLoginAfter = Date.now() + 1000;
-    const input = z.object({ operator: z.string().min(1).max(128), password: z.string().min(1).max(512) }).strict().parse(req.body);
+    const input = z.object({ operator: z.string().min(1).max(128), password: z.string().min(1).max(512), branch: Branch.optional() }).strict().parse(req.body);
     // Context drift invalidates proof, but a mistyped credential must not strand a pending review.
     const verified = supervisorVerification;
     supervisorVerification = undefined;
@@ -123,7 +142,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
         } catch { /* An unavailable authority cannot authorize reconnect; retain fresh sign-on below. */ }
         if (pending && timingSafeEqual(digest, supervisorContextDigest())) {
           supervisorVerification = verified;
-          res.json({ token: localSupervisorToken, ...verified.identity });
+          res.json({ token: localTokenFor('operator', input.branch), ...verified.identity });
           return;
         }
       }
@@ -139,7 +158,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
             throw new RequestError(401, 'Meridian did not confirm supervisor access.');
           }
           supervisorVerification = { digest, identity: { operator: outputs.operator, branch: outputs.branch, role: outputs.role } };
-          res.json({ token: localSupervisorToken, ...supervisorVerification.identity });
+          res.json({ token: localTokenFor('operator', input.branch), ...supervisorVerification.identity });
           return;
         }
         if (run.intervention || !['accepted', 'reserved', 'running', 'dispatching', 'recovering'].includes(run.state)) {
@@ -153,17 +172,18 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
-    const principal = authenticate(token) ?? (localSupervisorToken && timingSafeEqual(hash(token), hash(localSupervisorToken)) ? 'operator' : undefined) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
+    const branchLogin = branchTokens.find(entry => timingSafeEqual(hash(token), hash(entry.token)));
+    const principal = branchLogin?.role ?? authenticate(token) ?? (localSupervisorToken && timingSafeEqual(hash(token), hash(localSupervisorToken)) ? 'operator' : undefined) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal;
     // Local role credentials keep their existing run authority; only saved chats use stable ownership.
     if (localSubjects && typeof principal === 'string') {
       const localToken = principal === 'operator' ? localSupervisorToken : localTellerToken;
-      if (localToken && timingSafeEqual(hash(token), hash(localToken))) {
+      if (branchLogin || (localToken && timingSafeEqual(hash(token), hash(localToken)))) {
         res.locals.conversationPrincipal = { subjectId: localSubjects[principal].toLowerCase(), role: principal } satisfies SubjectPrincipal;
       }
     }
-    next();
+    operatorBranch.run(branchLogin?.branch, next);
   });
   app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;

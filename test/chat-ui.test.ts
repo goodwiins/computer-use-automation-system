@@ -1567,6 +1567,8 @@ it('connects a local teller without input and exposes supervisor sign-on fields'
   expect(await page.locator('#credential').count()).toBe(0);
   await role.focus();
   await page.keyboard.press('Tab');
+  expect(await page.getByLabel('Branch', { exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
   expect(await page.getByRole('button', { name: 'Connect', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
   await page.keyboard.press('Enter');
   await visible(page, '#status', 'Connected as caller');
@@ -1587,11 +1589,16 @@ it('connects a local teller without input and exposes supervisor sign-on fields'
   expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([]);
 }, 15000);
 
-it('Connect signs on directly and waits for verified operator details before opening chat', async () => {
+it.each(['MAIN-001', 'WEST-014', 'EAST-022'])('Connect signs on at selected branch %s before opening chat', async branch => {
   const { page, service, state, errors } = await fixture(true);
   service.catalog = () => [{ ...capability, id: 'meridian-sign-on', parameters: [] }];
   await page.getByLabel('Role', { exact: true }).waitFor();
+  const dropdown = page.getByLabel('Branch', { exact: true });
+  expect(await dropdown.locator('option').allTextContents()).toEqual(['MAIN-001 - Main Office', 'WEST-014 - Westside', 'EAST-022 - Eastgate']);
+  await dropdown.selectOption(branch);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  expect(await dropdown.inputValue()).toBe(branch);
+  expect(await dropdown.isDisabled()).toBe(true);
   await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
   state.runs[0]!.capability = 'meridian-sign-on';
   await visible(page, '#status', 'Signing in to Meridian');
@@ -1600,17 +1607,19 @@ it('Connect signs on directly and waits for verified operator details before ope
   expect(service.invoke.mock.calls[0]?.slice(0, 3)).toEqual(['caller', 'meridian-sign-on', {}]);
   expect(service.invoke.mock.calls[0]?.[4]).toBe('TELLER');
   Object.assign(state.runs[0]!, { state: 'success', result: {
-    status: 'success', outputs: { operator: 'TELLER1', role: 'TELLER', branch: 'MAIN' },
+    status: 'success', outputs: { operator: 'TELLER1', role: 'TELLER', branch },
   } });
-  await visible(page, '#status', 'Signed in as TELLER1 · TELLER · Branch MAIN');
+  await visible(page, '#status', `Signed in as TELLER1 · TELLER · Branch ${branch}`);
   await page.locator('#workspace').waitFor();
+  await page.getByText(`Selected branch: ${branch}`, { exact: true }).waitFor();
+  expect(state.requests.find(request => request.path === '/session/teller')?.body).toEqual({ branch });
   expect(service.invoke).toHaveBeenCalledTimes(1);
   expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
   expect(errors).toEqual([]);
 }, 15000);
 
-it.each(['failure', 'wrong-role', 'cancel'] as const)('Connect does not open chat after sign-on %s', async outcome => {
+it.each(['failure', 'wrong-role', 'wrong-branch', 'cancel'] as const)('Connect does not open chat after sign-on %s', async outcome => {
   const { page, service, state } = await fixture(true);
   service.catalog = () => [{ ...capability, id: 'meridian-sign-on', parameters: [] }];
   // Hold the authoritative read until the test sets the terminal outcome.
@@ -1621,7 +1630,7 @@ it.each(['failure', 'wrong-role', 'cancel'] as const)('Connect does not open cha
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
   Object.assign(state.runs[0]!, { capability: 'meridian-sign-on', state: outcome === 'failure' ? 'failure' : 'success',
-    result: { status: 'success', outputs: { operator: 'SUPER1', role: 'SUPERVISOR', branch: 'MAIN' } } });
+    result: { status: 'success', outputs: { operator: 'TELLER1', role: outcome === 'wrong-role' ? 'SUPERVISOR' : 'TELLER', branch: 'OTHER' } } });
   if (outcome === 'cancel') await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   release();
   await visible(page, '#status', outcome === 'cancel' ? 'Disconnected' : outcome === 'failure' ? 'Sign-on did not complete' : 'Sign-on did not confirm');

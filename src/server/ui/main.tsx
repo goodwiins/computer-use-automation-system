@@ -15,7 +15,8 @@ export default function App() {
   const [conversationSidebar, setConversationSidebar] = useState<HTMLDivElement | null>(null);
   const [status, setStatus] = useState(preview ? 'UI-only preview. Live execution, chat, approvals, and evidence access are unavailable.' : 'Connect with a caller or operator credential.');
   const [connecting, setConnecting] = useState(false);
-  const [localLogin, setLocalLogin] = useState<{ teller: true; supervisor: true }>();
+  const [localLogin, setLocalLogin] = useState<{ teller: true; supervisor: true; branches: { value: string; label: string }[]; defaultBranch: string }>();
+  const [loginBranch, setLoginBranch] = useState('');
   const [loginRole, setLoginRole] = useState('teller');
   const loginAttempt = useRef(0);
   const loginAbort = useRef<AbortController | undefined>(undefined);
@@ -38,8 +39,12 @@ export default function App() {
     void fetch('/session/options', { signal: controller.signal })
       .then(response => response.ok ? response.json() : undefined)
       .then(data => {
-        if (data?.localTellerLogin?.teller === true && data.localTellerLogin.supervisor === true) {
+        if (data?.localTellerLogin?.teller === true && data.localTellerLogin.supervisor === true
+          && Array.isArray(data.localTellerLogin.branches)
+          && data.localTellerLogin.branches.every((branch: { value?: unknown; label?: unknown }) => branch && typeof branch.value === 'string' && typeof branch.label === 'string')
+          && data.localTellerLogin.branches.some((branch: { value: string }) => branch.value === data.localTellerLogin.defaultBranch)) {
           setLocalLogin(data.localTellerLogin);
+          setLoginBranch(data.localTellerLogin.defaultBranch);
           setStatus('Choose Teller or sign in with your supervisor operator and password.');
         }
       }).catch(() => {}); // Keep credential login available when local login cannot be discovered.
@@ -50,7 +55,7 @@ export default function App() {
     if (preview || connecting) return;
     const form = event.currentTarget;
     let token = String(new FormData(form).get('credential') ?? '');
-    const supervisor = { operator: String(new FormData(form).get('operator') ?? ''), password: String(new FormData(form).get('password') ?? '') };
+    const supervisor = { operator: String(new FormData(form).get('operator') ?? ''), password: String(new FormData(form).get('password') ?? ''), ...(localLogin ? { branch: String(new FormData(form).get('branch') ?? '') } : {}) };
     form.reset();
     setSession(undefined);
     setConnecting(true);
@@ -72,12 +77,12 @@ export default function App() {
           throw new Error(typeof failure.error === 'string' ? failure.error : 'Supervisor sign-in failed.');
         }
         const signedIn = await response.json();
-        if (typeof signedIn.token !== 'string' || signedIn.role !== 'SUPERVISOR' || typeof signedIn.operator !== 'string' || typeof signedIn.branch !== 'string') throw new Error('Supervisor access was not confirmed.');
+        if (typeof signedIn.token !== 'string' || signedIn.role !== 'SUPERVISOR' || typeof signedIn.operator !== 'string' || typeof signedIn.branch !== 'string' || signedIn.branch !== supervisor.branch) throw new Error('Supervisor access was not confirmed.');
         token = signedIn.token;
         supervisorStatus = `Signed in as ${signedIn.operator} · SUPERVISOR · Branch ${signedIn.branch}.`;
       }
       if (localLogin && loginRole === 'teller') {
-        const response = await fetch('/session/teller', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const response = await fetch('/session/teller', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: supervisor.branch }) });
         if (!response.ok) throw new Error('Local teller connection failed. Try connecting again.');
         token = (await response.json()).token;
       }
@@ -104,7 +109,7 @@ export default function App() {
       let connectedStatus = `Connected as ${authority.principal}. Credentials remain in page memory.`;
       if (authority.principal === 'caller' && metadata.capabilities.some(capability => capability?.id === 'meridian-sign-on')) {
         setStatus('Signing in to Meridian…');
-        connectedStatus = await signOn(token, signal);
+        connectedStatus = await signOn(token, signal, supervisor.branch);
       }
       if (attempt !== loginAttempt.current) return;
       setSession({
@@ -113,6 +118,7 @@ export default function App() {
         conversationText: metadata.conversationText === true,
         readinessRequired: validateReadinessMetadata(data),
         supervisorVerified: Boolean(supervisorStatus),
+        selectedBranch: supervisor.branch,
         capabilities: metadata.capabilities as Session['capabilities'],
         availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
         operationContracts: validateOperationContracts(metadata.operationContracts),
@@ -152,6 +158,12 @@ export default function App() {
               <input id="supervisor-operator" name="operator" required maxLength={128} disabled={connecting} autoComplete="off" spellCheck={false} />
               <label htmlFor="supervisor-password">Password</label>
               <input id="supervisor-password" name="password" type="password" required maxLength={512} disabled={connecting} autoComplete="off" />
+            </>}
+            {localLogin && <>
+              <label htmlFor="login-branch">Branch</label>
+              <select id="login-branch" name="branch" value={loginBranch} onChange={event => setLoginBranch(event.target.value)} disabled={connecting} required>
+                {localLogin.branches.map(branch => <option key={branch.value} value={branch.value}>{branch.label}</option>)}
+              </select>
             </>}
             {!localLogin && <label htmlFor="credential">API credential</label>}
             <div className="login-row">
@@ -282,7 +294,7 @@ function AuthoritySummary({ session }: { session: Session }) {
       <p><strong>Dashboard access:</strong> {session.principal === 'operator' ? 'Operator' : 'Caller'}</p>
       <p><strong>Chat execution:</strong> Teller</p>
       <p><strong>Target session:</strong> Not verified</p>
-      <p><strong>Branch:</strong> Not verified</p>
+      <p><strong>{session.selectedBranch ? 'Selected branch:' : 'Branch:'}</strong> {session.selectedBranch ?? 'Not verified'}</p>
     </section>
   );
 }
