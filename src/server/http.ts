@@ -4,18 +4,22 @@ import { join, resolve } from 'node:path';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { LanguageModel } from 'ai';
+import { Pool } from 'pg';
 import { z } from 'zod';
 import { RequestError, Journal } from '../runtime/journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
-import { InvocationService, type Principal } from './service.js';
+import { InvocationService } from './service.js';
+import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
+import { conversationRouter } from './conversation-http.js';
+import { ConversationStore } from './conversations.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional(), lookupOnly: z.literal(true).optional() }).strict();
 const hash = (value: string) => createHash('sha256').update(value).digest();
-
-export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
-  if (config.callerToken.length < 32 || config.operatorToken.length < 32 || config.callerToken === config.operatorToken) throw new Error('Configure two distinct API credentials of at least 32 characters');
+export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
+  const authenticate = createAuthenticator(config);
+  const localTellerLogin = config.subjectTokens ? undefined : config.localTellerLogin;
   const uiDir = config.uiDir ?? resolve('out');
   const html = existsSync(join(uiDir, 'index.html')) ? readFileSync(join(uiDir, 'index.html'), 'utf8') : '';
   // Next's exported bootstrap scripts are immutable; authorize their exact contents.
@@ -25,7 +29,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.disable('x-powered-by');
   const origin = `http://127.0.0.1:${config.port}`;
   // Local demo callers share the existing caller principal; restart revokes this token.
-  const localTellerToken = config.localTellerLogin ? randomBytes(32).toString('hex') : undefined;
+  const localTellerToken = localTellerLogin ? randomBytes(32).toString('hex') : undefined;
   app.use((req, res, next) => {
     if (req.headers.host !== `127.0.0.1:${config.port}` || (req.headers.origin && req.headers.origin !== origin)) return res.status(403).json({ error: 'Host or Origin is not allowed' });
     res.set({ 'Content-Security-Policy': `default-src 'self'; script-src 'self' ${scriptHashes}; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
@@ -34,7 +38,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use(express.json({ limit: '32kb' }));
   app.get('/', (_req, res) => res.sendFile(join(uiDir, 'index.html')));
   app.use('/_next', express.static(join(uiDir, '_next'), { index: false, dotfiles: 'deny' }));
-  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: config.localTellerLogin ?? null }));
+  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: localTellerLogin ?? null }));
   app.post('/session/teller', (req, res) => {
     if (!localTellerToken) return res.status(404).json({ error: 'Local teller login is disabled' });
     if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -46,13 +50,15 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
-    const principal: Principal | undefined = timingSafeEqual(hash(token), hash(config.operatorToken)) ? 'operator'
-      : timingSafeEqual(hash(token), hash(config.callerToken)) || (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken))) ? 'caller' : undefined;
+    const principal = authenticate(token) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal; next();
   });
-  app.get('/capabilities', (_req, res) => res.json({ principal: res.locals.principal, capabilities: service.catalog(res.locals.principal),
-    availability: typeof service.availability === 'function' ? service.availability(res.locals.principal) : null }));
+  app.get('/capabilities', (_req, res) => {
+    const principal = res.locals.principal;
+    res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+      availability: typeof service.availability === 'function' ? service.availability(principal) : null });
+  });
   app.get('/runs', (_req, res) => res.json(service.history(res.locals.principal)));
   app.get('/runs/:id', (req, res) => res.json(service.get(res.locals.principal, req.params.id!)));
   app.post('/capabilities/:id/invoke', (req, res) => {
@@ -69,6 +75,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (!run.evidence.includes(req.params.file!)) throw new RequestError(404, 'Unknown evidence file');
     res.sendFile(resolve(join(service.evidenceDir, req.params.id!, req.params.file!)));
   });
+  app.use('/conversations', conversationRouter(service, config.conversations));
   const chat = createChatHandlers(service, config.chatModel);
   app.post('/chat', chat.legacy);
   app.post('/api/chat', chat.stream);
@@ -85,39 +92,67 @@ export async function serve(profileName = 'meridian') {
   const evidenceDir = process.env.EVIDENCE_DIR ?? 'evidence/meridian';
   const journal = new Journal(join(evidenceDir, 'journal'), process.env.JOURNAL_HMAC_KEY ?? '');
   let uiDir: string | undefined;
-  const cleanup = () => {
-    journal.close();
+  let service: InvocationService | undefined;
+  let pool: Pool | undefined;
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = () => cleanupPromise ??= (async () => {
+    let failure: unknown;
+    try { await service?.close(); } catch (error) { failure = error; }
+    try { await pool?.end(); } catch (error) { failure ??= error; }
+    try { journal.close(); } catch (error) { failure ??= error; }
     if (uiDir) rmSync(uiDir, { recursive: true, force: true });
-  };
+    if (failure) throw failure;
+  })();
   try {
+    const subjectTokens = parseSubjectCredentials(process.env.SUBJECT_API_TOKENS);
+    const databaseUrl = process.env.DATABASE_URL;
+    if (databaseUrl && !subjectTokens) throw new Error('Conversation storage configuration is invalid');
     // Snapshot the Next.js export so later builds cannot change a running instance.
     const sourceUi = resolve('out');
     if (!existsSync(join(sourceUi, 'index.html'))) throw new Error('Build the Next.js frontend first: npm run build');
     uiDir = mkdtempSync(join(tmpdir(), 'meridian-ui-'));
     cpSync(sourceUi, uiDir, { recursive: true });
-    const service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
+    service = new InvocationService(journal, policy, profile, evidenceDir, (process.env.CALLER_CAPABILITIES ?? '').split(',').filter(Boolean), process.env.ARTIFACT_DIR ?? 'artifacts');
+    let conversations: ConversationStore | undefined;
+    let shutdownOnDatabaseError: (() => void) | undefined;
+    if (databaseUrl) {
+      try {
+        pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
+        pool.on('error', () => { process.exitCode = 1; shutdownOnDatabaseError?.(); });
+        conversations = new ConversationStore(pool);
+        await conversations.migrate();
+      } catch { throw new Error('Conversation storage startup failed'); }
+    }
     const port = Number(process.env.PORT ?? 4180);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid PORT');
-    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', port, uiDir,
-      localTellerLogin: process.env.LOCAL_TELLER_LOGIN === '1' ? {
+    const app = createApp(service, { callerToken: process.env.CALLER_API_TOKEN ?? '', operatorToken: process.env.OPERATOR_API_TOKEN ?? '', subjectTokens, conversations, port, uiDir,
+      localTellerLogin: subjectTokens ? undefined : process.env.LOCAL_TELLER_LOGIN === '1' ? {
         teller: process.env.MERIDIAN_TELLER_OPERATOR ?? 'TELLER',
         supervisor: process.env.MERIDIAN_SUPERVISOR_OPERATOR ?? 'SUPERVISOR',
       } : undefined,
     });
-    const server = app.listen(port, '127.0.0.1', () => console.log(`Dashboard: http://127.0.0.1:${port}`));
+    const server = app.listen(port, '127.0.0.1');
+    await new Promise<void>((resolveListening, rejectListening) => {
+      const listening = () => { server.removeListener('error', failed); resolveListening(); };
+      const failed = (error: Error) => { server.removeListener('listening', listening); rejectListening(error); };
+      server.once('listening', listening);
+      server.once('error', failed);
+    });
+    console.log(`Dashboard: http://127.0.0.1:${port}`);
     let closing = false;
     const shutdown = () => {
       if (closing) return;
       closing = true;
       for (const signal of ['SIGINT', 'SIGTERM'] as const) process.removeListener(signal, shutdown);
       // Reject late model invocations before draining HTTP or awaiting runtime cleanup.
-      void service.close().finally(cleanup).catch(() => { process.exitCode = 1; });
-      server.close();
+      void cleanup().catch(() => { process.exitCode = 1; });
+      if (server.listening) server.close();
       server.closeAllConnections();
     };
+    shutdownOnDatabaseError = shutdown;
     server.once('close', shutdown);
     server.on('error', () => { shutdown(); process.exitCode = 1; });
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, shutdown);
     return server;
-  } catch (error) { cleanup(); throw error; }
+  } catch (error) { await cleanup().catch(() => {}); throw error; }
 }

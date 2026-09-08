@@ -10,6 +10,7 @@ import { Policy } from '../src/safety/policy.js';
 import { Redactor } from '../src/safety/redact.js';
 import { recordedStructure } from '../src/evidence/safe-event.js';
 import type { ReplayResult } from '../src/replay/outcomes.js';
+import { principalKey, type Principal } from '../src/server/auth.js';
 
 const balance = 'meridian-member-record', inquiry = 'meridian-member-inquiry';
 const member = '9001', name = 'Verified Fixture Member';
@@ -46,7 +47,7 @@ function fixture(allowlist = [balance, inquiry]) {
     releases.forEach(resolve => resolve(failure));
     await service.close(); journal.close(); rmSync(dir, { recursive: true, force: true });
   });
-  async function start(principal: 'caller' | 'operator' = 'caller', role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
+  async function start(principal: Principal = 'caller', role: 'TELLER' | 'SUPERVISOR' = 'TELLER') {
     const accepted = service.invoke(principal, balance, { member }, 'balance-request', role);
     releases[0]!(shares);
     await vi.waitFor(() => expect(replay).toHaveBeenCalledTimes(2));
@@ -104,6 +105,24 @@ it('serializes the exact-member read under the same caller and role, with no rep
   expect(f.service.history('operator').map(run => run.runId)).toEqual([accepted.runId]);
   expect(f.service.invoke('operator', balance, { member }, 'balance-request', 'SUPERVISOR').reused).toBe(true);
   expect(f.replay).toHaveBeenCalledTimes(2);
+});
+
+it('keeps a subject owner on the linked member-identity inquiry', async () => {
+  const f = fixture();
+  const principal = { subjectId: '11111111-1111-4111-8111-111111111111', role: 'operator' } as const;
+  const { runId } = f.service.invoke(principal, balance, { member }, 'subject-balance', 'SUPERVISOR');
+  f.releases[0]!(shares);
+  await vi.waitFor(() => expect(f.replay).toHaveBeenCalledTimes(2));
+  const lookup = [...f.journal.records.values()].find(r => r.capability === inquiry)!;
+  expect(f.journal.records.get(runId)?.caller).toBe(principalKey(principal));
+  expect(lookup.caller).toBe(principalKey(principal));
+  expect(f.journal.findRequest(principalKey(principal), `member-identity:${runId}`)?.runId).toBe(lookup.runId);
+  expect(() => f.service.get({ ...principal, subjectId: '22222222-2222-4222-8222-222222222222' }, lookup.runId)).toThrow('another principal');
+  f.releases[1]!(identity());
+  await vi.waitFor(() => expect(f.service.get(principal, runId).memberIdentity?.status).toBe('verified'));
+  const child = f.service.get(principal, lookup.runId);
+  expect(child).toMatchObject({ inputs: undefined, result: { status: 'success' } });
+  expect(child.result).not.toHaveProperty('outputs');
 });
 
 it('keeps an explicitly requested name inquiry public', async () => {
