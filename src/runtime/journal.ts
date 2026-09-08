@@ -28,9 +28,11 @@ export interface RunJournal {
   getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
+  unknownCapabilities(capabilities: readonly string[]): Awaitable<Set<string>>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
   recover(caller: string, key: string, request: unknown): Awaitable<JournalRecoveryLookup>;
   findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
+  findRequests(caller: string, keys: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   reserve(caller: string, key: string, capability: string, version: string, request: unknown,
     kind?: 'discovery' | 'replay', options?: ReservationOptions): Awaitable<JournalRecord>;
   bindReference(caller: string, key: string, runId: string): Awaitable<void>;
@@ -52,6 +54,11 @@ export function validateRunBatch(runIds: readonly string[]): string[] {
   const parsed = BatchRunIds.safeParse(runIds);
   if (!parsed.success) throw new RequestError(400, 'Journal run batch does not match the contract');
   return [...new Set(parsed.data)];
+}
+export function validateKeyBatch(keys: readonly string[]): string[] {
+  if (!Array.isArray(keys) || keys.length > MAX_RUN_BATCH) throw new RequestError(400, 'Journal key batch does not match the contract');
+  for (const key of keys) validateIdempotencyKey(key);
+  return [...new Set(keys)];
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -223,6 +230,19 @@ export class Journal implements RunJournal {
   }
   list() { this.assertHealthy(); return [...this.records.values()]; }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
+  unknownCapabilities(capabilities: readonly string[]) {
+    this.assertHealthy();
+    const names = new Set(validateKeyBatch(capabilities));
+    return new Set([...this.records.values()].filter(record => names.has(record.capability)
+      && record.state === 'POST_OUTCOME_UNKNOWN').map(record => record.capability));
+  }
+  findRequests(caller: string, keys: readonly string[]) {
+    this.assertHealthy();
+    return new Map(validateKeyBatch(keys).flatMap(key => {
+      const record = this.findRequest(caller, key);
+      return record ? [[key, record] as const] : [];
+    }));
+  }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
     this.assertHealthy();

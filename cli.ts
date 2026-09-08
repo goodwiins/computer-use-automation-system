@@ -134,18 +134,30 @@ async function closeJournal(journal: RunJournal | undefined, retainOwnership = f
   try { await journal.close(); } catch { process.exitCode = 1; }
 }
 
-async function openExecutionJournal(meridian: boolean): Promise<{ journal?: RunJournal; pool?: Pool }> {
-  if (!meridian) return {};
+async function openExecutionJournal(meridian: boolean, onFailure: () => Promise<void>) {
+  let failed = false;
+  let journal: RunJournal | undefined;
+  const assertHealthy = () => {
+    if (failed) throw new Error('Run journal connection failed; operator recovery is required');
+    journal?.assertHealthy();
+  };
+  if (!meridian) return { journal, pool: undefined, assertHealthy, failed: () => failed };
   const mode = process.env.RUN_JOURNAL ?? 'filesystem';
   let pool: Pool | undefined;
   if (mode === 'postgres') {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) throw new Error('DATABASE_URL is required for PostgreSQL journal');
     pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 });
+    pool.on('error', () => {
+      failed = true;
+      process.exitCode = 1;
+      void onFailure().catch(() => { process.exitCode = 1; });
+    });
   }
   try {
-    const journal = await openRunJournal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '', pool);
-    return { journal, pool };
+    journal = await openRunJournal(join(process.env.EVIDENCE_DIR ?? 'evidence/meridian', 'journal'), process.env.JOURNAL_HMAC_KEY ?? '', pool);
+    assertHealthy();
+    return { journal, pool, assertHealthy, failed: () => failed };
   } catch (error) {
     await pool?.end().catch(() => undefined);
     throw error;
@@ -178,10 +190,10 @@ async function discover(argv: string[]) {
   if (operator) sensitive.push('password');
   const expectedTransfer = meridian && name === 'meridian-funds-transfer' ? transferFactsFromParams(params) : undefined;
   if (meridian && name === 'meridian-funds-transfer' && !expectedTransfer) fatal('Parameters do not match the capability contract');
-  const opened = await openExecutionJournal(meridian);
+  let runtime: ReturnType<typeof createRuntime> | undefined;
+  const opened = await openExecutionJournal(meridian, () => closeRuntime(runtime));
   const { journal, pool } = opened;
   let record: JournalRecord | undefined;
-  let runtime: ReturnType<typeof createRuntime> | undefined;
   let candidate: CapabilityArtifact | undefined;
   try {
     const { openai, model } = makeLLMClient();
@@ -196,6 +208,7 @@ async function discover(argv: string[]) {
     }
     record = journal ? await journal.reserve('operator', key, name, '1.0.0', request, 'discovery') : undefined;
     await requireJournalRunning(journal, record?.runId);
+    opened.assertHealthy();
     const headful = meridian || !!flags.headful;
     try {
       runtime = createRuntime({ kind: 'discovery', artifact: name, version: '1.0.0', policy, profile, fault, params, sensitive, operator, headful,
@@ -207,7 +220,7 @@ async function discover(argv: string[]) {
           }, context);
           return decision === 'retry';
         }, beforeDispatch: async () => { await journal!.update(record!.runId, 'dispatching'); },
-        assertDispatchAllowed: journal ? () => journal!.assertHealthy() : undefined,
+        assertDispatchAllowed: journal ? opened.assertHealthy : undefined,
       });
       const { surface, browser, logger, session } = runtime;
       console.log(`discovery run ${logger.runId} → ${logger.dir}`);
@@ -228,6 +241,7 @@ async function discover(argv: string[]) {
         validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : runtime.validateCompletion,
       });
 
+      opened.assertHealthy();
       const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched);
       if (uncertain && result.status !== 'success') {
         logger.writeResult({ status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } });
@@ -284,7 +298,7 @@ async function discover(argv: string[]) {
       await updateJournal(journal, record?.runId, uncertain ? 'POST_OUTCOME_UNKNOWN' : 'failure');
     } finally { await closeRuntime(runtime); }
   } finally {
-    await closeJournal(journal, runtime?.cleanupFailed === true && pool !== undefined);
+    await closeJournal(journal, (opened.failed() || runtime?.cleanupFailed === true) && pool !== undefined);
     await pool?.end().catch(() => { process.exitCode = 1; });
   }
 }
@@ -347,10 +361,10 @@ async function replay(argv: string[]) {
   }
   if (meridian) params = normalizeParams(artifact, params);
   const request = { mode: 'replay', fault: fault ?? null, id: artifact.id, version: artifact.version, params: Object.fromEntries(Object.entries(params).filter(([key]) => key !== 'password')), role: operator?.role ?? null };
-  const opened = await openExecutionJournal(meridian);
+  let runtime: ReturnType<typeof createRuntime> | undefined;
+  const opened = await openExecutionJournal(meridian, () => closeRuntime(runtime));
   const { journal, pool } = opened;
   let record: JournalRecord | undefined;
-  let runtime: ReturnType<typeof createRuntime> | undefined;
   try {
     if (journal) {
       const existing = (await journal.lookup('operator', key, request)).existing;
@@ -358,6 +372,7 @@ async function replay(argv: string[]) {
     }
     record = journal ? await journal.reserve('operator', key, artifact.id, artifact.version, request) : undefined;
     await requireJournalRunning(journal, record?.runId);
+    opened.assertHealthy();
     const attended = !!flags.attended;
     try {
       runtime = createRuntime({ kind: 'replay', artifact: artifact.id, version: artifact.version, policy, profile, fault, params: { ...artifact.paramDefaults, ...params },
@@ -370,12 +385,13 @@ async function replay(argv: string[]) {
           }, context);
           return decision === 'retry';
         }, beforeDispatch: async () => { await journal!.update(record!.runId, 'dispatching'); },
-        assertDispatchAllowed: journal ? () => journal!.assertHealthy() : undefined,
+        assertDispatchAllowed: journal ? opened.assertHealthy : undefined,
       });
       console.log(`replay run ${runtime.logger.runId} → ${runtime.logger.dir}`);
       const result = await runReplay(artifact, params, { surface: runtime.surface, logger: runtime.logger, policy,
         escalate: attended ? req => new OperatorConsole(runtime!.browser.page, runtime!.logger, runtime!.session, runtime!.promptRedactor).intervene(req) : undefined,
         validateCompletion: runtime.validateCompletion });
+      opened.assertHealthy();
       const uncertain = await dispatchIntent(journal, record?.runId, runtime.surface.mutationDispatched);
       const output = uncertain ? postIntentUnknown(result) : result;
       if (output !== result || (runtime.logger.strict && output.status === 'failure')) runtime.logger.writeResult(output);
@@ -393,7 +409,7 @@ async function replay(argv: string[]) {
       await updateJournal(journal, record?.runId, uncertain ? 'POST_OUTCOME_UNKNOWN' : 'failure');
     } finally { await closeRuntime(runtime); }
   } finally {
-    await closeJournal(journal, runtime?.cleanupFailed === true && pool !== undefined);
+    await closeJournal(journal, (opened.failed() || runtime?.cleanupFailed === true) && pool !== undefined);
     await pool?.end().catch(() => { process.exitCode = 1; });
   }
 }

@@ -44,6 +44,28 @@ it('persists caller-scoped aliases without changing terminal evidence and reject
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('batches filesystem aliases with the same owner, bounds, and quarantine contract', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-alias-batch-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    const run = journal.reserve('caller', 'direct', 'write', '1.0.0', {});
+    journal.update(run.runId, 'dispatching');
+    journal.update(run.runId, 'failure');
+    journal.bindReference('caller', 'alias', run.runId);
+    const before = readJournalSnapshot(dir, 'h'.repeat(64));
+    expect([...journal.findRequests('caller', ['alias', 'direct', 'missing', 'alias']).keys()]).toEqual(['alias', 'direct']);
+    expect(journal.findRequests('operator', ['alias', 'direct'])).toEqual(new Map());
+    expect(journal.unknownCapabilities(['read', 'write', 'write'])).toEqual(new Set(['write']));
+    expect(() => journal.findRequests('caller', Array(101).fill('direct'))).toThrow();
+    expect(() => journal.findRequests('caller', ['invalid key'])).toThrow();
+    expect(() => journal.unknownCapabilities(Array(101).fill('write'))).toThrow();
+    expect(readJournalSnapshot(dir, 'h'.repeat(64))).toEqual(before);
+    journal.close();
+    expect(() => journal.findRequests('caller', ['alias'])).toThrow('Journal is closed');
+    expect(() => journal.unknownCapabilities(['write'])).toThrow('Journal is closed');
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('does not claim a binding when persistence fails before the alias is written', () => {
   const dir = mkdtempSync(join(tmpdir(), 'journal-alias-failure-'));
   const journal = new Journal(dir, 'h'.repeat(64));

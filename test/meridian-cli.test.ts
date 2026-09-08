@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ const ARTIFACT = 'artifacts/meridian-sign-on.v1.0.0.json';
 const ORIGIN = 'https://web-sample.interface-hiring.com';
 const JOURNAL_KEY = 'hmac-test-key-with-at-least-32-characters';
 const PRIVATE_FAILURE = 'PRIVATE_UNREGISTERED';
-type BoundaryMode = 'pre' | 'post' | 'returned' | 'business' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition' | 'running-failure';
+type BoundaryMode = 'idle-pool-error' | 'pre' | 'post' | 'returned' | 'business' | 'construct' | 'write-failure' | 'close' | 'aborted' | 'condition' | 'running-failure';
 
 const boundary: {
   mode: BoundaryMode;
@@ -48,11 +49,14 @@ interface BoundaryRun {
   discoveryCalls: number;
   runtimeFault?: unknown;
   requests: string[];
+  poolErrorHandled: boolean;
+  dispatchBlocked: boolean;
+  closedOnPoolError: boolean;
 }
 
 async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundary-key-1', operator = 'teller-test', extraArgs: string[] = [], command: 'replay' | 'discover' = 'replay', condition?: { id: string; post?: boolean }): Promise<BoundaryRun> {
   const previousExitCode = process.exitCode;
-  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const envKeys = ['RUN_JOURNAL', 'DATABASE_URL', 'OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   process.exitCode = undefined;
   Object.assign(process.env, {
@@ -74,6 +78,26 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   boundary.discoveryCalls = 0;
   boundary.runtimeFault = undefined;
 
+  const pool = new EventEmitter();
+  let poolErrorHandled = false;
+  let dispatchBlocked = false;
+  let closedOnPoolError = false;
+  let assertDispatchAllowed: (() => void) | undefined;
+  if (mode === 'idle-pool-error') {
+    process.env.RUN_JOURNAL = 'postgres';
+    process.env.DATABASE_URL = 'postgresql://offline-fixture';
+    vi.doMock('pg', () => ({ Pool: class { constructor() { return Object.assign(pool, { end: async () => {} }); } } }));
+  }
+  const failIdlePool = async () => {
+    // Emit outside the execution stack, as pg does for an idle socket failure.
+    await new Promise<void>(resolve => setImmediate(() => {
+      poolErrorHandled = pool.listenerCount('error') > 0;
+      if (poolErrorHandled) pool.emit('error', new Error(PRIVATE_FAILURE));
+      resolve();
+    }));
+    closedOnPoolError = boundary.closeCalls > 0;
+    try { assertDispatchAllowed?.(); } catch { dispatchBlocked = true; }
+  };
   vi.resetModules();
   const create = vi.fn(async () => ({ choices: [{ message: { tool_calls: [{ id: 'done', type: 'function', function: { name: 'done', arguments: '{}' } }] } }] }));
   vi.doMock('../src/agent/client.js', () => ({ makeLLMClient: () => {
@@ -86,6 +110,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
       ...actual,
       createRuntime: (options: Parameters<typeof actual.createRuntime>[0]) => {
         boundary.runtimeCalls++;
+        assertDispatchAllowed = options.assertDispatchAllowed;
         boundary.runtimeFault = options.fault;
         if (boundary.mode === 'construct') throw new Error(PRIVATE_FAILURE);
         boundary.beforeDispatch = options.beforeDispatch ? () => options.beforeDispatch!(undefined as never) : undefined;
@@ -122,7 +147,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     return {
       ...actual,
       openRunJournal: async (...args: Parameters<typeof actual.openRunJournal>) => {
-        const journal = await actual.openRunJournal(...args);
+        const journal = mode === 'idle-pool-error' ? new Journal(args[0], args[1]) : await actual.openRunJournal(...args);
         if (boundary.mode !== 'running-failure') return journal;
         const update = journal.update.bind(journal);
         let failed = false;
@@ -140,6 +165,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
       ...actual,
       runReplay: async (_artifact: unknown, _params: Record<string, string | number>, deps: { surface: { mutationDispatched: boolean }; logger: RunLogger }) => {
         boundary.executorCalls++;
+        if (mode === 'idle-pool-error') await failIdlePool();
         if (boundary.mode === 'post') {
           boundary.dispatchCount++;
           boundary.beforeDispatch?.();
@@ -172,6 +198,7 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
       ...actual,
       runDiscovery: async (...args: Parameters<typeof actual.runDiscovery>) => {
         boundary.discoveryCalls++;
+        if (mode === 'idle-pool-error') await failIdlePool();
         return condition ? actual.runDiscovery(...args) : ({ status: 'stopped' as const, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/signon', stopReason: 'RUN_ABORTED' });
       },
     };
@@ -214,7 +241,9 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
     discoveryCalls: boundary.discoveryCalls,
     runtimeFault: boundary.runtimeFault,
     requests: records.map(record => record.request),
+    poolErrorHandled, dispatchBlocked, closedOnPoolError,
   };
+  vi.doUnmock('pg');
   vi.doUnmock('../src/agent/client.js');
   vi.doUnmock('../src/runtime/run.js');
   vi.doUnmock('../src/runtime/open-journal.js');
@@ -232,6 +261,20 @@ async function runReplayBoundary(mode: BoundaryMode, dir: string, key = 'boundar
   return outcome;
 }
 
+it.each(['replay', 'discover'] as const)('cleans up %s and fences dispatch after an idle PostgreSQL pool error', async command => {
+  const dir = mkdtempSync(join(tmpdir(), 'meridian-idle-pool-'));
+  try {
+    const run = await runReplayBoundary('idle-pool-error', dir, 'idle-pool-key', 'teller-test', [], command);
+    expect(run.poolErrorHandled).toBe(true);
+    expect(run.closedOnPoolError).toBe(true);
+    expect(run.dispatchBlocked).toBe(true);
+    expect(run.exitCode).toBe(1);
+    expect(run.dispatchCount).toBe(0);
+    expect(run.lockPresent).toBe(true);
+    expect(run.stdout + run.stderr).not.toContain(PRIVATE_FAILURE);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('rejects invalid request keys before acquiring a journal', () => {
   for (const key of ['', 'space key', '\n', 'x'.repeat(201)]) {
     expect(() => validateIdempotencyKey(key)).toThrow();
@@ -241,7 +284,7 @@ it('rejects invalid request keys before acquiring a journal', () => {
 
 it('rejects invalid canonical discovery inputs before model, journal, runtime, or discovery work', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-preflight-'));
-  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const envKeys = ['RUN_JOURNAL', 'DATABASE_URL', 'OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   const model = vi.fn(() => ({ openai: {}, model: 'fixture' }));
@@ -294,7 +337,8 @@ it('rejects invalid canonical discovery inputs before model, journal, runtime, o
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/private-(unknown|extra)|private-secret/);
   } finally {
     exit.mockRestore(); log.mockRestore(); error.mockRestore();
-    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.restoreAllMocks(); vi.resetModules();
+    vi.doUnmock('pg');
+  vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.restoreAllMocks(); vi.resetModules();
     for (const name of envKeys) {
       const value = previousEnv.get(name);
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -326,7 +370,8 @@ it('keeps cu-nexus discovery generic when its capability ID matches a MERIDIAN c
     }));
   } finally {
     log.mockRestore(); error.mockRestore();
-    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
+    vi.doUnmock('pg');
+  vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
     process.exitCode = previousExitCode;
   }
 });
@@ -486,7 +531,8 @@ it('rejects discovery faults for the legacy profile before provider or runtime s
     expect(createRuntime).not.toHaveBeenCalled();
   } finally {
     error.mockRestore();
-    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
+    vi.doUnmock('pg');
+  vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.restoreAllMocks(); vi.resetModules();
     process.exitCode = previousExitCode;
   }
 });
@@ -592,7 +638,7 @@ it('keeps terminal journal cleanup when runtime close rejects', async () => {
 
 it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transfer completion validator to discovery: %s', async status => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-discovery-'));
-  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
+  const envKeys = ['RUN_JOURNAL', 'DATABASE_URL', 'OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   let validator: ((outputs: Record<string, unknown>) => void) | undefined;
@@ -656,7 +702,8 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
     expect(existsSync(join(journalDir, 'server.lock'))).toBe(false);
     log.mockRestore(); error.mockRestore();
   } finally {
-    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
+    vi.doUnmock('pg');
+  vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
     for (const name of envKeys) {
       const value = previousEnv.get(name);
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -672,7 +719,7 @@ it.each([
   { capability: 'meridian-place-hold', goal: 'Place hold', key: 'cli-place-hold', params: ['member=9001', 'share=9001-S0001-1', 'reason=FRAUD', 'notes=fixture'] },
 ] as const)('supplies the runtime $capability completion validator to discovery', async fixture => {
   const dir = mkdtempSync(join(tmpdir(), 'meridian-cli-completion-'));
-  const envKeys = ['OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
+  const envKeys = ['RUN_JOURNAL', 'DATABASE_URL', 'OPENAI_API_KEY', 'EVIDENCE_DIR', 'JOURNAL_HMAC_KEY', 'MERIDIAN_TELLER_OPERATOR', 'MERIDIAN_TELLER_PASSWORD', 'MERIDIAN_SUPERVISOR_OPERATOR', 'MERIDIAN_SUPERVISOR_PASSWORD', 'MERIDIAN_BRANCH'];
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   const validateCompletion = vi.fn(async () => {});
@@ -711,7 +758,8 @@ it.each([
       ...(fixture.capability === 'meridian-place-hold' ? ['--operator', 'SUPERVISOR'] : []), ...fixture.params.flatMap(param => ['--param', param])]);
     expect(supplied).toBe(validateCompletion);
   } finally {
-    vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
+    vi.doUnmock('pg');
+  vi.doUnmock('../src/agent/client.js'); vi.doUnmock('../src/runtime/run.js'); vi.doUnmock('../src/agent/loop.js'); vi.resetModules(); vi.restoreAllMocks();
     for (const name of envKeys) {
       const value = previousEnv.get(name);
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
