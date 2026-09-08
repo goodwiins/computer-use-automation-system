@@ -1,12 +1,16 @@
 # MERIDIAN adaptation checkpoint
 
+For the short submission report, see [adaptation write-up](adaptation-writeup.md);
+for the presentation sequence and backups, see [demo-day guide](demo-day.md).
+This document retains the detailed historical checkpoints.
+
 September 6, 2026. Live acceptance: **4/7 capabilities**. This is a partial delivery report; the remaining requirements are tracked in the [requirement matrix](implementation-progress.md) and [completion plan](../plans/2026-09-05-meridian-remaining-writes.md).
 
 ## What works and what remains
 
 Sign-on, member inquiry by number or last name, and member record/balance have genuine model discoveries, reviewed artifacts and deterministic replays. Their original provenance remains in [live evidence](live-evidence.md). Open share now has an independently reviewed artifact and separately approved successful discovery/replay pair; see the [pair and restored catalog evidence](live-evidence.md#accepted-open-share-recording-and-replay). Funds transfer, member contact update and supervisor hold still lack accepted complete recording/replay pairs. A historical approved transfer changed the target successfully; its draft artifact is unpromotable and does not establish replay acceptance. The preserved open-share operation `222ebecd-ca02-4960-a875-c2f2f76e0927` remains terminal `POST_OUTCOME_UNKNOWN` and must not be retried.
 
-Two fresh hosted-target caller API runs at source `5d31afd` add read evidence: member-record run `f69afdb6-1644-4571-9617-f0dd6d53ad92` returned 35 typed share rows, and natural absent-member run `80b3c180-4f26-411d-b1e5-e63cb3f11f03` returned `business_outcome / NO_SUCH_MEMBER`. Authenticated evaluation passed with 10 and 9 attempts and zero mutation intents. Repeating the balance request with its original key returned the same run and unchanged journal. Public summaries contain metadata/hashes; private evidence remains private. These runs do not increase 3/7 or establish current chatbot/write acceptance.
+Two fresh hosted-target caller API runs at source `5d31afd` add read evidence: member-record run `f69afdb6-1644-4571-9617-f0dd6d53ad92` returned 35 typed share rows, and natural absent-member run `80b3c180-4f26-411d-b1e5-e63cb3f11f03` returned `business_outcome / NO_SUCH_MEMBER`. Authenticated evaluation passed with 10 and 9 attempts and zero mutation intents. Repeating the balance request with its original key returned the same run and unchanged journal. Public summaries contain metadata/hashes; private evidence remains private. These runs did not increase the then-current 3/7 count or establish current chatbot/write acceptance.
 
 ## Architecture and guarantees
 

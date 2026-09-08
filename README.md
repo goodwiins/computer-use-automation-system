@@ -15,7 +15,116 @@ Evidence from real runs: **[evidence/](evidence/)**.
 
 ![Architecture](docs/architecture.png)
 
-## Setup
+## MERIDIAN hosted demo
+
+The assignment target is **https://web-sample.interface-hiring.com**. Start here:
+[demo-day guide](docs/meridian/demo-day.md),
+[short adaptation write-up](docs/meridian/adaptation-writeup.md), and
+[recorded hosted evidence](docs/meridian/live-evidence.md).
+The latest recorded acceptance is **4/7 capabilities**; transfer, contact update
+and supervisor hold remain incomplete. A fresh live rehearsal of the presentation
+build is still required. The local mock walkthrough below is a separate fallback.
+
+Source: [repository](https://github.com/goodwiins/computer-use-automation-system),
+branch `codex/demo-deliverables`, based on `dev` at
+`e427275e93123dec6f2450607a554397725b0333`.
+
+### Install and configure
+
+Use Node **22.12+ within 22.x**, matching CI. In a dedicated checkout:
+
+```sh
+git clone --branch codex/demo-deliverables https://github.com/goodwiins/computer-use-automation-system.git
+cd computer-use-automation-system
+npm run setup
+npm run test:smoke
+cp .env.example .env
+chmod 600 .env
+```
+
+Fill `.env` locally; never commit it:
+
+| Setting | Purpose |
+| --- | --- |
+| `MERIDIAN_TELLER_OPERATOR`, `MERIDIAN_TELLER_PASSWORD`, `MERIDIAN_BRANCH` | Supplied target login and branch, required for the read demo. |
+| `MERIDIAN_SUPERVISOR_OPERATOR`, `MERIDIAN_SUPERVISOR_PASSWORD` | Required only for supervisor target operations/login. |
+| `CALLER_API_TOKEN`, `OPERATOR_API_TOKEN`, `JOURNAL_HMAC_KEY` | Three distinct values of at least 32 characters; generate each with `openssl rand -hex 32`. Keep the journal key stable. |
+| `CALLER_CAPABILITIES` | For the minimal demo: `meridian-sign-on,meridian-member-inquiry,meridian-member-record`. |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | Discovery and natural-language chat. Alternatively configure the Azure settings in `.env.example`; Azure takes precedence. Replay/direct API does not need a model key. |
+| `EVIDENCE_DIR`, `ARTIFACT_DIR`, `PORT` | Defaults: `evidence/meridian`, `artifacts`, `4180`. Preserve the evidence directory; do not reset an existing journal. |
+| `LOCAL_TELLER_LOGIN` | Leave `0` for API-credential login; `1` enables the private loopback teller shortcut. Connect still verifies target sign-on. |
+
+PostgreSQL is optional; leave its settings unset for this filesystem-journal demo.
+See [the full runbook](docs/meridian/runbook.md) for storage/approval configuration.
+
+### Run the capability API, chatbot and dashboard
+
+```sh
+npm run build
+node --env-file=.env --import tsx cli.ts serve --profile meridian
+```
+
+One process serves all three at **http://127.0.0.1:4180** (use `127.0.0.1`, not
+`localhost`). Open that URL, enter the caller API credential and Connect. Wait
+for the verified target sign-on. Chat is the main view; **Activity** contains the
+catalog, direct invocation, run history, results and evidence. A static `out/`
+preview alone cannot execute capabilities. `.env` is loaded explicitly by the
+command above; `npm run serve` alone does not load it.
+
+### Record and replay against the hosted target
+
+Use a dedicated recording checkout and stop `serve` first: the default journal
+has one process owner. Discovery below writes the canonical artifact filename;
+retain the existing reviewed artifact before deliberately re-recording it.
+The existing approved artifact can be replayed without new discovery.
+
+```sh
+cu() { node --env-file=.env --import tsx cli.ts "$@"; }
+export MEMBER='<selected exact demo member number>'
+MEMBER_DISCOVERY_KEY="$(openssl rand -hex 32)"
+cu discover --profile meridian --name meridian-member-record \
+  --goal 'Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result, open that exact member record, assert the member identity, and extract shares with shareId, type, balance and status, excluding the observed header row.' \
+  --param member="$MEMBER" --sensitive member \
+  --idempotency-key "$MEMBER_DISCOVERY_KEY"
+```
+
+A successful recording writes `artifacts/meridian-member-record.v1.0.0.json` as a
+draft and prints its evidence directory/run ID. Inspect recorded selectors,
+assertions, outputs and credential references before promotion. Stop on an
+incomplete recording; do not promote a guessed or repaired trace.
+
+```sh
+# Artifact review approval, not approval of a banking transaction:
+cu replay --artifact artifacts/meridian-member-record.v1.0.0.json --approve
+npm run validate
+
+# Save this key for this new intentional replay.
+MEMBER_REPLAY_KEY="$(openssl rand -hex 32)"
+MEMBER_PARAMS="$(node -e 'process.stdout.write(JSON.stringify({member:process.env.MEMBER}))')"
+cu replay --profile meridian \
+  --artifact artifacts/meridian-member-record.v1.0.0.json \
+  --params "$MEMBER_PARAMS" --idempotency-key "$MEMBER_REPLAY_KEY"
+```
+
+Expected: `status: success` with typed `shares` rows. Restart `serve`, then ask
+chat **“Show the share balances for member <selected member number>.”** Wait for
+Completed and inspect the same run in Activity. Follow with **“Search for member
+number <selected deliberately absent member number>.”** Expect `business_outcome`
+/ `NO_SUCH_MEMBER`, not a success balance. Exact HTTP invocation/polling commands,
+a five-minute presentation sequence and local backup links are in the
+[demo-day guide](docs/meridian/demo-day.md).
+
+If the model is unavailable, direct API/dashboard replay still uses the hosted
+target. If the target is unavailable, label the existing local demonstration
+**offline fixture**, or show **recorded evidence**. After setup/build, this
+scripted-model/local-browser discovery → record → replay check needs no keys or
+external service:
+
+```sh
+npx --no-install vitest run test/e2e.test.ts
+```
+
+## Local mock setup
 
 Requirements: Node 22.12+ (22.x), 24.x, or 26+, an OpenAI API key (discovery only — replay never needs one).
 
@@ -23,7 +132,7 @@ Requirements: Node 22.12+ (22.x), 24.x, or 26+, an OpenAI API key (discovery onl
 npm run setup       # lockfile install + Chromium
 npm run test:smoke  # local browser/tsx and evidence checks; no API keys needed
 
-# Local CI: run `npm run ci` (typecheck + full suite, ~22s) by hand, or wire it
+# Local CI: run `npm run ci` (typechecks + full suite) by hand, or wire it
 # to run automatically before every push:
 git config core.hooksPath .githooks
 
@@ -32,20 +141,20 @@ export OPENAI_API_KEY=sk-...
 # optional: export OPENAI_MODEL=gpt-5.6-luna   (default)
 
 # ...or Azure OpenAI (takes precedence when set):
-export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+export AZURE_OPENAI_ENDPOINT='https://<resource>.openai.azure.com'
 export AZURE_OPENAI_API_KEY=...
-export AZURE_OPENAI_DEPLOYMENT=<deployment name, used as the model>
+export AZURE_OPENAI_DEPLOYMENT='<deployment name, used as the model>'
 # optional: export AZURE_OPENAI_API_VERSION=2024-10-21
 ```
 
-Everything runs locally. The target application is a deliberately hostile mock
+For the walkthrough below, the target application is a deliberately hostile mock
 "legacy credit-union servicing" app (framesets, nested tables, no test IDs)
 that ships in this repo — no external services, no real credentials, no real PII.
 
 For fresh worktrees, focused checks and failure diagnosis, see [AGENTS.md](AGENTS.md).
 On Linux, `npm run setup -- --with-deps` also installs Chromium's system dependencies.
 
-## Demo path
+## Local mock demo path
 
 **1. Start the target app** (keep it running in its own terminal):
 
@@ -164,12 +273,16 @@ npm run validate
 
 ## Running without live services
 
-Replay needs no API key. The test suite (including a full discovery→record→replay
-integration test with a scripted stand-in LLM) runs completely offline:
+Replay needs no API key. The suite uses local fixtures and a scripted stand-in
+model. Full CI additionally requires a disposable PostgreSQL 14 database with
+permission to create schemas; set `TEST_DATABASE_URL` before running it. This is
+a test dependency even when the demo uses the filesystem journal. No target or
+model credentials are needed. See [regression setup](docs/meridian/regression-tests.md).
 
 ```bash
-npm test        # the suite alone
-npm run ci      # what the pre-push hook runs: typecheck + the suite, ~22s
+export TEST_DATABASE_URL='postgresql://<test-user>:<test-password>@127.0.0.1:5432/<test-database>'
+npm test        # builds the UI, then runs the suite
+npm run ci      # what the pre-push hook runs: typechecks + the suite
 ```
 
 [GitHub Actions](.github/workflows/ci.yml) runs the same `npm run ci` gate on
@@ -211,10 +324,10 @@ docs/             use cases, architecture diagram, demo runbook, audits, plans
 .githooks/        pre-push local CI gate (see Setup)
 ```
 
-## MERIDIAN adaptation (in progress)
+## MERIDIAN operational details
 
 The shared runtime, asynchronous API, local operator dashboard and thin chat entry point are described in [the MERIDIAN runbook](docs/meridian/runbook.md). See [the implementation report](docs/meridian/report.md) for verified behavior and the remaining live acceptance gates. Configure `.env` from `.env.example`, then run `npm run build` and `node --env-file=.env --import tsx cli.ts serve --profile meridian`. The chat frontend uses Next.js App Router and assistant-ui; the existing Express service serves its static export and authenticated API together.
 
 For a standalone CLI posting approval, review the displayed facts and type `approve` at `operator>`, or use the exact `approve --run ... --approval ...` command printed by the runner from a second Terminal on the same machine. `approval --run ...` shows the current facts and approval ID; `refuse --run ... --approval ...` stops that action. The original prompt also accepts `refuse` or `abort`. The runner and `approve` command require an interactive terminal, but this is a client-side check, not proof of human presence: all processes running as the same OS user are trusted and can submit decisions directly to the local socket. A decision applies once to the specified pending action and expires after five minutes. The runner checks the facts again before submitting. Do not click the browser's final posting button: its unarmed request is blocked and can display `ERR_FAILED`. See [CLI approval commands](docs/meridian/runbook.md#standalone-cli-approval-commands). Browser repair and API/dashboard decisions retain their existing controls.
 
-Three live LLM-discovered, reviewed MERIDIAN read artifacts are available: sign-on, member inquiry, and member record. The four write capabilities and verified approved postings remain incomplete. See [live evidence](docs/meridian/live-evidence.md), including the separately recorded unknown posting. Existing mock fixtures are not a substitute for live evidence.
+Four MERIDIAN capabilities have accepted recording/replay pairs: sign-on, member inquiry, member record and open share. Funds transfer, contact update and supervisor hold remain incomplete. See [live evidence](docs/meridian/live-evidence.md), including the separately recorded unknown posting. Existing mock fixtures are not a substitute for live evidence.
