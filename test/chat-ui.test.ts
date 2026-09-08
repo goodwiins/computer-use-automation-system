@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
@@ -50,6 +51,64 @@ function walkthroughScreenshotPath(name: string) {
     : evidencePath;
   mkdirSync(outputDir, { recursive: true });
   return join(outputDir, name);
+}
+
+async function startNativeDisplay() {
+  const display = `:${3000 + (process.pid % 1000)}`;
+  const server = spawn('/usr/bin/Xvfb', [
+    display,
+    '-screen', '0', '1441x901x24',
+    '-nolisten', 'tcp',
+    '-ac',
+  ], { stdio: 'ignore' });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 5000;
+      const check = () => {
+        if (server.exitCode !== null || server.signalCode !== null) {
+          reject(new Error(`Xvfb exited after startup: display=${display}`));
+          return;
+        }
+        execFile('/usr/bin/xdpyinfo', [], { env: { ...process.env, DISPLAY: display } }, error => {
+          if (!error) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error(`Timed out waiting for Xvfb display ${display}: ${error.message}`));
+            return;
+          }
+          setTimeout(check, 50);
+        });
+      };
+      check();
+    });
+  } catch (error) {
+    await stopNativeDisplay(server);
+    throw error;
+  }
+  return { server, display };
+}
+
+async function stopNativeDisplay(server: ReturnType<typeof spawn>) {
+  if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
+  if (server.exitCode === null && server.signalCode === null) {
+    await new Promise<void>(resolve => server.once('exit', () => resolve()));
+  }
+}
+
+async function captureNativeDisplay(display: string, outputPath: string) {
+  await new Promise<void>((resolve, reject) => {
+    execFile('/usr/bin/ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'x11grab', '-framerate', '1', '-video_size', '1440x900',
+      '-i', `${display}+0,0`,
+      '-frames:v', '1', '-y', outputPath,
+    ], { env: { ...process.env, DISPLAY: display } }, error => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function nativeLifecycle(key: string, intent: 'action' | 'status' = 'action') {
@@ -562,21 +621,39 @@ async function fixture(
   });
   let browser: Browser | BrowserContext;
   let nativeProfileDir: string | undefined;
+  let nativeDisplay: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
   if (options.nativeZoom200) {
     nativeProfileDir = mkdtempSync(join(tmpdir(), 'assistant-ui-native-zoom-'));
     mkdirSync(join(nativeProfileDir, 'Default'), { recursive: true });
     const zoomLevel200 = Math.log(2) / Math.log(1.2);
     const preferences = {
       partition: { default_zoom_level: { x: zoomLevel200 } },
+      credentials_enable_service: false,
+      profile: { password_manager_enabled: false },
     };
     writeFileSync(join(nativeProfileDir, 'Default', 'Preferences'), JSON.stringify(preferences));
     try {
-      browser = await chromium.launchPersistentContext(nativeProfileDir, {
-        headless: false,
-        viewport: null,
-        args: ['--window-size=1440,900'],
-      });
+      nativeDisplay = await startNativeDisplay();
+      const inheritedDisplay = process.env.DISPLAY;
+      process.env.DISPLAY = nativeDisplay.display;
+      try {
+        browser = await chromium.launchPersistentContext(nativeProfileDir, {
+          headless: false,
+          viewport: null,
+          args: [
+            '--window-size=1440,900',
+            '--window-position=0,0',
+            '--kiosk',
+            '--disable-save-password-bubble',
+            '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
+          ],
+        });
+      } finally {
+        if (inheritedDisplay === undefined) delete process.env.DISPLAY;
+        else process.env.DISPLAY = inheritedDisplay;
+      }
     } catch (error) {
+      if (nativeDisplay) await stopNativeDisplay(nativeDisplay.server);
       rmSync(nativeProfileDir, { recursive: true, force: true });
       throw error;
     }
@@ -612,6 +689,7 @@ async function fixture(
     await new Promise<void>((r) => server.close(() => r()));
     rmSync(evidenceDir, { recursive: true, force: true });
     if (nativeProfileDir) rmSync(nativeProfileDir, { recursive: true, force: true });
+    if (nativeDisplay) await stopNativeDisplay(nativeDisplay.server);
   });
   const url = `http://127.0.0.1:${port}`;
   const documentResponse = await page.goto(url);
@@ -623,7 +701,7 @@ async function fixture(
     await page.locator('#workspace').waitFor();
     await page.getByRole('button', { name: /^Activity/ }).click();
   }
-  return { state, service, model, browser, page, connect, errors, url, evidenceDir };
+  return { state, service, model, browser, page, connect, errors, url, evidenceDir, nativeDisplay };
 }
 async function visible(page: Page, selector: string, text: string) {
   await page.waitForFunction(
@@ -957,7 +1035,7 @@ it('preserves the conversation across responsive Activity navigation', async () 
 }, 30000);
 
 it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoom at 200%', async () => {
-  const { page, state, connect, errors } = await fixture(false, undefined, { nativeZoom200: true });
+  const { page, state, connect, errors, nativeDisplay } = await fixture(false, undefined, { nativeZoom200: true });
   state.runs.push(initialRun());
   await connect();
   const metrics = await page.evaluate(() => ({
@@ -974,6 +1052,9 @@ it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoo
   expect(metrics.visualViewportScale).toBe(1);
   expect(metrics.innerWidth).toBeLessThanOrEqual(720);
   expect(metrics.documentWidth).toBeLessThanOrEqual(metrics.innerWidth);
+  expect(metrics.outerWidth).toBe(1440);
+  expect(metrics.outerHeight).toBe(900);
+  expect(nativeDisplay?.display).toMatch(/^:\d+$/);
   const catalogHeading = page.getByRole('heading', { name: 'Capability catalog', exact: true });
   await catalogHeading.waitFor();
   const catalogBounds = await catalogHeading.boundingBox();
@@ -1000,7 +1081,14 @@ it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoo
   expect(await back.isVisible()).toBe(true);
   expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
   await expectKeyboardVisibleFocus(back);
-  await page.screenshot({ path: walkthroughScreenshotPath('native-zoom-200.png'), fullPage: true });
+  const nativeScreenshotPath = walkthroughScreenshotPath('native-zoom-200.png');
+  await page.waitForTimeout(250);
+  await captureNativeDisplay(nativeDisplay!.display, nativeScreenshotPath);
+  const nativeScreenshot = readFileSync(nativeScreenshotPath);
+  expect({
+    width: nativeScreenshot.readUInt32BE(16),
+    height: nativeScreenshot.readUInt32BE(20),
+  }).toEqual({ width: 1440, height: 900 });
   await page.keyboard.press('Enter');
   expect(await message.inputValue()).toBe('Native zoom draft survives Activity');
   expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
