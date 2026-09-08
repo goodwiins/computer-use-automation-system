@@ -864,14 +864,14 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     for (const [index, seedId] of capacitySeedIds.entries()) {
       const eventPrefix = `26${String(index + 1).padStart(6, '0')}-0000-4000-9000-`;
       await current.database.pool.query(
-        `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
-         SELECT ($2 || lpad(value::text, 12, '0'))::uuid, $1, value, 'message_omitted', 'user'
+        `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role)
+         SELECT ($3 || lpad(value::text, 12, '0'))::uuid, $1, $2, value, 'message_omitted', 'user'
          FROM generate_series(1, 512) AS values(value)`,
-        [seedId, eventPrefix],
+        [ownerId, seedId, eventPrefix],
       );
       await current.database.pool.query(
-        'UPDATE meridian_conversations SET revision = 512 WHERE id = $1',
-        [seedId],
+        'UPDATE meridian_conversations SET revision = 512 WHERE id = $1 AND owner_id = $2',
+        [seedId, ownerId],
       );
     }
     await current.database.pool.query(

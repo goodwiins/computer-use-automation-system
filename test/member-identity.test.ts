@@ -150,7 +150,7 @@ it('serializes the exact-member read under the same caller and role, with no rep
   expect((await f.service.get('operator', accepted.runId)).memberIdentity).toEqual({ status: 'pending', inquiryRunId: lookup.runId });
   expect((await f.service.history('operator')).map(run => run.runId)).toEqual([accepted.runId]);
   expect(await f.service.get('operator', lookup.runId)).toMatchObject({ inputs: undefined, result: undefined });
-  await expect(f.service.get('caller', accepted.runId)).rejects.toThrow('another principal');
+  await expect(f.service.get('caller', accepted.runId)).rejects.toMatchObject({ status: 404, message: 'Unknown run' });
   f.releases[1]!(identity());
   const run = await f.settle(accepted.runId);
   expect(run.memberIdentity).toEqual({ status: 'verified', inquiryRunId: lookup.runId, memberNumber: member, name });
@@ -190,7 +190,7 @@ it('keeps a subject owner on the linked member-identity inquiry', async () => {
   expect(f.journal.records.get(runId)?.caller).toBe(principalKey(principal));
   expect(lookup.caller).toBe(principalKey(principal));
   expect(f.journal.findRequest(principalKey(principal), `member-identity:${runId}`)?.runId).toBe(lookup.runId);
-  await expect(f.service.get({ ...principal, subjectId: '22222222-2222-4222-8222-222222222222' }, lookup.runId)).rejects.toThrow('another principal');
+  await expect(f.service.get({ ...principal, subjectId: '22222222-2222-4222-8222-222222222222' }, lookup.runId)).rejects.toMatchObject({ status: 404, message: 'Unknown run' });
   f.releases[1]!(identity());
   await vi.waitFor(async () => expect((await f.service.get(principal, runId)).memberIdentity?.status).toBe('verified'));
   const child = await f.service.get(principal, lookup.runId);
@@ -336,9 +336,9 @@ it('projects a real private child intervention and permits only exact abort or r
 
   expect(await decideHttp(operatorToken, accepted.runId, pendingId, 'abort')).toMatchObject({ status: 409 });
   expect(await decideHttp(operatorToken, child.runId, randomUUID(), 'abort')).toMatchObject({ status: 409 });
-  expect(await decideHttp(otherToken, child.runId, pendingId, 'abort')).toMatchObject({ status: 403 });
+  expect(await decideHttp(otherToken, child.runId, pendingId, 'abort')).toMatchObject({ status: 404 });
   const approve = await decideHttp(operatorToken, child.runId, pendingId, 'approve');
-  expect(approve).toMatchObject({ status: 409, json: { error: 'Private identity inquiry approval is unavailable' } });
+  expect(approve).toMatchObject({ status: 403, json: { error: 'A run cannot be approved by the principal that requested it' } });
   expect(approve.text).not.toMatch(/PRIVATE child|PRIVATE_CHILD/);
   expect(f.service.live.get(child.runId)!.approval.pending?.id).toBe(pendingId);
 

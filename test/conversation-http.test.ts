@@ -111,11 +111,11 @@ describe.sequential('conversation HTTP API', () => {
 
   const seedEvents = async (owner: string, conversationId: string, count: number, prefix: string) => {
     await database.pool.query(`
-      INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
-      SELECT ($3 || lpad(value::text, 12, '0'))::uuid, $1, value, 'message_omitted', 'user'
-      FROM generate_series(1, $2::int) AS values(value)
-    `, [conversationId, count, prefix]);
-    await database.pool.query('UPDATE meridian_conversations SET revision = $2 WHERE id = $1', [conversationId, count]);
+      INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role)
+      SELECT ($4 || lpad(value::text, 12, '0'))::uuid, $1, $2, value, 'message_omitted', 'user'
+      FROM generate_series(1, $3::int) AS values(value)
+    `, [owner, conversationId, count, prefix]);
+    await database.pool.query('UPDATE meridian_conversations SET revision = $3 WHERE id = $1 AND owner_id = $2', [conversationId, owner, count]);
   };
 
   beforeEach(async () => {
@@ -285,17 +285,17 @@ describe.sequential('conversation HTTP API', () => {
     }
     const eventValues = linkedRunIds.flatMap((runId, index) => [
       `40000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
-      conversationId, index + 1, 'run_linked', 'assistant', runId,
+      ownerId, conversationId, index + 1, 'run_linked', 'assistant', runId,
     ]);
     const eventPlaceholders = linkedRunIds.map((_, index) => {
-      const offset = index * 6;
-      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::bigint, $${offset + 4}, $${offset + 5}, $${offset + 6}::uuid)`;
+      const offset = index * 7;
+      return `($${offset + 1}::uuid, $${offset + 2}::uuid, $${offset + 3}::uuid, $${offset + 4}::bigint, $${offset + 5}, $${offset + 6}, $${offset + 7}::uuid)`;
     }).join(', ');
     await database.pool.query(
-      `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
+      `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role, run_id) VALUES ${eventPlaceholders}`,
       eventValues,
     );
-    await database.pool.query('UPDATE meridian_conversations SET revision = 106 WHERE id = $1', [conversationId]);
+    await database.pool.query('UPDATE meridian_conversations SET revision = 106 WHERE id = $1 AND owner_id = $2', [conversationId, ownerId]);
     await store.migrate();
     const before = [...journal.records.values()];
     const getMany = vi.spyOn(journal, 'getMany');
