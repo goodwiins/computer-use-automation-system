@@ -183,7 +183,9 @@ export function RunProvider({
       }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(typeof data.error === 'string' ? data.error : `Request failed (${response.status})`);
+        const failure = new Error(typeof data.error === 'string' ? data.error : `Request failed (${response.status})`) as Error & { status?: number };
+        failure.status = response.status;
+        throw failure;
       }
       return response;
     },
