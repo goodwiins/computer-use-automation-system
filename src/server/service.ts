@@ -66,7 +66,13 @@ export class InvocationService {
   }
   async availability(principal: Principal): Promise<CapabilityAvailability[]> {
     if (this.profile.appId !== 'meridian') return [];
-    return Promise.all(MERIDIAN_CAPABILITIES.map(async ([id, label]) => {
+    let unknown: Set<string> | undefined;
+    if (!this.closing && !this.cleanupFailed && !this.active) {
+      const eligible = MERIDIAN_CAPABILITIES.map(([id]) => id).filter(id => this.artifacts.has(id)
+        && (principalRole(principal) === 'operator' || this.allowlist.includes(id)));
+      try { unknown = await this.journal.unknownCapabilities(eligible); } catch { /* Fail closed below. */ }
+    }
+    return MERIDIAN_CAPABILITIES.map(([id, label]) => {
       const authorized = principalRole(principal) === 'operator' || this.allowlist.includes(id);
       if (!authorized) return { id, label, state: 'restricted' as const, reason: 'Not authorized for this caller' };
       const artifact = this.artifacts.get(id);
@@ -74,13 +80,10 @@ export class InvocationService {
       if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
       if (this.cleanupFailed) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Runtime cleanup failed; operator recovery is required' };
       if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
-      try {
-        if (await this.journal.hasUnknown(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
-      } catch {
-        return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
-      }
+      if (!unknown) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
+      if (unknown.has(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
       return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
-    }));
+    });
   }
   private async withAdmission<T>(work: () => Promise<T>): Promise<T> {
     const prior = this.admission;
@@ -265,6 +268,10 @@ export class InvocationService {
     const record = await this.journal.get(runId);
     if (!record) throw new RequestError(404, 'Unknown run');
     return this.projectRun(principal, record);
+  }
+  async getRequestHistory(principal: Principal, keys: readonly string[]) {
+    const records = await this.journal.findRequests(principalKey(principal), keys);
+    return new Map([...records].map(([key, record]) => [key, this.projectRun(principal, record)] as const));
   }
   async getOwnedMany(principal: Principal, runIds: readonly string[]) {
     const records = await this.journal.getMany(runIds);

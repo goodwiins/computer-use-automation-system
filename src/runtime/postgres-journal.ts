@@ -17,6 +17,7 @@ import {
   validateReservationScope,
   validateIdempotencyKey,
   validateRunBatch,
+  validateKeyBatch,
 } from './journal.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -376,6 +377,42 @@ export class PostgresJournal implements RunJournal {
         [name],
       );
       return result.rows[0]?.present === true;
+    });
+  }
+
+  async unknownCapabilities(capabilities: readonly string[]): Promise<Set<string>> {
+    this.assertHealthy();
+    const names = validateKeyBatch(capabilities).map(validateCapability);
+    if (!names.length) return new Set();
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const result = await client.query<{ capability: string }>(
+        "SELECT DISTINCT capability FROM meridian_runs WHERE capability = ANY($1::text[]) AND state = 'POST_OUTCOME_UNKNOWN'",
+        [names],
+      );
+      return new Set(result.rows.map(row => row.capability));
+    });
+  }
+
+  async findRequests(caller: string, keys: readonly string[]): Promise<Map<string, JournalRecord>> {
+    this.assertHealthy();
+    const principal = validateCaller(caller);
+    const identities = new Map(validateKeyBatch(keys).map(key => [key, safeDigest(this.key, { caller: principal, key })]));
+    if (!identities.size) return new Map();
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const result = await client.query<RunRow & { lookup_identity: string }>(
+        `SELECT q.identity AS lookup_identity, r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request,
+          r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
+         FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
+         WHERE q.caller = $1 AND q.identity = ANY($2::text[])`,
+        [principal, [...identities.values()]],
+      );
+      const records = new Map(result.rows.map(row => [row.lookup_identity, recordFromRow(row)]));
+      return new Map([...identities].flatMap(([key, identity]) => {
+        const record = records.get(identity);
+        return record ? [[key, record] as const] : [];
+      }));
     });
   }
 
