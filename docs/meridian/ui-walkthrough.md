@@ -3,7 +3,7 @@
 ## Provenance
 
 The application, test, and four-image evidence source for this walkthrough is
-`ec22a6d0da0308b5f9e1573da8fb39b15cafaa55`. It is checked out on
+`b573274e073051381ef04e467e91f3035d3e2148`. It is checked out on
 `codex/meridian-ui-accessibility`. This is the source/evidence SHA, not the
 documentation commit: the final documentation commit and PR head necessarily
 include a later SHA because this file is committed afterward.
@@ -15,7 +15,7 @@ and package output was:
 
 ```text
 git rev-parse HEAD
-ec22a6d0da0308b5f9e1573da8fb39b15cafaa55
+b573274e073051381ef04e467e91f3035d3e2148
 node --version
 v22.22.0
 npm --version
@@ -41,12 +41,12 @@ output above.
 > next build
 
 ▲ Next.js 16.3.4 (Turbopack)
-✓ Running next.config.mjs took 28ms
+✓ Running next.config.mjs took 25ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 7.1s
+✓ Compiled successfully in 13.6s
   Running TypeScript ...
-  Finished TypeScript in 6.5s ...
+  Finished TypeScript in 10.2s ...
   Collecting page data using 4 workers ...
   Generating static pages using 4 workers (0/3) ...
 ✓ Generating static pages using 4 workers (3/3) in 1044ms
@@ -197,16 +197,23 @@ mockup.
 
 ## Checks performed
 
-The two focused browser checks passed from the source/evidence SHA:
+The focused browser checks passed from the source/evidence SHA. The merged
+`test/chat-ui.test.ts` file contains 92 tests; the offline file run passed 90
+with the native-zoom opt-in and live PostgreSQL case skipped:
 
 ```text
-npx vitest run test/chat-ui.test.ts -t 'preserves the conversation across responsive Activity navigation|offline operator review controls require live authority'
+MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'preserves the conversation across responsive Activity navigation|offline operator review controls require live authority'
 Test Files  1 passed (1)
-Tests       2 passed | 84 skipped (86)
+Tests       2 passed | 90 skipped (92)
 
-xvfb-run -a env MERIDIAN_NATIVE_ZOOM=1 npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%'
+xvfb-run -a env MERIDIAN_NATIVE_ZOOM=1 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%'
 Test Files  1 passed (1)
-Tests       1 passed | 85 skipped (86)
+Tests       1 passed | 91 skipped (92)
+
+npx vitest run test/chat-ui.test.ts --testNamePattern='^(?!recovers a real PostgreSQL)'
+Test Files  1 passed (1)
+Tests       90 passed | 2 skipped (92)
+Duration    150.07s (transform 1.28s, setup 0ms, import 2.60s, tests 147.13s, environment 0ms)
 ```
 
 The required evidence/link/hygiene checks also passed: all four evidence
