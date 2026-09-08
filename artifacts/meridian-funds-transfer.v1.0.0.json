@@ -1,0 +1,658 @@
+{
+  "schemaVersion": 2,
+  "id": "meridian-funds-transfer",
+  "name": "meridian-funds-transfer",
+  "description": "Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result, open that exact member record, verify its current eligible shares, and enter Funds Transfer from that record. Use only sourceShare, destinationShare, amount and memo selected by the operator. Inspect the uniquely associated review facts and request the native posting control. After the runner posts, assert completion and extract exactly one output named confirmation: the confirmation value observed on the result page. The runtime verifies the resulting balances itself. Stop if the confirmation cannot be observed.",
+  "version": "1.0.0",
+  "status": "approved",
+  "app": {
+    "appId": "meridian",
+    "entryUrl": "https://web-sample.interface-hiring.com/signon",
+    "allowedOrigins": [
+      "https://web-sample.interface-hiring.com"
+    ]
+  },
+  "parameters": [
+    {
+      "name": "member",
+      "type": "string",
+      "description": "Member number",
+      "required": true,
+      "sensitive": true,
+      "pattern": "^[0-9]{1,12}$"
+    },
+    {
+      "name": "sourceShare",
+      "type": "string",
+      "description": "Stable source share ID",
+      "required": true,
+      "sensitive": true,
+      "pattern": "^[0-9]{1,12}-[A-Za-z0-9-]+$"
+    },
+    {
+      "name": "destinationShare",
+      "type": "string",
+      "description": "Stable destination share ID",
+      "required": true,
+      "sensitive": true,
+      "pattern": "^[0-9]{1,12}-[A-Za-z0-9-]+$"
+    },
+    {
+      "name": "amount",
+      "type": "string",
+      "description": "Decimal amount",
+      "required": true,
+      "sensitive": true,
+      "format": "positiveMoney"
+    },
+    {
+      "name": "memo",
+      "type": "string",
+      "description": "Transfer memo",
+      "required": true,
+      "sensitive": true
+    },
+    {
+      "name": "operator",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "description": "Runtime-bound operator context",
+      "required": true,
+      "sensitive": true,
+      "source": "server"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "confirmation",
+      "type": "string",
+      "description": "Extracted during the flow at step s19",
+      "sensitive": true
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Fill the operator ID before Sign On using the provided server-bound operator parameter.",
+      "action": "fill",
+      "target": {
+        "description": "Fill the operator ID before Sign On using the provided server-bound operator parameter.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "operator"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{operator}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s2",
+      "intent": "Fill the password field using the provided server-bound password parameter after the redacted nameAttr could not be resolved.",
+      "action": "fill",
+      "target": {
+        "description": "Fill the password field using the provided server-bound password parameter after the redacted nameAttr could not be resolved.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "password"
+          },
+          {
+            "kind": "css",
+            "selector": "input[type=\"password\"]"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{password}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s3",
+      "intent": "Explicitly select the operator-provided branch before Sign On, even though the current selection matches.",
+      "action": "select",
+      "target": {
+        "description": "Explicitly select the operator-provided branch before Sign On, even though the current selection matches.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "branch"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{branch}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s4",
+      "intent": "Submit the completed operator sign-on form to access member services.",
+      "action": "click",
+      "target": {
+        "description": "Submit the completed operator sign-on form to access member services.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Sign On"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Sign On"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s5",
+      "intent": "Open Member Inquiry to resolve the requested member before entering Funds Transfer.",
+      "action": "click",
+      "target": {
+        "description": "Open Member Inquiry to resolve the requested member before entering Funds Transfer.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Member Inquiry / Selection"
+          },
+          {
+            "kind": "text",
+            "text": "Member Inquiry / Selection",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Member Inquiry / Selection"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s6",
+      "intent": "Enter the exact invocation member number to resolve the member inquiry.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the exact invocation member number to resolve the member inquiry.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "q"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{member}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s7",
+      "intent": "Submit the exact member-number inquiry so the result set can be inspected for exactly one match.",
+      "action": "click",
+      "target": {
+        "description": "Submit the exact member-number inquiry so the result set can be inspected for exactly one match.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > input:nth-of-type(2)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Search"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s9",
+      "intent": "Open the uniquely matched member {{member}} record for eligibility verification and funds transfer.",
+      "action": "click",
+      "target": {
+        "description": "Open the uniquely matched member {{member}} record for eligibility verification and funds transfer.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Select"
+          },
+          {
+            "kind": "text",
+            "text": "Select",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(4) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Select"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s10",
+      "intent": "Enter Funds Transfer from the open member record after reviewing its share balances and statuses.",
+      "action": "click",
+      "target": {
+        "description": "Enter Funds Transfer from the open member record after reviewing its share balances and statuses.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "link",
+            "name": "Funds Transfer"
+          },
+          {
+            "kind": "text",
+            "text": "Funds Transfer",
+            "exact": true
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > a:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "a",
+          "role": "link",
+          "text": "Funds Transfer"
+        }
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s11",
+      "intent": "Select the operator-specified source share exactly by its stable share value.",
+      "action": "select",
+      "target": {
+        "description": "Select the operator-specified source share exactly by its stable share value.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "from"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(1) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{sourceShare}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s12",
+      "intent": "Select the operator-specified destination share exactly by its stable share value.",
+      "action": "select",
+      "target": {
+        "description": "Select the operator-specified destination share exactly by its stable share value.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "to"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(2) > select:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "select",
+          "role": "combobox"
+        }
+      },
+      "value": "{{destinationShare}}",
+      "selectBy": "value",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s13",
+      "intent": "Enter the operator-specified transfer amount.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the operator-specified transfer amount.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "amount"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{amount}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s14",
+      "intent": "Enter the operator-specified transfer memo.",
+      "action": "fill",
+      "target": {
+        "description": "Enter the operator-specified transfer memo.",
+        "strategies": [
+          {
+            "kind": "nameAttr",
+            "name": "memo"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(4) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "textbox"
+        }
+      },
+      "value": "{{memo}}",
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s15",
+      "intent": "Submit the completed transfer details to inspect the uniquely associated review facts before posting.",
+      "action": "click",
+      "target": {
+        "description": "Submit the completed transfer details to inspect the uniquely associated review facts before posting.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Continue"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(5) > td:nth-of-type(2) > input:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Continue"
+        }
+      },
+      "risk": "reversible_write",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s16",
+      "intent": "Verify the native review page is present before requesting the irreversible posting control.",
+      "action": "assert",
+      "assert": {
+        "kind": "textVisible",
+        "text": "CONFIRM FUNDS TRANSFER"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s17",
+      "intent": "Request the native final posting control for the reviewed funds transfer; this is the irreversible commit action requiring separate human approval.",
+      "action": "click",
+      "target": {
+        "description": "Request the native final posting control for the reviewed funds transfer; this is the irreversible commit action requiring separate human approval.",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Post Transfer"
+          },
+          {
+            "kind": "css",
+            "selector": "tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > form:nth-of-type(1) > input:nth-of-type(6)"
+          }
+        ],
+        "snapshot": {
+          "tag": "input",
+          "role": "button",
+          "text": "Post Transfer"
+        }
+      },
+      "risk": "irreversible",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s18",
+      "intent": "Verify the native result page confirms the transfer was posted before extracting the confirmation.",
+      "action": "assert",
+      "assert": {
+        "kind": "textVisible",
+        "text": "TRANSACTION COMPLETE"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "s19",
+      "intent": "Extract the observed confirmation value from the verified transaction-complete receipt using the recorded native receipt container.",
+      "action": "extract",
+      "target": {
+        "description": "Extract the observed confirmation value from the verified transaction-complete receipt using the recorded native receipt container.",
+        "strategies": [
+          {
+            "kind": "css",
+            "selector": "body > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > div:nth-of-type(1)"
+          },
+          {
+            "kind": "css",
+            "selector": "table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(3) > td:nth-of-type(1) > div:nth-of-type(1)"
+          }
+        ],
+        "snapshot": {
+          "tag": "div"
+        }
+      },
+      "extract": {
+        "output": "confirmation",
+        "pattern": "Confirmation:\\s*(CN\\d+)"
+      },
+      "risk": "read",
+      "timeoutMs": 10000
+    }
+  ],
+  "successCondition": {
+    "kind": "urlMatches",
+    "pattern": "/members/{{member}}/transfer/post$"
+  },
+  "detectors": [
+    {
+      "id": "insufficient-funds",
+      "description": "Available funds are insufficient",
+      "match": {
+        "kind": "textVisible",
+        "text": "Insufficient available balance in the source share."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "id": "validation",
+      "description": "Input rejected by the application",
+      "match": {
+        "kind": "textVisible",
+        "text": "could not be validated"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "validation-injected",
+      "description": "Transaction rejected",
+      "match": {
+        "kind": "textVisible",
+        "text": "TRANSACTION REJECTED"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "VALIDATION_REJECTED"
+    },
+    {
+      "id": "no-matches",
+      "description": "No member records matched the search",
+      "match": {
+        "kind": "textVisible",
+        "text": "No member records matched your search."
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "notfound",
+      "description": "No matching member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "RECORD NOT FOUND"
+      },
+      "classification": "business_outcome",
+      "outcomeCode": "NO_SUCH_MEMBER"
+    },
+    {
+      "id": "permission",
+      "description": "Operator lacks required supervisor authority",
+      "match": {
+        "kind": "textVisible",
+        "text": "SUPERVISOR OVERRIDE REQUIRED"
+      },
+      "classification": "fatal",
+      "outcomeCode": "PERMISSION_DENIED"
+    },
+    {
+      "id": "timeout",
+      "description": "Session expired; invoke a new run",
+      "match": {
+        "kind": "textVisible",
+        "text": "YOUR SESSION HAS TIMED OUT"
+      },
+      "classification": "fatal",
+      "outcomeCode": "SESSION_EXPIRED"
+    },
+    {
+      "id": "maintenance",
+      "description": "Maintenance notice; safe Continue link returns to the member record",
+      "match": {
+        "kind": "textVisible",
+        "text": "SCHEDULED MAINTENANCE IN PROGRESS"
+      },
+      "classification": "recoverable",
+      "recovery": {
+        "action": "click",
+        "target": {
+          "description": "Continue to member record",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "link",
+              "name": "Continue"
+            }
+          ]
+        },
+        "resume": "open-share-member-entry"
+      }
+    },
+    {
+      "id": "server",
+      "description": "Application error; no automatic transaction retry",
+      "match": {
+        "kind": "textVisible",
+        "text": "APPLICATION ERROR"
+      },
+      "classification": "fatal",
+      "outcomeCode": "APPLICATION_ERROR"
+    }
+  ],
+  "provenance": {
+    "discoveredAt": "2026-09-08T21:18:21.096Z",
+    "model": "gpt-5.6-luna",
+    "discoveryRunId": "4a01a974-4a07-460a-aff1-1dc3b112c569",
+    "goal": "Fill operator from {{operator}}, fill password from {{password}}, select branch from {{branch}}, then Sign On. Run Member Inquiry, resolve member to exactly one result, open that exact member record, verify its current eligible shares, and enter Funds Transfer from that record. Use only sourceShare, destinationShare, amount and memo selected by the operator. Inspect the uniquely associated review facts and request the native posting control. After the runner posts, assert completion and extract exactly one output named confirmation: the confirmation value observed on the result page. The runtime verifies the resulting balances itself. Stop if the confirmation cannot be observed."
+  }
+}

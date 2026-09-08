@@ -24,8 +24,8 @@ The assignment target is **https://web-sample.interface-hiring.com**. Start here
 [copy-and-paste chat prompts](docs/meridian/demo-day.md#copy-and-paste-chat-prompts),
 [short adaptation write-up](docs/meridian/adaptation-writeup.md), and
 [recorded hosted evidence](docs/meridian/live-evidence.md).
-The latest recorded acceptance is **4/7 capabilities**; transfer, contact update
-and supervisor hold remain incomplete. A fresh live rehearsal of the presentation
+The latest recorded acceptance is **5/7 capabilities**; contact update and
+supervisor hold remain incomplete. A fresh live rehearsal of the presentation
 build is still required. The local mock walkthrough below is a separate fallback.
 
 Source: [repository](https://github.com/goodwiins/computer-use-automation-system),

@@ -7,8 +7,8 @@ Friday, August 28 date has passed; the next presentation date needs confirmation
 
 The minimum presentation is a member balance success followed by a natural
 missing-member outcome, both through the same chatbot/API/dashboard. The latest
-recorded acceptance is **4/7 capabilities**; transfer, contact update and hold
-remain incomplete. Earlier hosted evidence is available below. A fresh rehearsal
+recorded acceptance is **5/7 capabilities**; contact update and hold remain
+incomplete. Earlier hosted evidence is available below. A fresh rehearsal
 of the presentation build still requires valid target credentials and selected
 member inputs. Do not describe the offline checks as that rehearsal.
 

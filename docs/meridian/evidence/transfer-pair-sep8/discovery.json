@@ -1,0 +1,29 @@
+{
+  "kind": "discovery",
+  "runId": "4a01a974-4a07-460a-aff1-1dc3b112c569",
+  "producerSha": "e1fcb35edda3f242c8ec16189b368f87c93cdabf",
+  "resultStatus": "success",
+  "personalApprovalReceived": true,
+  "mutationIntents": 1,
+  "completion": "Runtime read the member shares table after posting and verified the source balance fell and the destination balance rose by exactly the requested amount with every other share unchanged; the receipt extract failed once after dispatch and succeeded on retry.",
+  "logSha256": "d70eb2a20ecf07817c0d56f65e230f1e462fdf062d4566ba3fbedc4b2ac427ad",
+  "resultSha256": "87be03f9f5f3557a77311700c42ce6d64cfd63c14a6e23030853c1a14dca5a72",
+  "journalSha256": "3ee1e379a1be3b0069b7d86438d984b93766b62efcaaf588c7d7e210ad8f6adc",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 20,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  },
+  "artifactReview": {
+    "originalSha256": "1a22481f00486b2ebd52f0f0f4ec77b95174563a5f4781f5db9dd80f9da775e3",
+    "status": "reviewed before promotion",
+    "issues": [
+      "Removed checkpoint s8: an inquiry-result assertion whose text embedded the member's name and share count. No steps were invented; s16 and s18 remain the review and completion checkpoints."
+    ]
+  },
+  "artifactSha256": "984362654c2bb9e4136f543db016f2f1c79edcf78c10c48ee821325d09e763eb"
+}

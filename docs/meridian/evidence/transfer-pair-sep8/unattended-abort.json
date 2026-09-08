@@ -1,0 +1,22 @@
+{
+  "kind": "replay",
+  "runId": "54686e06-e828-4393-8559-022b62e46e72",
+  "producerSha": "65ccffed22fdd378dad129e320b1008617b5bbe0",
+  "resultStatus": "failure",
+  "code": "RUN_ABORTED",
+  "personalApprovalReceived": false,
+  "mutationIntents": 0,
+  "scope": "Same approved artifact replayed without --attended: reached the irreversible Post Transfer step at attempt 16, the gate refused without a human, the run aborted before any dispatch. Fail-closed evidence, not acceptance.",
+  "logSha256": "8fa0fe9a769ab18493816fc97c41a9e530236e28856e95d1efdaf94fd52c57b1",
+  "resultSha256": "e18d03c4b2ace5711ff849f560c112a5cc366eaba75638bbc2fdf6d6f2aad1cc",
+  "journalSha256": "97f5f0711322390fa2ba1344526c4464efae5843356c17970dd313107293f14f",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "failure",
+    "attempts": 16,
+    "mutationIntents": 0,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  }
+}
