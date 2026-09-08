@@ -4,6 +4,7 @@ import './csp';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, type Session } from './session';
 import { Chat } from './chat';
+import { signOn } from './sign-on';
 import { CapabilityCatalog, RunHistory } from './dashboard';
 import { ReviewDialog } from './review';
 
@@ -16,9 +17,11 @@ export default function App() {
   const [localLogin, setLocalLogin] = useState<{ teller: string; supervisor: string }>();
   const [loginRole, setLoginRole] = useState('teller');
   const loginAttempt = useRef(0);
+  const loginAbort = useRef<AbortController | undefined>(undefined);
   const loginForm = useRef<HTMLFormElement>(null);
   const disconnect = useCallback(() => {
     loginAttempt.current++;
+    loginAbort.current?.abort();
     loginForm.current?.reset();
     setSession(undefined);
     setStatus('Disconnected. Authentication and chat cleared.');
@@ -43,20 +46,25 @@ export default function App() {
   }, []);
   async function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (preview) return;
+    if (preview || connecting) return;
     const form = event.currentTarget;
     let token = String(new FormData(form).get('credential') ?? '');
     form.reset();
     setSession(undefined);
     setConnecting(true);
     const attempt = ++loginAttempt.current;
+    loginAbort.current?.abort();
+    const controller = new AbortController();
+    loginAbort.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]);
+    setStatus('Connecting…');
     try {
       if (localLogin && loginRole === 'teller') {
-        const response = await fetch('/session/teller', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const response = await fetch('/session/teller', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!response.ok) throw new Error('Local teller connection failed. Try connecting again.');
         token = (await response.json()).token;
       }
-      const response = await authenticatedFetch(token, '/capabilities');
+      const response = await authenticatedFetch(token, '/capabilities', { signal });
       if (!response.ok) throw new Error('Credential rejected. Connect with an authorized credential.');
       let data: unknown;
       try {
@@ -76,15 +84,21 @@ export default function App() {
       if (!Array.isArray(metadata.capabilities)) {
         throw new Error('Invalid capability catalog. Reconnect with an authorized credential.');
       }
+      let connectedStatus = `Connected as ${authority.principal}. Credentials remain in page memory.`;
+      if (authority.principal === 'caller' && metadata.capabilities.some(capability => capability?.id === 'meridian-sign-on')) {
+        setStatus('Signing in to Meridian…');
+        connectedStatus = await signOn(token, signal);
+      }
+      if (attempt !== loginAttempt.current) return;
       setSession({
         token,
         ...authority,
         capabilities: metadata.capabilities as Session['capabilities'],
         availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
       });
-      setStatus(`Connected as ${authority.principal}. Credentials remain in page memory.`);
+      setStatus(connectedStatus);
     } catch (e) {
-      if (attempt === loginAttempt.current) setStatus(e instanceof Error ? e.message : 'Connection failed.');
+      if (attempt === loginAttempt.current) setStatus(signal.aborted ? 'Sign-on timed out. Access has not been confirmed.' : e instanceof Error ? e.message : 'Connection failed.');
     } finally {
       if (attempt === loginAttempt.current) setConnecting(false);
     }
@@ -125,9 +139,9 @@ export default function App() {
                 spellCheck={false}
               />}
               <button disabled={preview || connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
-              {session && (
+              {(session || connecting) && (
                 <button type="button" onClick={disconnect}>
-                  Disconnect
+                  {connecting ? 'Cancel' : 'Disconnect'}
                 </button>
               )}
             </div>

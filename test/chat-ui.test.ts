@@ -862,6 +862,48 @@ it('keeps the Next.js chat focused and preserves a draft when Activity is toggle
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
 }, 30000);
 
+it('Connect signs on directly and waits for verified operator details before opening chat', async () => {
+  const { page, service, state, errors } = await fixture(true);
+  service.catalog = () => [{ ...capability, id: 'meridian-sign-on', parameters: [] }];
+  await page.getByLabel('Dashboard access', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
+  state.runs[0]!.capability = 'meridian-sign-on';
+  await visible(page, '#status', 'Signing in to Meridian');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(await page.getByRole('button', { name: 'Connecting…', exact: true }).isDisabled()).toBe(true);
+  expect(service.invoke.mock.calls[0]?.slice(0, 3)).toEqual(['caller', 'meridian-sign-on', {}]);
+  expect(service.invoke.mock.calls[0]?.[4]).toBe('TELLER');
+  Object.assign(state.runs[0]!, { state: 'success', result: {
+    status: 'success', outputs: { operator: 'TELLER1', role: 'TELLER', branch: 'MAIN' },
+  } });
+  await visible(page, '#status', 'Signed in as TELLER1 · TELLER · Branch MAIN');
+  await page.locator('#workspace').waitFor();
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+  expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it.each(['failure', 'wrong-role', 'cancel'] as const)('Connect does not open chat after sign-on %s', async outcome => {
+  const { page, service, state } = await fixture(true);
+  service.catalog = () => [{ ...capability, id: 'meridian-sign-on', parameters: [] }];
+  // Hold the authoritative read until the test sets the terminal outcome.
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/runs/' + runId, async route => { await waiting; await route.continue(); });
+  await page.getByLabel('Dashboard access', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
+  Object.assign(state.runs[0]!, { capability: 'meridian-sign-on', state: outcome === 'failure' ? 'failure' : 'success',
+    result: { status: 'success', outputs: { operator: 'SUPER1', role: 'SUPERVISOR', branch: 'MAIN' } } });
+  if (outcome === 'cancel') await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  release();
+  await visible(page, '#status', outcome === 'cancel' ? 'Disconnected' : outcome === 'failure' ? 'Sign-on did not complete' : 'Sign-on did not confirm');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(service.invoke).toHaveBeenCalledTimes(1);
+}, 15000);
+
 it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
   const { page, errors } = await fixture(true);
   const role = page.getByLabel('Dashboard access', { exact: true });
