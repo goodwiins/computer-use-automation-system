@@ -14,7 +14,7 @@ export default function App() {
   const [session, setSession] = useState<Session>();
   const [status, setStatus] = useState(preview ? 'UI-only preview. Live execution, chat, approvals, and evidence access are unavailable.' : 'Connect with a caller or operator credential.');
   const [connecting, setConnecting] = useState(false);
-  const [localLogin, setLocalLogin] = useState<{ teller: string; supervisor: string }>();
+  const [localLogin, setLocalLogin] = useState<{ teller: true; supervisor: true }>();
   const [loginRole, setLoginRole] = useState('teller');
   const loginAttempt = useRef(0);
   const loginAbort = useRef<AbortController | undefined>(undefined);
@@ -37,7 +37,7 @@ export default function App() {
     void fetch('/session/options', { signal: controller.signal })
       .then(response => response.ok ? response.json() : undefined)
       .then(data => {
-        if (typeof data?.localTellerLogin?.teller === 'string' && typeof data.localTellerLogin.supervisor === 'string') {
+        if (data?.localTellerLogin?.teller === true && data.localTellerLogin.supervisor === true) {
           setLocalLogin(data.localTellerLogin);
           setStatus('Choose Teller or sign in with your supervisor operator and password.');
         }
@@ -139,13 +139,13 @@ export default function App() {
                 disconnect();
                 setLoginRole(role);
               }}>
-                <option value="teller">{localLogin.teller} · Teller</option>
-                <option value="operator">{localLogin.supervisor} · Supervisor</option>
+                <option value="teller">Teller · Caller dashboard</option>
+                <option value="operator">Supervisor · Operator dashboard</option>
               </select>
             </>}
             {localLogin && loginRole === 'operator' && <>
               <label htmlFor="supervisor-operator">Operator</label>
-              <input id="supervisor-operator" name="operator" defaultValue={localLogin.supervisor} required maxLength={128} disabled={connecting} autoComplete="off" spellCheck={false} />
+              <input id="supervisor-operator" name="operator" required maxLength={128} disabled={connecting} autoComplete="off" spellCheck={false} />
               <label htmlFor="supervisor-password">Password</label>
               <input id="supervisor-password" name="password" type="password" required maxLength={512} disabled={connecting} autoComplete="off" />
             </>}

@@ -2984,6 +2984,9 @@ it.each([false, true])('authenticates API/evidence, denies caller decisions and 
   });
   try {
     expect((await request('/capabilities')).status).toBe(401);
+    const options = await request('/session/options');
+    expect(JSON.parse(options.body)).toEqual({ localTellerLogin: localTeller ? { teller: true, supervisor: true } : null });
+    expect(options.body).not.toMatch(/TELLER1|SUPER1/);
     const login = (origin = 'http://127.0.0.1:4180', body = '{}') => request('/session/teller', { Origin: origin }, 'POST', body);
     let token = 'c'.repeat(32);
     if (localTeller) {

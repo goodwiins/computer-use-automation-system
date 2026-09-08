@@ -62,7 +62,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use(express.json({ limit: '32kb' }));
   app.get('/', (_req, res) => res.sendFile(join(uiDir, 'index.html')));
   app.use('/_next', express.static(join(uiDir, '_next'), { index: false, dotfiles: 'deny' }));
-  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: localTellerLogin ?? null }));
+  app.get('/session/options', (_req, res) => res.json({ localTellerLogin: localTellerLogin ? { teller: true, supervisor: true } : null }));
   app.post('/session/teller', (req, res) => {
     if (!localTellerToken) return res.status(404).json({ error: 'Local teller login is disabled' });
     if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {

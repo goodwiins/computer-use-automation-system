@@ -926,7 +926,8 @@ it('connects a local supervisor using operator and password, clearing the passwo
     expect(await page.locator('#credential').count()).toBe(0);
     const operator = page.getByLabel('Operator', { exact: true });
     const password = page.getByLabel('Password', { exact: true });
-    expect(await operator.inputValue()).toBe('SUPER1');
+    expect(await operator.inputValue()).toBe('');
+    await operator.fill('SUPER1');
     await password.fill('wrong-password');
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await visible(page, '#status', 'Check operator and password');
@@ -1762,7 +1763,7 @@ it('keeps historical timeline data on refresh errors and cancels late active rea
   expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(disconnectedReads);
   expect(errors).toEqual([]);
 }, 30000);
-it('offline operator controls require live authority, disable expired/duplicate decisions and never retry unknown posting', async () => {
+it('offline operator controls require live authority, submit browser-expired decisions once and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -1819,24 +1820,33 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
+  const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
+  await submitted.waitFor();
+  expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
   expect(state.requests.find(request => request.path.endsWith('/decision'))?.body).toEqual({ approvalId, decision: 'approve' });
   state.runs[0] = {
     ...initialRun(),
     state: 'awaiting-human',
-    intervention: { ...intervention, expiresAt: Date.now() - 1 },
+    intervention: { ...intervention, id: '66666666-6666-4666-8666-666666666666', expiresAt: Date.now() - 1 },
   };
   await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   await visible(page, '.approval', 'Intervention expired.');
-  expect(await approve.isDisabled()).toBe(true);
+  const expiredRefuse = page.getByRole('button', { name: 'Refuse request', exact: true });
+  expect(await expiredRefuse.isEnabled()).toBe(true);
+  await expiredRefuse.click();
+  await vi.waitFor(() => expect(state.requests.filter(request => request.path.endsWith('/decision'))).toHaveLength(2));
+  expect(state.requests.filter(request => request.path.endsWith('/decision')).at(-1)?.body).toEqual({
+    approvalId: '66666666-6666-4666-8666-666666666666', decision: 'abort',
+  });
   state.runs[0] = {
-    ...initialRun(),
+    ...initialRun(), step: 'submit-transfer',
     state: 'awaiting-human',
     intervention: {
       ...intervention,
       id: '33333333-3333-4333-8333-333333333333',
-      request: { kind: 'locator_failed', reason: 'Repair the exact active page' },
+      request: { kind: 'locator_failed', reason: 'Repair the exact active page', capability: capability.id, goal: 'Repair fixture', url: 'https://offline.example/review' },
     },
   };
   await page.keyboard.press('Escape');
@@ -1844,6 +1854,8 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
+  await dialog.getByText('submit-transfer', { exact: true }).waitFor();
+  await dialog.getByText('https://offline.example/review', { exact: true }).waitFor();
   await retry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve', 'retry']));
   state.runs[0] = {
@@ -1865,7 +1877,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.screenshot({ path: join(evidencePath, 'offline-unknown.png'), fullPage: true });
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
-}, 20000);
+}, 30000);
 
 it('resets neutral focus when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();

@@ -54,6 +54,8 @@ export class BrowserSurface implements Surface {
   private frameSequence = 0;
   private lastFrameContext?: FrameContext;
   private readonly pageClosures = new WeakMap<Page, Promise<void>>();
+  private auxiliaryPageCreation = false;
+  private readonly auxiliaryPages = new WeakSet<Page>();
 
   // Configured allowedOrigins bounds intercepted requests and makes foreign
   // frames invisible to observation and untouchable by locator resolution.
@@ -158,6 +160,14 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.context.on('page', opened => {
+      if (!this.page) return;
+      if (this.auxiliaryPageCreation) {
+        this.auxiliaryPages.add(opened);
+        return;
+      }
+      if (!this.auxiliaryPages.has(opened)) this.closeAuxiliaryPage(opened).catch(() => {});
+    });
     this.assertOpen();
     this.page = await this.context.newPage();
     this.assertOpen();
@@ -166,7 +176,6 @@ export class BrowserSurface implements Surface {
     this.page.on('framenavigated', frame => this.bumpFrame(frame));
     this.page.on('framedetached', frame => this.bumpFrame(frame));
     this.page.on('close', () => this.opts.onClose?.());
-    this.page.on('popup', popup => this.closeAuxiliaryPage(popup).catch(() => {}));
     // An unexpected native dialog is never answered "yes" by automation:
     // dismiss (the conservative branch), remember it, and let the executor
     // explain the step that failed because of it.
@@ -529,7 +538,9 @@ export class BrowserSurface implements Surface {
     try {
       await this.context.route('**/*', routeReadOnlyRequest);
       routeInstalled = true;
-      page = await this.context.newPage();
+      this.auxiliaryPageCreation = true;
+      try { page = await this.context.newPage(); }
+      finally { this.auxiliaryPageCreation = false; }
       for (const opened of createdPages) if (opened !== page) markUnexpectedPage(opened);
       if (violation) throw new Error(violation);
       page.on('framenavigated', () => { navigation++; });
