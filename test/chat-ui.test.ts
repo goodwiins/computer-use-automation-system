@@ -2605,13 +2605,21 @@ it('offline operator review controls require live authority, keyboard focus, bro
   await page.setViewportSize({ width: 320, height: 900 });
   await page.screenshot({ path: walkthroughScreenshotPath('review-320.png'), fullPage: true });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await approve.focus();
-  await page.keyboard.press('Enter');
-  await page.keyboard.press('Enter');
+  let releaseDecision!: () => void;
+  const decisionReady = new Promise<void>(resolve => { releaseDecision = resolve; });
+  // Keep the submission state observable before authoritative refresh removes the approval panel.
+  await page.route(`**/runs/${runId}/decision`, async route => { await decisionReady; await route.continue(); }, { times: 1 });
+  try {
+    await approve.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
+    await submitted.waitFor();
+    expect(await approve.isDisabled()).toBe(true);
+    expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+    expect(state.decisions).toEqual([]);
+  } finally { releaseDecision(); }
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
-  const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
-  await submitted.waitFor();
-  expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
   expect(state.requests.find(request => request.path.endsWith('/decision'))?.body).toEqual({ approvalId, decision: 'approve' });
   state.runs[0] = {
     ...initialRun(),
