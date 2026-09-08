@@ -4,6 +4,9 @@ import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import {
   journalDigest,
+  verifyJournalSignature,
+  JournalAuthenticationError,
+  validateRunTransition,
   journalRecoveryDigest,
   type JournalLookup,
   type JournalRecoveryLookup,
@@ -57,6 +60,7 @@ type RunRow = {
   invocation_scope: InvocationScope | null;
   state: JournalRecord['state'];
   dispatch_intent: boolean;
+  signature: string | null;
 };
 type AuthorityRow = { import_id: string | null; source_digest: string | null; owner_id: string | null };
 
@@ -116,9 +120,9 @@ function dateValue(value: string): Date {
   return parsed;
 }
 
-function recordFromRow(row: RunRow): JournalRecord {
+function recordFromRow(row: RunRow, key: string): JournalRecord {
   const date = row.created_at instanceof Date ? row.created_at : new Date(row.created_at);
-  if (!Number.isFinite(date.getTime())) throw new Error('Journal row validation failed');
+  if (!Number.isFinite(date.getTime())) throw new JournalAuthenticationError();
   try {
     const value = {
       kind: row.kind,
@@ -133,8 +137,18 @@ function recordFromRow(row: RunRow): JournalRecord {
       state: row.state,
       ...(row.invocation_scope === null || row.invocation_scope === undefined ? {} : { invocationScope: row.invocation_scope }),
     };
+    verifyJournalSignature(key, signedRun(value, row.dispatch_intent), row.signature);
     return record.parse(value);
-  } catch { throw new Error('Journal row validation failed'); }
+  } catch { throw new JournalAuthenticationError(); }
+}
+
+function signedRun(value: JournalRecord, dispatchIntent: boolean): unknown {
+  return { domain: 'meridian.postgres-run.v1', record: value, dispatchIntent };
+}
+async function verifiedRuns(client: PoolClient, key: string): Promise<JournalRecord[]> {
+  // ponytail: scan all rows so altered capability/state cannot hide quarantine; authenticated indexing if scale requires it.
+  const result = await client.query<RunRow>('SELECT * FROM meridian_runs');
+  return result.rows.map(row => recordFromRow(row, key));
 }
 
 function requestConflict(message: string): RequestError {
@@ -167,7 +181,7 @@ async function staticTransaction<T>(pool: Pool, work: (client: PoolClient) => Pr
       if (commitAttempted) discard = true;
       try { await client.query('ROLLBACK'); }
       catch { discard = true; }
-      if (error instanceof RequestError) throw error;
+      if (error instanceof RequestError || error instanceof JournalAuthenticationError) throw error;
       throw new Error('Journal operation failed');
     }
   } finally { client.release(discard); }
@@ -225,7 +239,10 @@ export class PostgresJournal implements RunJournal {
       const marker = authority.rows[0];
       if (!marker) throw requestConflict('Journal authority is not initialized');
       if (marker.import_id !== null || marker.source_digest !== null) {
-        if (marker.import_id === validatedImport && marker.source_digest === validatedDigest) return;
+        if (marker.import_id === validatedImport && marker.source_digest === validatedDigest) {
+          await verifiedRuns(client, key);
+          return;
+        }
         throw requestConflict('Journal snapshot import is already initialized');
       }
       if (!initialize) throw requestConflict('Journal authority is not initialized');
@@ -241,10 +258,11 @@ export class PostgresJournal implements RunJournal {
         try {
           await client.query(
             `INSERT INTO meridian_runs
-              (run_id, kind, caller, capability, version, request, recovery_request, identity, created_at, state, dispatch_intent, invocation_scope)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+              (run_id, kind, caller, capability, version, request, recovery_request, identity, created_at, state, dispatch_intent, invocation_scope, signature)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
             [item.runId, item.kind, item.caller, item.capability, item.version, item.request, item.recoveryRequest ?? null,
-              item.identity, dateValue(item.createdAt), importedState, dispatchIntent, item.invocationScope ?? null],
+              item.identity, dateValue(item.createdAt), importedState, dispatchIntent, item.invocationScope ?? null,
+              journalDigest(key, signedRun({ ...item, createdAt: dateValue(item.createdAt).toISOString(), state: importedState }, dispatchIntent))],
           );
           await client.query(
             `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
@@ -284,6 +302,7 @@ export class PostgresJournal implements RunJournal {
         throw requestConflict('Journal import identity does not match');
       }
       if (marker.owner_id !== null) throw requestConflict('Journal is already owned');
+      await verifiedRuns(client, key);
       await client.query(
         `UPDATE meridian_journal_authority SET owner_id = $1 WHERE singleton = true AND owner_id IS NULL`,
         [ownerId],
@@ -292,7 +311,8 @@ export class PostgresJournal implements RunJournal {
     return new PostgresJournal(pool, ownerId, key);
   }
 
-  static async recover(pool: Pool, ownerId: string): Promise<void> {
+  static async recover(pool: Pool, ownerId: string, key: string): Promise<void> {
+    validateKey(key);
     const owner = parse(uuid, ownerId, 'Invalid journal owner');
     await staticTransaction(pool, async client => {
       const authority = await client.query<AuthorityRow>(
@@ -301,11 +321,14 @@ export class PostgresJournal implements RunJournal {
       );
       const marker = authority.rows[0];
       if (!marker || marker.owner_id === null || marker.owner_id !== owner) throw requestConflict('Journal owner is no longer valid');
-      await client.query(
-        `UPDATE meridian_runs
-         SET state = CASE WHEN dispatch_intent THEN 'POST_OUTCOME_UNKNOWN' ELSE 'interrupted' END
-         WHERE state IN ('reserved', 'running', 'dispatching')`,
-      );
+      const rows = await client.query<RunRow>('SELECT * FROM meridian_runs');
+      for (const row of rows.rows) {
+        const current = recordFromRow(row, key);
+        if (!ACTIVE_STATES.includes(current.state as typeof ACTIVE_STATES[number])) continue;
+        const next = { ...current, state: row.dispatch_intent ? 'POST_OUTCOME_UNKNOWN' as const : 'interrupted' as const };
+        await client.query('UPDATE meridian_runs SET state = $1, signature = $2 WHERE run_id = $3',
+          [next.state, journalDigest(key, signedRun(next, row.dispatch_intent)), next.runId]);
+      }
       const released = await client.query(
         `UPDATE meridian_journal_authority SET owner_id = NULL
          WHERE singleton = true AND owner_id = $1`,
@@ -326,14 +349,14 @@ export class PostgresJournal implements RunJournal {
     if (!parsedId.success) return undefined;
     const id = parsedId.data;
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const result = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature
          FROM meridian_runs WHERE run_id = $1`,
         [id],
       );
-      return result.rows[0] ? recordFromRow(result.rows[0]) : undefined;
-    });
+      return result.rows[0] ? recordFromRow(result.rows[0], this.key) : undefined;
+    }, { readOnly: true });
   }
 
   async getMany(runIds: readonly string[]): Promise<Map<string, JournalRecord>> {
@@ -341,45 +364,45 @@ export class PostgresJournal implements RunJournal {
     const ids = validateRunBatch(runIds);
     if (ids.length === 0) return new Map();
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const result = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature
          FROM meridian_runs WHERE run_id = ANY($1::uuid[])`,
         [ids],
       );
       const records = new Map(result.rows.map(row => {
-        const record = recordFromRow(row);
+        const record = recordFromRow(row, this.key);
         return [record.runId, record] as const;
       }));
       return new Map(ids.flatMap(runId => {
         const record = records.get(runId);
         return record ? [[runId, record] as const] : [];
       }));
-    });
+    }, { readOnly: true });
   }
 
   async list(): Promise<JournalRecord[]> {
     this.assertHealthy();
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const result = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature
          FROM meridian_runs ORDER BY created_at, run_id`,
       );
-      return result.rows.map(recordFromRow);
-    });
+      return result.rows.map(row => recordFromRow(row, this.key));
+    }, { readOnly: true });
   }
 
   async recent(caller: string, options: RecentHistoryOptions = {}): Promise<JournalRecord[]> {
     this.assertHealthy();
     const actionable = validateRecentHistory(caller, options);
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const owner = options.legacyOperator ? "caller NOT LIKE 'subject:%' AND $1::text = 'operator'" : 'caller = $1';
       const result = await client.query<RunRow>(
         `SELECT * FROM (
           SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity,
-            created_at, invocation_scope, state, dispatch_intent
+            created_at, invocation_scope, state, dispatch_intent, signature
           FROM meridian_runs WHERE ${owner}
             AND ((invocation_scope IS DISTINCT FROM 'member-identity'
               AND NOT (invocation_scope IS NULL AND capability IS NOT DISTINCT FROM $2::text))
@@ -389,21 +412,17 @@ export class PostgresJournal implements RunJournal {
         ) recent ORDER BY created_at, run_id`,
         [caller, options.legacyPrivateCapability ?? null, actionable, MAX_RECENT_HISTORY],
       );
-      return result.rows.map(recordFromRow);
-    });
+      return result.rows.map(row => recordFromRow(row, this.key));
+    }, { readOnly: true });
   }
 
   async hasUnknown(capability: string): Promise<boolean> {
     this.assertHealthy();
     const name = validateCapability(capability);
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
-      const result = await client.query<{ present: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM meridian_runs WHERE capability = $1 AND state = 'POST_OUTCOME_UNKNOWN') AS present`,
-        [name],
-      );
-      return result.rows[0]?.present === true;
-    });
+      await this.lockAuthority(client, 'read');
+      return (await verifiedRuns(client, this.key)).some(row => row.capability === name && row.state === 'POST_OUTCOME_UNKNOWN');
+    }, { readOnly: true });
   }
 
   async findRequest(caller: string, key: string): Promise<JournalRecord | undefined> {
@@ -412,9 +431,9 @@ export class PostgresJournal implements RunJournal {
     validateIdempotencyKey(key);
     const identity = safeDigest(this.key, { caller: principal, key });
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       return this.findRequestWithIdentity(client, principal, identity);
-    });
+    }, { readOnly: true });
   }
 
   async findRequests(caller: string, keys: readonly string[]): Promise<Map<string, JournalRecord>> {
@@ -424,18 +443,18 @@ export class PostgresJournal implements RunJournal {
     if (!requested.length) return new Map();
     const identities = requested.map(key => safeDigest(this.key, { caller: principal, key }));
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const result = await client.query<RunRow & { request_identity: string }>(
         `SELECT q.identity AS request_identity, r.run_id::text, r.kind, r.caller, r.capability, r.version,
-          r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
+          r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent, r.signature
          FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
          WHERE q.identity = ANY($1::text[]) AND q.caller = $2 AND r.caller = $2`, [identities, principal]);
-      const records = new Map(result.rows.map(row => [row.request_identity, recordFromRow(row)]));
+      const records = new Map(result.rows.map(row => [row.request_identity, recordFromRow(row, this.key)]));
       return new Map(requested.flatMap((key, index) => {
         const record = records.get(identities[index]!);
         return record ? [[key, record] as const] : [];
       }));
-    });
+    }, { readOnly: true });
   }
 
   async unknownCapabilities(capabilities: readonly string[]): Promise<Set<string>> {
@@ -443,12 +462,9 @@ export class PostgresJournal implements RunJournal {
     const requested = validateTextBatch(capabilities);
     if (!requested.length) return new Set();
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
-      const result = await client.query<{ capability: string }>(
-        `SELECT DISTINCT capability FROM meridian_runs
-         WHERE capability = ANY($1::text[]) AND state = 'POST_OUTCOME_UNKNOWN'`, [requested]);
-      return new Set(result.rows.map(row => validateCapability(row.capability)));
-    });
+      await this.lockAuthority(client, 'read');
+      return new Set((await verifiedRuns(client, this.key)).filter(row => requested.includes(row.capability) && row.state === 'POST_OUTCOME_UNKNOWN').map(row => row.capability));
+    }, { readOnly: true });
   }
 
   async lookup(caller: string, key: string, request: unknown): Promise<JournalLookup> {
@@ -458,11 +474,11 @@ export class PostgresJournal implements RunJournal {
     const identity = safeDigest(this.key, { caller: principal, key });
     const digest = safeDigest(this.key, request);
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const existing = await this.findRequestWithIdentity(client, principal, identity);
       if (existing && existing.request !== digest) throw requestConflict('Idempotency key already identifies another request');
       return { existing, identity, digest };
-    });
+    }, { readOnly: true });
   }
 
   async recover(caller: string, key: string, request: unknown): Promise<JournalRecoveryLookup> {
@@ -472,10 +488,10 @@ export class PostgresJournal implements RunJournal {
     const identity = safeDigest(this.key, { caller: principal, key });
     const digest = journalRecoveryDigest(this.key, request);
     return this.transaction(async client => {
-      await this.lockAuthority(client, 'share');
+      await this.lockAuthority(client, 'read');
       const existing = await this.findRequestWithIdentity(client, principal, identity);
       return { existing, matches: existing?.recoveryRequest === digest, direct: existing?.identity === identity };
-    });
+    }, { readOnly: true });
   }
 
   async reserve(caller: string, key: string, capability: string, version: string, request: unknown,
@@ -491,32 +507,30 @@ export class PostgresJournal implements RunJournal {
     const digest = safeDigest(this.key, request);
     const recoveryDigest = options?.recoveryRequest === undefined
       ? undefined : journalRecoveryDigest(this.key, options.recoveryRequest);
-    return this.transaction(async client => {
+    return this.transaction(async (client, mutating) => {
       await this.lockAuthority(client);
+      const runs = await verifiedRuns(client, this.key);
       const existing = await this.findRequestWithIdentity(client, principal, identity);
       if (existing) {
         if (existing.request !== digest) throw requestConflict('Idempotency key already identifies another request');
         return existing;
       }
-      const unknown = await client.query<{ present: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM meridian_runs WHERE capability = $1 AND state = 'POST_OUTCOME_UNKNOWN') AS present`,
-        [name],
-      );
-      if (unknown.rows[0]?.present) throw requestConflict('This capability has an unknown posting outcome; use a new read-only inquiry');
-      const active = await client.query<{ present: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM meridian_runs WHERE state IN ('reserved', 'running', 'dispatching')) AS present`,
-      );
-      if (active.rows[0]?.present) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
+      if (runs.some(row => row.capability === name && row.state === 'POST_OUTCOME_UNKNOWN')) throw requestConflict('This capability has an unknown posting outcome; use a new read-only inquiry');
+      if (runs.some(row => ACTIVE_STATES.includes(row.state as typeof ACTIVE_STATES[number]))) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
       const runId = randomUUID();
       const createdAt = new Date();
+      const reserved: JournalRecord = { runId, kind: requestedKind, caller: principal, capability: name, version: release,
+        request: digest, identity, createdAt: createdAt.toISOString(), state: 'reserved', invocationScope,
+        ...(recoveryDigest === undefined ? {} : { recoveryRequest: recoveryDigest }) };
       let inserted: { rows: RunRow[] };
       try {
+        mutating();
         inserted = await client.query<RunRow>(
           `INSERT INTO meridian_runs
-            (run_id, kind, caller, capability, version, request, recovery_request, identity, created_at, state, dispatch_intent, invocation_scope)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reserved', false, $10)
-           RETURNING run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent`,
-          [runId, requestedKind, principal, name, release, digest, recoveryDigest ?? null, identity, createdAt, invocationScope],
+            (run_id, kind, caller, capability, version, request, recovery_request, identity, created_at, state, dispatch_intent, invocation_scope, signature)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reserved', false, $10, $11)
+           RETURNING run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature`,
+          [runId, requestedKind, principal, name, release, digest, recoveryDigest ?? null, identity, createdAt, invocationScope, journalDigest(this.key, signedRun(reserved, false))],
         );
         await client.query(
           `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
@@ -530,7 +544,7 @@ export class PostgresJournal implements RunJournal {
         }
         throw error;
       }
-      return recordFromRow(inserted.rows[0]!);
+      return recordFromRow(inserted.rows[0]!, this.key);
     });
   }
 
@@ -540,13 +554,14 @@ export class PostgresJournal implements RunJournal {
     validateIdempotencyKey(key);
     const id = validateRunId(runId);
     const identity = safeDigest(this.key, { caller: principal, key });
-    await this.transaction(async client => {
+    await this.transaction(async (client, mutating) => {
       await this.lockAuthority(client);
       const target = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature
          FROM meridian_runs WHERE run_id = $1 FOR UPDATE`,
         [id],
       );
+      if (target.rows[0]) recordFromRow(target.rows[0], this.key);
       if (!target.rows[0] || target.rows[0].caller !== principal) throw new RequestError(403, 'Run belongs to another principal');
       const existing = await client.query<{ identity: string; caller: string; request: string; run_id: string; is_alias: boolean }>(
         `SELECT identity, caller, request, run_id::text, is_alias FROM meridian_run_requests WHERE identity = $1`, [identity],
@@ -557,6 +572,7 @@ export class PostgresJournal implements RunJournal {
         throw requestConflict('Idempotency key already identifies another request');
       }
       try {
+        mutating();
         await client.query(
           `INSERT INTO meridian_run_requests (identity, caller, request, run_id, is_alias)
            VALUES ($1, $2, $3, $4, true)`,
@@ -573,28 +589,28 @@ export class PostgresJournal implements RunJournal {
     this.assertHealthy();
     const id = validateRunId(runId);
     const requested = validateState(nextState);
-    await this.transaction(async client => {
+    await this.transaction(async (client, mutating) => {
       await this.lockAuthority(client);
       const found = await client.query<RunRow>(
-        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
+        `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent, signature
          FROM meridian_runs WHERE run_id = $1 FOR UPDATE`,
         [id],
       );
       const current = found.rows[0];
       if (!current) throw new RequestError(404, 'Unknown journal run');
+      const authenticated = recordFromRow(current, this.key);
       if (!ACTIVE_STATES.includes(current.state as typeof ACTIVE_STATES[number])) {
         if (current.state === requested) return;
         throw requestConflict('Terminal journal state cannot be changed');
       }
-      if (current.state === 'dispatching' && (requested === 'reserved' || requested === 'running')) {
-        throw requestConflict('Dispatch intent cannot be cleared');
-      }
+      validateRunTransition(current.state, requested);
       let stateToWrite = requested;
       if (current.state === 'dispatching' && (requested === 'failure' || requested === 'business_outcome' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
       if (current.dispatch_intent && (requested === 'failure' || requested === 'business_outcome' || requested === 'interrupted')) stateToWrite = 'POST_OUTCOME_UNKNOWN';
+      mutating();
       await client.query(
-        `UPDATE meridian_runs SET state = $1, dispatch_intent = CASE WHEN $1 = 'dispatching' THEN true ELSE dispatch_intent END WHERE run_id = $2`,
-        [stateToWrite, id],
+        `UPDATE meridian_runs SET state = $1, dispatch_intent = CASE WHEN $1 = 'dispatching' THEN true ELSE dispatch_intent END, signature = $3 WHERE run_id = $2`,
+        [stateToWrite, id, journalDigest(this.key, signedRun({ ...authenticated, state: stateToWrite }, current.dispatch_intent || stateToWrite === 'dispatching'))],
       );
     });
   }
@@ -609,12 +625,10 @@ export class PostgresJournal implements RunJournal {
   }
 
   private async closeInternal(): Promise<void> {
-    await this.transaction(async client => {
+    await this.transaction(async (client, mutating) => {
       await this.lockAuthority(client);
-      const active = await client.query<{ present: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM meridian_runs WHERE state IN ('reserved', 'running', 'dispatching')) AS present`,
-      );
-      if (active.rows[0]?.present) throw requestConflict('Cannot close while a run is active');
+      if ((await verifiedRuns(client, this.key)).some(row => ACTIVE_STATES.includes(row.state as typeof ACTIVE_STATES[number]))) throw requestConflict('Cannot close while a run is active');
+      mutating();
       const released = await client.query(
         `UPDATE meridian_journal_authority SET owner_id = NULL WHERE singleton = true AND owner_id = $1`,
         [this.ownerId],
@@ -626,18 +640,18 @@ export class PostgresJournal implements RunJournal {
 
   private async findRequestWithIdentity(client: PoolClient, caller: string, identity: string): Promise<JournalRecord | undefined> {
     const result = await client.query<RunRow>(
-      `SELECT r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
+      `SELECT r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent, r.signature
        FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
        WHERE q.identity = $1 AND q.caller = $2`,
       [identity, caller],
     );
-    return result.rows[0] ? recordFromRow(result.rows[0]) : undefined;
+    return result.rows[0] ? recordFromRow(result.rows[0], this.key) : undefined;
   }
 
-  private async lockAuthority(client: PoolClient, mode: 'share' | 'update' = 'update'): Promise<AuthorityRow> {
+  private async lockAuthority(client: PoolClient, mode: 'read' | 'update' = 'update'): Promise<AuthorityRow> {
     const result = await client.query<AuthorityRow>(
       `SELECT import_id::text, source_digest, owner_id::text
-       FROM meridian_journal_authority WHERE singleton = true FOR ${mode === 'share' ? 'SHARE' : 'UPDATE'}`,
+       FROM meridian_journal_authority WHERE singleton = true ${mode === 'read' ? '' : 'FOR UPDATE'}`,
     );
     const marker = result.rows[0];
     if (!marker || marker.import_id === null || marker.source_digest === null) throw requestConflict('Journal is not initialized');
@@ -649,35 +663,34 @@ export class PostgresJournal implements RunJournal {
     return this.poisoned ??= new Error(POISON_MESSAGE);
   }
 
-  private async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+  private async transaction<T>(work: (client: PoolClient, mutating: () => void) => Promise<T>, options: { readOnly?: boolean } = {}): Promise<T> {
     this.assertHealthy();
     let client: PoolClient | undefined;
     let discard = false;
+    let mutationAttempted = false;
     try {
       try { client = await this.pool.connect(); }
-      catch { throw this.poison(); }
+      catch { throw new RequestError(503, 'Journal is unavailable; retry'); }
       try {
-        await client.query('BEGIN');
+        await client.query(options.readOnly ? 'BEGIN READ ONLY' : 'BEGIN');
         await configureTransactionTimeouts(client);
-      }
-      catch { discard = true; throw this.poison(); }
+      } catch { discard = true; throw new RequestError(503, 'Journal is unavailable; retry'); }
       try {
-        const result = await work(client);
+        const result = await work(client, () => { mutationAttempted = true; });
         this.assertHealthy();
-        try { await client.query('COMMIT'); }
-        catch { discard = true; throw this.poison(); }
+        await client.query('COMMIT');
         return result;
       } catch (error) {
-        if (error === this.poisoned) { discard = true; throw error; }
-        if (error instanceof RequestError) {
-          try { await client.query('ROLLBACK'); }
-          catch { discard = true; throw this.poison(); }
-          throw error;
-        }
         try { await client.query('ROLLBACK'); }
-        catch { discard = true; }
+        catch {
+          discard = true;
+          if (mutationAttempted) throw this.poison();
+        }
+        if (error === this.poisoned) { discard = true; throw error; }
+        if (error instanceof RequestError || error instanceof JournalAuthenticationError) throw error;
         discard = true;
-        throw this.poison();
+        if (mutationAttempted) throw this.poison();
+        throw new RequestError(503, 'Journal is busy; retry');
       }
     } finally { client?.release(discard); }
   }

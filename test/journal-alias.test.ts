@@ -182,3 +182,14 @@ it('fails closed after alias rename when directory fsync fails, then recovers th
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('R4-B4 rejects a filesystem run moving from running to reserved', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'journal-transition-'));
+  const journal = new Journal(dir, 'h'.repeat(64));
+  try {
+    const run = journal.reserve('caller', 'backwards', 'write', '1.0.0', {});
+    journal.update(run.runId, 'running');
+    expect(() => journal.update(run.runId, 'reserved')).toThrow('Run state cannot move backwards');
+    expect(journal.get(run.runId)?.state).toBe('running');
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});

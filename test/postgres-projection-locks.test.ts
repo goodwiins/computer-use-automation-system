@@ -25,10 +25,6 @@ const projections: Projection[] = [
   { name: 'findRequests', execute: journal => journal.findRequests(caller, ['find-request-key-01234567890123456789']) },
 ];
 
-function waitFor(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 async function expectCompletes<T>(promise: Promise<T>, timeoutMs = 1_500): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -38,24 +34,7 @@ async function expectCompletes<T>(promise: Promise<T>, timeoutMs = 1_500): Promi
   finally { if (timer) clearTimeout(timer); }
 }
 
-async function waitForAuthorityLockWait(pool: Pool, timeoutMs = 1_500): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await pool.query<{ waiting: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM pg_stat_activity
-         WHERE pid <> pg_backend_pid()
-           AND wait_event_type = 'Lock'
-           AND query ILIKE '%meridian_journal_authority%'
-       ) AS waiting`,
-    );
-    if (result.rows[0]?.waiting) return;
-    await waitFor(25);
-  }
-  throw new Error(`No authority lock wait observed within ${timeoutMs}ms`);
-}
-
-/** Hold the first authority lock taken by a journal projection until released. */
+/** Pause a projection after its authority read until released. */
 function gateFirstAuthorityLock(pool: Pool) {
   let armed = true;
   let heldResolve!: () => void;
@@ -71,7 +50,7 @@ function gateFirstAuthorityLock(pool: Pool) {
     client.query = (async (text: unknown, ...args: unknown[]) => {
       const result = await (originalQuery as (...queryArgs: unknown[]) => Promise<unknown>)(text, ...args);
       if (armed && !intercepted && typeof text === 'string'
-        && /FROM meridian_journal_authority[\s\S]+FOR (?:UPDATE|SHARE)/i.test(text)) {
+        && /FROM meridian_journal_authority/i.test(text)) {
         intercepted = true;
         armed = false;
         heldResolve();
@@ -125,16 +104,15 @@ describe.sequential('PostgresJournal projection locks', () => {
     }
   }, 15_000);
 
-  it('keeps mutations behind an active projection until the reader commits', async () => {
+  it('allows mutations while a projection is paused after checking authority', async () => {
     const gate = gateFirstAuthorityLock(database.pool);
     const firstRead = journal.list();
     await gate.held;
-    const observer = database.openPool();
     let writer: Promise<Awaited<ReturnType<PostgresJournal['reserve']>>> | undefined;
 
     try {
       writer = journal.reserve(caller, 'blocked-writer', capability, version, {});
-      await waitForAuthorityLockWait(observer);
+      await expectCompletes(writer);
       gate.release();
       await firstRead.catch(() => {});
       await expect(writer).resolves.toMatchObject({ state: 'reserved' });
@@ -142,21 +120,19 @@ describe.sequential('PostgresJournal projection locks', () => {
       gate.release();
       await firstRead.catch(() => {});
       await writer?.catch(() => {});
-      await database.closePool(observer);
     }
   }, 10_000);
 
-  it('keeps ownership changes behind an active projection and fences the old owner', async () => {
+  it('allows ownership changes during a projection and fences subsequent old-owner work', async () => {
     const gate = gateFirstAuthorityLock(database.pool);
     const firstRead = journal.list();
     await gate.held;
     const recoveryPool = database.openPool();
-    const observer = database.openPool();
     let recovery: Promise<void> | undefined;
 
     try {
-      recovery = PostgresJournal.recover(recoveryPool, journal.ownerId);
-      await waitForAuthorityLockWait(observer);
+      recovery = PostgresJournal.recover(recoveryPool, journal.ownerId, key);
+      await expectCompletes(recovery);
       gate.release();
       await firstRead.catch(() => {});
       await expect(recovery).resolves.toBeUndefined();
@@ -165,7 +141,6 @@ describe.sequential('PostgresJournal projection locks', () => {
       gate.release();
       await firstRead.catch(() => {});
       await recovery?.catch(() => {});
-      await database.closePool(observer);
       await database.closePool(recoveryPool);
     }
   }, 10_000);
@@ -173,7 +148,7 @@ describe.sequential('PostgresJournal projection locks', () => {
   it('fails closed for projections after authority ownership is lost', async () => {
     const recoveryPool = database.openPool();
     try {
-      await PostgresJournal.recover(recoveryPool, journal.ownerId);
+      await PostgresJournal.recover(recoveryPool, journal.ownerId, key);
       await expect(journal.getMany([randomUUID()])).rejects.toMatchObject({ status: 409 });
       await expect(journal.list()).rejects.toMatchObject({ status: 409 });
     } finally {

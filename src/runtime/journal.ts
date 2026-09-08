@@ -50,7 +50,11 @@ export interface RunJournal {
   close(): Awaitable<void>;
 }
 export class RequestError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly headers?: Readonly<Record<string, string>>,
+  ) { super(message); }
 }
 export function validateIdempotencyKey(key: string): void {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) {
@@ -87,12 +91,26 @@ export function journalRecoveryDigest(key: string, value: unknown): string {
   return journalDigest(key, { domain: 'meridian.external-invocation-recovery.v1', request: value });
 }
 
+export class JournalAuthenticationError extends Error {
+  constructor() { super('Journal authentication failed'); }
+}
+export function verifyJournalSignature(key: string, value: unknown, signature: unknown): void {
+  const actual = Buffer.from(journalDigest(key, value));
+  const supplied = Buffer.from(String(signature));
+  if (actual.length !== supplied.length || !timingSafeEqual(actual, supplied)) throw new JournalAuthenticationError();
+}
+const STATE_ORDER: Record<JournalRecord['state'], number> = {
+  reserved: 0, running: 1, dispatching: 2,
+  success: 3, business_outcome: 3, failure: 3, interrupted: 3, POST_OUTCOME_UNKNOWN: 3,
+};
+export function validateRunTransition(current: JournalRecord['state'], next: JournalRecord['state']): void {
+  if (STATE_ORDER[next] < STATE_ORDER[current]) throw new RequestError(409, 'Run state cannot move backwards');
+}
+
 export function readSignedEnvelope(path: string, key: string): unknown {
   if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
   const envelope = JSON.parse(readFileSync(path, 'utf8'));
-  const actual = Buffer.from(createHmac('sha256', key).update(canonical(envelope.record)).digest('hex'));
-  const signature = Buffer.from(String(envelope.signature));
-  if (actual.length !== signature.length || !timingSafeEqual(actual, signature)) throw new Error('Journal authentication failed');
+  verifyJournalSignature(key, envelope.record, envelope.signature);
   return envelope.record;
 }
 
@@ -337,8 +355,8 @@ export class Journal implements RunJournal {
       if (record.state === state) return;
       throw new Error('Terminal journal state cannot be changed');
     }
+    validateRunTransition(record.state, state);
     if (record.state === 'dispatching') {
-      if (state === 'reserved' || state === 'running') throw new Error('Dispatch intent cannot be cleared');
       if (state === 'failure' || state === 'business_outcome' || state === 'interrupted') state = 'POST_OUTCOME_UNKNOWN';
     }
     this.persist({ ...record, state });

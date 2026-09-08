@@ -16,7 +16,7 @@ import type { SubjectCredential } from '../src/server/auth.js';
 import { ConversationStore } from '../src/server/conversations.js';
 import { createApp } from '../src/server/http.js';
 import { InvocationService } from '../src/server/service.js';
-import { createConversationController } from '../src/server/ui/conversations.js';
+import { conversationStatusText, createConversationController } from '../src/server/ui/conversations.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
 const ownerId = '11111111-1111-4111-8111-111111111111';
@@ -55,6 +55,7 @@ type AcceptanceFixture = {
   store: ConversationStore;
   connect(token: string): Promise<void>;
   dropNextEventResponse(): void;
+  failNextEventResponse(status: number, body: unknown): void;
   releaseChatStream(): void;
   useStatusRun(runId: string): void;
 };
@@ -185,6 +186,7 @@ async function fixture(options: {
     uiDir: resolve('out'),
   });
   let dropEventResponse = false;
+  let eventFailure: { status: number; body: unknown } | undefined;
   server.on('request', (req, res) => {
     const record: RecordedRequest = {
       index: requests.length,
@@ -208,6 +210,14 @@ async function fixture(options: {
         res.destroy();
         return res;
       }) as typeof res.end;
+    }
+    if (eventFailure && req.method === 'POST' && /^\/conversations\/[0-9a-f-]+\/events$/.test(req.url ?? '')) {
+      const failure = eventFailure;
+      eventFailure = undefined;
+      res.statusCode = failure.status;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(failure.body));
+      return;
     }
     if (req.url === '/api/chat') {
       const originalWrite = res.write.bind(res);
@@ -267,6 +277,7 @@ async function fixture(options: {
       await page.getByRole('navigation', { name: 'Saved conversations' }).waitFor();
     },
     dropNextEventResponse() { dropEventResponse = true; },
+    failNextEventResponse(status, body) { eventFailure = { status, body }; },
     releaseChatStream,
     useStatusRun(runId: string) { modelStatusRunId = runId; },
   };
@@ -564,9 +575,23 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     const regularIds = Array.from({ length: 51 }, (_, index) =>
       `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
     );
-    for (const id of regularIds) await current.store.create(ownerId, id);
     const initiallyArchivedId = '90000000-0000-4000-8000-000000000001';
-    await current.store.create(ownerId, initiallyArchivedId);
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversations (id, owner_id)
+       SELECT seeded.id, $2::uuid
+       FROM unnest($1::uuid[]) AS seeded(id)`,
+      [[...regularIds, initiallyArchivedId], ownerId],
+    );
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversation_subject_quotas (owner_id, conversation_count, event_count, rate_tokens, rate_refilled_at)
+       VALUES ($1, $2, 0, 20, clock_timestamp())
+       ON CONFLICT (owner_id) DO UPDATE
+       SET conversation_count = EXCLUDED.conversation_count,
+           event_count = EXCLUDED.event_count,
+           rate_tokens = EXCLUDED.rate_tokens,
+           rate_refilled_at = EXCLUDED.rate_refilled_at`,
+      [ownerId, regularIds.length + 1],
+    );
     await current.store.archive(ownerId, initiallyArchivedId, true, 0);
 
     await current.connect(ownerToken);
@@ -752,6 +777,241 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     await page.getByRole('textbox', { name: 'Your request', exact: true }).fill('SELECTED_STATUS_CANARY');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.getByText('Conversations not saved; this chat remains usable.', { exact: true }).waitFor();
+  }, 30_000);
+
+  it('keeps a real projection-busy linked-run mutation generic and uncommitted', async () => {
+    const current = await fixture();
+    const firstId = '25500000-0000-4000-8000-000000000001';
+    const secondId = '25500000-0000-4000-8000-000000000002';
+    const firstMessage = { id: 'projection-busy-first', role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const secondMessage = { id: 'projection-busy-second', role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const run = current.journal.reserve(
+      `subject:${ownerId}`, 'projection-busy-linked-run', 'meridian-member-inquiry', '1.0.0', {},
+    );
+    current.journal.update(run.runId, 'success');
+    await current.store.create(ownerId, firstId);
+    await current.store.create(ownerId, secondId);
+    const request = authenticatedRequest(current.origin, ownerToken);
+    const firstController = createConversationController({ subjectId: ownerId, request });
+    const secondController = createConversationController({ subjectId: ownerId, request });
+    await firstController.historyFor(firstId).append({ parentId: null, message: firstMessage } as never);
+    await secondController.historyFor(secondId).append({ parentId: null, message: secondMessage } as never);
+
+    const originalGetMany = current.journal.getMany.bind(current.journal);
+    let projectionEntered!: () => void;
+    let releaseProjection!: () => void;
+    const projectionStarted = new Promise<void>(resolve => { projectionEntered = resolve; });
+    const projectionReleased = new Promise<void>(resolve => { releaseProjection = resolve; });
+    let holdProjection = true;
+    vi.spyOn(current.journal, 'getMany').mockImplementation(async runIds => {
+      const result = await originalGetMany(runIds);
+      if (holdProjection) {
+        holdProjection = false;
+        projectionEntered();
+        await projectionReleased;
+      }
+      return result;
+    });
+
+    let firstLinkError: unknown;
+    const firstLinkSettled = firstController.linkRun(firstMessage.id, run.runId, firstId).then(
+      () => undefined,
+      error => { firstLinkError = error; },
+    );
+    try {
+      await projectionStarted;
+      const beforeEvents = await current.store.events(ownerId, secondId);
+      const beforeQuota = await current.database.pool.query(
+        `SELECT conversation_count, event_count, rate_tokens
+         FROM meridian_conversation_subject_quotas WHERE owner_id = $1`,
+        [ownerId],
+      );
+      await expect(secondController.linkRun(secondMessage.id, run.runId, secondId)).rejects.toMatchObject({ status: 429 });
+      expect(secondController.getState(secondId)).toMatchObject({ status: 'unsaved', revision: 1 });
+      expect((await current.store.events(ownerId, secondId)).events).toEqual(beforeEvents.events);
+      const afterQuota = await current.database.pool.query(
+        `SELECT conversation_count, event_count, rate_tokens
+         FROM meridian_conversation_subject_quotas WHERE owner_id = $1`,
+        [ownerId],
+      );
+      expect(afterQuota.rows).toEqual(beforeQuota.rows);
+
+      releaseProjection();
+      await firstLinkSettled;
+      if (firstLinkError) throw firstLinkError;
+      expect((await current.store.events(ownerId, firstId)).events).toHaveLength(2);
+    } finally {
+      releaseProjection();
+      await firstLinkSettled;
+      firstController.dispose();
+      secondController.dispose();
+      if (firstLinkError) throw firstLinkError;
+    }
+  }, 30_000);
+
+  it('maps real authenticated PostgreSQL capacity and rate failures to truthful adapter states', async () => {
+    const current = await fixture();
+    const capacityId = '26000000-0000-4000-8000-000000000001';
+    const capacitySeedIds = Array.from({ length: 8 }, (_, index) =>
+      `26010000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    );
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversations (id, owner_id)
+       SELECT seeded.id, $2::uuid
+       FROM unnest($1::uuid[]) AS seeded(id)`,
+      [[capacityId, ...capacitySeedIds], ownerId],
+    );
+    for (const [index, seedId] of capacitySeedIds.entries()) {
+      const eventPrefix = `26${String(index + 1).padStart(6, '0')}-0000-4000-9000-`;
+      await current.database.pool.query(
+        `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
+         SELECT ($2 || lpad(value::text, 12, '0'))::uuid, $1, value, 'message_omitted', 'user'
+         FROM generate_series(1, 512) AS values(value)`,
+        [seedId, eventPrefix],
+      );
+      await current.database.pool.query(
+        'UPDATE meridian_conversations SET revision = 512 WHERE id = $1',
+        [seedId],
+      );
+    }
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversation_subject_quotas
+         (owner_id, conversation_count, event_count, rate_tokens, rate_refilled_at)
+       VALUES ($1, 9, 4096, 20, clock_timestamp())
+       ON CONFLICT (owner_id) DO UPDATE
+       SET conversation_count = EXCLUDED.conversation_count,
+           event_count = EXCLUDED.event_count,
+           rate_tokens = EXCLUDED.rate_tokens,
+           rate_refilled_at = EXCLUDED.rate_refilled_at`,
+      [ownerId],
+    );
+    await current.database.pool.query(
+      `UPDATE meridian_conversation_subject_quotas
+       SET rate_tokens = 0, rate_refilled_at = clock_timestamp()
+       WHERE owner_id = $1`,
+      [ownerId],
+    );
+    const capacityEvidence = await current.database.pool.query<{ source_events: string; quota_events: string }>(
+      `SELECT
+         (SELECT count(*)::bigint FROM meridian_conversation_events events
+          JOIN meridian_conversations conversations ON conversations.id = events.conversation_id
+          WHERE conversations.owner_id = $1) AS source_events,
+         quota.event_count AS quota_events
+       FROM meridian_conversation_subject_quotas quota
+       WHERE quota.owner_id = $1`,
+      [ownerId],
+    );
+    expect(capacityEvidence.rows[0]).toEqual({ source_events: '4096', quota_events: '4096' });
+    const capacityController = createConversationController({
+      subjectId: ownerId,
+      request: authenticatedRequest(current.origin, ownerToken),
+    });
+    const capacityMessage = { id: 'capacity-ui-message', role: 'user', parts: [{ type: 'text', text: 'PRIVATE capacity body' }] } as UIMessage;
+    await expect(capacityController.historyFor(capacityId).append({ parentId: null, message: capacityMessage } as never)).rejects.toThrow();
+    expect(capacityController.getState(capacityId)).toMatchObject({ status: 'capacity', revision: 0 });
+    expect(conversationStatusText(capacityController.getState(capacityId).status, true)).toBe(
+      'This item was not saved because conversation storage capacity is full.',
+    );
+    expect(capacityController.isConfirmed(capacityId)).toBe(false);
+    expect(current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${capacityId}/events`)).toHaveLength(1);
+    expect(JSON.stringify(current.requests)).not.toContain('PRIVATE capacity body');
+    capacityController.dispose();
+
+    const rateId = '27000000-0000-4000-8000-000000000001';
+    const rateRequest = authenticatedRequest(current.origin, otherToken);
+    await expect(rateRequest('/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ id: rateId }),
+      headers: { 'Content-Type': 'application/json' },
+    })).resolves.toMatchObject({ status: 201 });
+    const acceptedRateEvent = {
+      id: '27010000-0000-4000-9000-000000000001',
+      kind: 'message_omitted',
+      role: 'user',
+      expectedRevision: 0,
+    };
+    await expect(rateRequest(`/conversations/${rateId}/events`, {
+      method: 'POST',
+      body: JSON.stringify(acceptedRateEvent),
+      headers: { 'Content-Type': 'application/json' },
+    })).resolves.toMatchObject({ status: 201 });
+    const rateEvidence = await current.database.pool.query<{
+      source_conversations: string;
+      source_events: string;
+      quota_conversations: string;
+      quota_events: string;
+      rate_tokens: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::bigint FROM meridian_conversations WHERE owner_id = $1) AS source_conversations,
+         (SELECT count(*)::bigint FROM meridian_conversation_events events
+          JOIN meridian_conversations conversations ON conversations.id = events.conversation_id
+          WHERE conversations.owner_id = $1) AS source_events,
+         quota.conversation_count AS quota_conversations,
+         quota.event_count AS quota_events,
+         quota.rate_tokens
+       FROM meridian_conversation_subject_quotas quota
+       WHERE quota.owner_id = $1`,
+      [otherId],
+    );
+    expect(rateEvidence.rows[0]).toMatchObject({
+      source_conversations: '1', source_events: '1', quota_conversations: '1', quota_events: '1',
+    });
+    expect(rateEvidence.rows[0]?.rate_tokens).toBeLessThan(20);
+    await current.database.pool.query(
+      `UPDATE meridian_conversation_subject_quotas
+       SET rate_tokens = 0, rate_refilled_at = clock_timestamp()
+       WHERE owner_id = $1`,
+      [otherId],
+    );
+    const rateController = createConversationController({
+      subjectId: otherId,
+      request: authenticatedRequest(current.origin, otherToken),
+    });
+    await rateController.adapter.fetch(rateId);
+    const rateEventPostsBefore429 = current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${rateId}/events`).length;
+    const rateMessage = { id: 'rate-ui-message', role: 'user', parts: [{ type: 'text', text: 'PRIVATE rate body' }] } as UIMessage;
+    await expect(rateController.historyFor(rateId).append({ parentId: null, message: rateMessage } as never)).rejects.toThrow();
+    expect(rateController.getState(rateId)).toMatchObject({ status: 'rate-limited', revision: 1 });
+    expect(conversationStatusText(rateController.getState(rateId).status, true)).toBe(
+      'This item was not saved because saving is temporarily rate-limited.',
+    );
+    expect(current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${rateId}/events`)).toHaveLength(rateEventPostsBefore429 + 1);
+    expect(JSON.stringify(current.requests)).not.toContain('PRIVATE rate body');
+    rateController.dispose();
+  }, 30_000);
+
+  it('does not parse or reflect a private conversation failure body in the browser', async () => {
+    const current = await fixture({ browser: true });
+    const page = current.page!;
+    const conversationId = '28000000-0000-4000-8000-000000000001';
+    await current.store.create(ownerId, conversationId);
+    await current.connect(ownerToken);
+    await page.getByRole('button', { name: 'Open Saved conversation', exact: true }).click();
+    await vi.waitFor(() => expect(current.requests.some(request => request.path === `/conversations/${conversationId}/events?after=0&limit=100`)).toBe(true));
+    await page.evaluate(() => {
+      const originalJson = Response.prototype.json;
+      (window as { privateConversationBodyParsed?: boolean }).privateConversationBodyParsed = false;
+      Response.prototype.json = async function instrumentedJson(...args: Parameters<Response['json']>) {
+        const body = await this.clone().text();
+        if (body.includes('PRIVATE_CONVERSATION_FAILURE_CANARY')) {
+          (window as { privateConversationBodyParsed?: boolean }).privateConversationBodyParsed = true;
+        }
+        return originalJson.apply(this, args);
+      };
+    });
+    current.failNextEventResponse(507, {
+      error: 'PRIVATE_CONVERSATION_FAILURE_CANARY',
+      ownerId,
+      count: 4096,
+      sql: 'SELECT private conversation quota details',
+    });
+    await page.getByRole('textbox', { name: 'Your request', exact: true }).fill('UI request remains usable');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.getByText('This item was not saved because conversation storage capacity is full.', { exact: true }).waitFor();
+    expect(await page.evaluate(() => (window as { privateConversationBodyParsed?: boolean }).privateConversationBodyParsed)).toBe(false);
+    expect(await page.locator('#messages').innerText()).not.toContain('PRIVATE_CONVERSATION_FAILURE_CANARY');
+    expect(current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${conversationId}/events`)).toHaveLength(1);
   }, 30_000);
 
   it('does not surface a retained conversation failure after switching to a new local thread', async () => {
