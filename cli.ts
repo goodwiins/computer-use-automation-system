@@ -293,6 +293,7 @@ async function discover(argv: string[]) {
           ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
           : undefined,
         validateCompletion: runtime.validateCompletion,
+        allowedOutputs: meridian ? meridianContracts[name as keyof typeof meridianContracts].outputs : undefined,
       });
 
       const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched, opened.isPoisoned);

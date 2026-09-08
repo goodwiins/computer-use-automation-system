@@ -642,6 +642,7 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   let validator: unknown;
+  let allowed: unknown;
   const surface = { mutationDispatched: false };
   const completion = vi.fn();
   process.exitCode = undefined;
@@ -671,6 +672,7 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
       ...actual,
       runDiscovery: async (_goal: string, _entry: string, _params: Record<string, string | number>, _origins: string[], deps: Parameters<typeof actual.runDiscovery>[4]) => {
         validator = deps.validateCompletion;
+        allowed = deps.allowedOutputs;
         return {
           status, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/members/9001',
           stopReason: status === 'business_outcome' ? 'INSUFFICIENT_FUNDS' : 'fixture',
@@ -687,6 +689,7 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
     const { runCli } = await import('../cli.js');
     await runCli(['discover', '--name', 'meridian-funds-transfer', '--goal', 'Transfer', '--profile', 'meridian', '--entry', 'https://web-sample.interface-hiring.com/signon', '--idempotency-key', 'cli-discovery-transfer', '--param', 'member=9001', '--param', 'sourceShare=9001-A', '--param', 'destinationShare=9001-B', '--param', 'amount=1.00', '--param', 'memo=fixture']);
     expect(validator).toBe(completion);
+    expect(allowed).toEqual(['confirmation']);
     expect(error).not.toHaveBeenCalledWith(expect.stringContaining('canonical'));
     const journalDir = join(dir, 'journal');
     const records = readdirSync(journalDir).filter(name => name.endsWith('.json'))

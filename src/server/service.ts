@@ -426,6 +426,7 @@ export class InvocationService {
               boundParams: { operator: context.operator, password: context.password, branch: context.branch },
               sanitizeObservation: text => running.promptRedactor.redactString(text),
               validateCompletion: running.validateCompletion,
+              allowedOutputs: meridianContracts[id as keyof typeof meridianContracts].outputs,
               escalate: async req => {
                 const detach = await new OperatorConsole(running.browser.page, running.logger, session).recordHumanActions();
                 try { return await approval.wait(req) === 'retry' ? 'retry' : 'abort'; }

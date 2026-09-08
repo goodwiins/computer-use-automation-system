@@ -56,6 +56,14 @@ export interface DiscoveryDeps {
   escalate?: (req: InterventionRequest) => Promise<InterventionDecision>;
   detectors?: Detector[]; // strict profile conditions; omitted for generic discovery
   validateCompletion?: (outputs: Record<string, OutputValue>) => void | Promise<void>;
+  /** Declared output names; extract refuses any other name so exploratory reads cannot poison completion. */
+  allowedOutputs?: readonly string[];
+}
+
+const COMPLETION_FAILURES = ['outputs', 'state', 'frame'] as const;
+function completionFailureCategory(err: unknown): (typeof COMPLETION_FAILURES)[number] | 'other' {
+  const category = (err as { completionFailure?: unknown } | null)?.completionFailure;
+  return COMPLETION_FAILURES.find(known => known === category) ?? 'other';
 }
 
 const MAX_SNAPSHOT_CHARS = 4000;
@@ -169,7 +177,7 @@ export async function runDiscovery(
             const finalUrl = surface.currentUrl();
             try { await deps.validateCompletion?.(outputs); }
             catch (err) {
-              try { logger.log('discovery.completion', { status: 'failure' }); }
+              try { logger.log('discovery.completion', { status: 'failure', completionFailure: completionFailureCategory(err) }); }
               catch { /* Diagnostics must not replace the original completion error. */ }
               throw err;
             }
@@ -231,6 +239,10 @@ export async function runDiscovery(
               await surface.select(descriptor, bindValue(entry.value), undefined, undefined, entry.selectBy);
               respond(`Selected "${entry.value}".`);
             } else {
+              const outputName = String(args.outputName);
+              if (deps.allowedOutputs && !deps.allowedOutputs.includes(outputName)) {
+                throw new Error(`Output "${outputName}" is not declared for this capability; extract only ${deps.allowedOutputs.join(', ')}. Use assert for checkpoints.`);
+              }
               if (args.columns) {
                 entry.rowSelector = typeof args.rowSelector === 'string' ? args.rowSelector : undefined;
                 entry.columns = TableColumn.array().min(1).parse(args.columns);

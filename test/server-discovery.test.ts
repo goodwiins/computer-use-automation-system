@@ -265,4 +265,5 @@ it('forwards the runtime transfer completion validator to discovery', async () =
   expect((await f.settle(accepted.runId)).state).toBe('POST_OUTCOME_UNKNOWN');
   expect(f.run).toHaveBeenCalledOnce();
   expect(forwarded).toBe(f.active().validateCompletion);
+  expect(f.run.mock.calls[0]![4]).toMatchObject({ allowedOutputs: ['confirmation'] });
 });

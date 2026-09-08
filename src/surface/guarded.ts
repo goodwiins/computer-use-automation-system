@@ -134,6 +134,11 @@ export class RunAbortedError extends PolicyViolationError {
 /** Called when an action needs a human (confirm/escalate). Return true to proceed. */
 export type HumanGate = (action: string, risk: RiskClass, reason: string, context?: ActionContext) => Promise<boolean>;
 
+/** Safe completion-failure category; the message itself is never persisted. */
+function completionError(completionFailure: 'outputs' | 'state' | 'frame', message: string): Error {
+  return Object.assign(new Error(message), { completionFailure });
+}
+
 export class GuardedSurface implements Surface {
   mutationDispatched = false;
   effectiveRisk: RiskClass = 'read';
@@ -1199,21 +1204,25 @@ export class GuardedSurface implements Surface {
     const binding = this.runtime?.transfer;
     const baseline = this.transferBaseline;
     if (!binding || !baseline || !this.mutationDispatched || baseline.member !== binding.expected.member) throw new Error('Transfer completion is not bound to a dispatched request');
+    if (Object.keys(outputs).length !== 1 || typeof outputs.confirmation !== 'string' || !outputs.confirmation.trim()) {
+      throw completionError('outputs', 'Transfer outputs must be exactly one non-empty confirmation string');
+    }
     const memberUrl = new URL(`/members/${binding.expected.member}`, baseline.origin).toString();
     await this.navigate(memberUrl);
     const before = this.inner.currentFrame?.();
-    if (!before || this.origin(before.url) !== baseline.origin || this.path(before.url) !== this.path(memberUrl)) throw new Error('Transfer read-back frame is unavailable');
+    if (!before || this.origin(before.url) !== baseline.origin || this.path(before.url) !== this.path(memberUrl)) throw completionError('frame', 'Transfer read-back frame is unavailable');
     const rows = await this.readTable({ ...binding.memberTable.target, frame: before.name }, binding.memberTable.columns, undefined, binding.memberTable.rowSelector);
     const resolved = this.inner.lastResolvedFrame?.();
     const after = this.inner.currentFrame?.();
     if (!resolved || this.origin(resolved.url) !== baseline.origin || !this.sameFrameRevision(before, resolved) || !this.sameFrameRevision(before, after) || this.path(resolved.url) !== this.path(memberUrl)) {
-      throw new Error('Transfer read-back frame changed');
+      throw completionError('frame', 'Transfer read-back frame changed');
     }
     const shares = rows.map(row => {
-      if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw new Error('Transfer resulting state is incomplete');
+      if (typeof row.shareId !== 'string' || typeof row.status !== 'string' || typeof row.balance !== 'string') throw completionError('state', 'Transfer resulting state is incomplete');
       return { share: row.shareId, status: row.status, balance: row.balance };
     });
-    assertTransferResult(binding.expected, baseline.shares, shares, outputs);
+    try { assertTransferResult(binding.expected, baseline.shares, shares, outputs); }
+    catch (err) { throw completionError('state', err instanceof Error ? err.message : 'Transfer resulting state failed validation'); }
   }
   async validateMemberUpdateCompletion(outputs: Record<string, OutputValue>): Promise<void> {
     const binding = this.runtime?.memberUpdate;

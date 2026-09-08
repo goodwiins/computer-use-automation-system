@@ -1312,9 +1312,9 @@ describe('MERIDIAN guarded transfer path', () => {
     await accepted.run.surface.click(target, 1000, 'irreversible');
     expect(accepted.run.surface.mutationDispatched).toBe(true);
     expect(accepted.run.dispatch).toHaveBeenCalledOnce();
-    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).rejects.toThrow(/transfer/i);
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).rejects.toMatchObject({ completionFailure: 'state' });
     accepted.setRows([{ ...eligibleRows[0]!, balance: '1.00' }, { ...eligibleRows[1]!, balance: '1.00' }, eligibleRows[2]!]);
-    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123', transaction: [] })).rejects.toThrow(/transfer/i);
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123', shares: [] })).rejects.toMatchObject({ completionFailure: 'outputs' });
     await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).resolves.toBeUndefined();
     expect(accepted.run.dispatch).toHaveBeenCalledOnce();
   });
@@ -2646,6 +2646,29 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
   });
 });
 
+it('refuses an undeclared output name before touching the surface and completes with the declared one', async () => {
+  const calls = [
+    { name: 'extract', args: { nameAttr: 'shares', outputName: 'shares', reason: 'verify eligible shares' } },
+    { name: 'extract', args: { nameAttr: 'result', outputName: 'confirmation', reason: 'record confirmation' } },
+    { name: 'done', args: { summary: 'complete' } },
+  ];
+  const readText = vi.fn(async () => ({ text: 'CONF-1', report: { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const }));
+  const stub = guarded({ readText });
+  const create = vi.fn(async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  const result = await runDiscovery('transfer', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger, openai: { chat: { completions: { create } } } as never, model: 'fixture', maxSteps: 3,
+    allowedOutputs: ['confirmation'],
+  });
+  expect(result).toMatchObject({ status: 'success', outputs: { confirmation: 'CONF-1' } });
+  expect(readText).toHaveBeenCalledOnce();
+  const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+  expect(events).toContainEqual(expect.objectContaining({ event: 'discovery.action_error', turn: 1 }));
+});
+
 it('retries after a delayed discovery completion rejection and finishes once the read-back passes', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
   const extract = { name: 'extract', args: { nameAttr: 'result', outputName: 'confirmation', reason: 'record confirmation' } };
@@ -2674,7 +2697,7 @@ it('retries after a delayed discovery completion rejection and finishes once the
   expect(validations).toBe(2);
   expect(stub.dispatch).toHaveBeenCalledOnce();
   const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
-  expect(events).toContainEqual(expect.objectContaining({ event: 'discovery.completion', status: 'failure' }));
+  expect(events).toContainEqual(expect.objectContaining({ event: 'discovery.completion', status: 'failure', completionFailure: 'other' }));
   expect(events.filter(event => event.event === 'discovery.finish')).toEqual([expect.objectContaining({ status: 'success' })]);
 });
 
