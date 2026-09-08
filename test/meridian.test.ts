@@ -3376,11 +3376,14 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
   const app = express();
   app.get('/receipt', (_req, res) => res.send(`<table id="transaction" data-token="PRIVATE TABLE TOKEN"><thead><tr><th colspan="2">PRIVATE RECEIPT HEADER</th></tr></thead><tbody>${fields}</tbody></table>`));
   app.get('/custom-receipt', (_req, res) => res.send(`<token-private-9001><table><tbody>${fields}</tbody></table></token-private-9001>`));
+  // Hypothesis fixture: five detail rows with confirmation outside the leaf table.
+  const separateReceipt = `<table><tbody><tr><td>Header</td></tr><tr><td>Menu</td></tr><tr><td><div><p>Confirmation: <b>CONF-123</b></p><table>${fields.replace(/<tr><td>Confirmation:[\s\S]*$/, '')}</table></div></td></tr></tbody></table>`;
+  app.get('/separate-confirmation', (_req, res) => res.send(separateReceipt));
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const localOrigin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const browser = new BrowserSurface({
     allowedOrigins: [localOrigin],
-    profile: { ...profile, entryUrl: `${localOrigin}/receipt`, routes: ['^/(custom-)?receipt$'], maskSelectors: ['body'] },
+    profile: { ...profile, entryUrl: `${localOrigin}/receipt`, routes: ['^/(custom-)?receipt$', '^/separate-confirmation$'], maskSelectors: ['body'] },
   });
   try {
     await browser.start(`${localOrigin}/receipt`);
@@ -3434,6 +3437,19 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
     const rejectedMetadata = readFileSync(rejected.replace(/\.png$/, '.json'), 'utf8');
     expect(rejectedMetadata).not.toContain('token-private-9001');
     expect(JSON.parse(rejectedMetadata).frames[0].tables).toEqual([]);
+
+    await browser.navigate(`${localOrigin}/separate-confirmation`);
+    const outer = { description: 'receipt layout', strategies: [{ kind: 'css' as const, selector: 'body > table' }] };
+    const receiptColumns = columns.map(column => ({ ...column, selector: column.name === 'confirmation'
+      ? ':scope > td > div > p > b'
+      : `:scope > td > div > table > tbody > ${column.selector}` }));
+    // An unanchored row path also selects the inner detail table's third row.
+    await expect(browser.readTable(outer, receiptColumns, 1000, 'tbody > tr:nth-of-type(3)'))
+      .rejects.toMatchObject({ failure: 'cell_count' });
+    const grouped = await browser.readTable(outer, receiptColumns, 1000, ':scope > tbody > tr:nth-of-type(3)');
+    expect(grouped).toEqual([{ ...request, confirmation: 'CONF-123' }]);
+    expect(() => assertTransferOutputs(request, { confirmation: 'CONF-123', transaction: grouped })).not.toThrow();
+    expect(() => assertTransferOutputs(request, { confirmation: 'DIFFERENT', transaction: grouped })).toThrow();
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 
