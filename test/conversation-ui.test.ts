@@ -378,6 +378,50 @@ describe('safe conversation UI adapter', () => {
     expect(conversationStatusText('unsaved', false)).toBe('Conversations are not saved for this legacy session.');
   });
 
+  it.each([
+    [507, 'capacity', 'This item was not saved because conversation storage capacity is full.'],
+    [429, 'rate-limited', 'This item was not saved because saving is temporarily rate-limited.'],
+  ] as const)('keeps %s failures truthful and waits for an explicit exact retry', async (status, expectedStatus, expectedText) => {
+    vi.useFakeTimers();
+    try {
+      let eventAttempts = 0;
+      const { calls, request } = requestRecorder((path, options) => {
+        if (path !== `/conversations/${conversationId}/events`) throw new Error(`unexpected request ${path}`);
+        eventAttempts += 1;
+        if (eventAttempts === 1) {
+          return response({
+            error: 'Conversation quota exceeded',
+            ownerId: subjectId,
+            count: 4096,
+            sql: 'SELECT private details',
+          }, status);
+        }
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      });
+      const controller = createConversationController({ subjectId, request });
+      const message = { id: `manual-retry-${status}`, role: 'user', parts: [{ type: 'text', text: 'PRIVATE body' }] } as UIMessage;
+      const history = controller.historyFor(conversationId);
+
+      await expect(history.append({ parentId: null, message })).rejects.toThrow();
+      expect(controller.getState(conversationId)).toMatchObject({ status: expectedStatus, revision: 0 });
+      expect(conversationStatusText(expectedStatus, true)).toBe(expectedText);
+      expect(conversationStatusText(expectedStatus, true)).not.toContain('delete');
+      expect(controller.isConfirmed(conversationId)).toBe(false);
+      expect(calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toHaveLength(1);
+
+      await history.append({ parentId: null, message });
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.options?.body).toBe(calls[0]?.options?.body);
+      expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+      expect(JSON.stringify(calls)).not.toContain('PRIVATE');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('scopes the formatted history cache to its remote conversation', async () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],

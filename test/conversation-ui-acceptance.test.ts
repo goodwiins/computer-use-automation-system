@@ -16,7 +16,7 @@ import type { SubjectCredential } from '../src/server/auth.js';
 import { ConversationStore } from '../src/server/conversations.js';
 import { createApp } from '../src/server/http.js';
 import { InvocationService } from '../src/server/service.js';
-import { createConversationController } from '../src/server/ui/conversations.js';
+import { conversationStatusText, createConversationController } from '../src/server/ui/conversations.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
 const ownerId = '11111111-1111-4111-8111-111111111111';
@@ -564,9 +564,23 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     const regularIds = Array.from({ length: 51 }, (_, index) =>
       `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
     );
-    for (const id of regularIds) await current.store.create(ownerId, id);
     const initiallyArchivedId = '90000000-0000-4000-8000-000000000001';
-    await current.store.create(ownerId, initiallyArchivedId);
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversations (id, owner_id)
+       SELECT seeded.id, $2::uuid
+       FROM unnest($1::uuid[]) AS seeded(id)`,
+      [[...regularIds, initiallyArchivedId], ownerId],
+    );
+    await current.database.pool.query(
+      `INSERT INTO meridian_conversation_subject_quotas (owner_id, conversation_count, event_count, rate_tokens, rate_refilled_at)
+       VALUES ($1, $2, 0, 20, clock_timestamp())
+       ON CONFLICT (owner_id) DO UPDATE
+       SET conversation_count = EXCLUDED.conversation_count,
+           event_count = EXCLUDED.event_count,
+           rate_tokens = EXCLUDED.rate_tokens,
+           rate_refilled_at = EXCLUDED.rate_refilled_at`,
+      [ownerId, regularIds.length + 1],
+    );
     await current.store.archive(ownerId, initiallyArchivedId, true, 0);
 
     await current.connect(ownerToken);
@@ -751,6 +765,55 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     await page.getByRole('textbox', { name: 'Your request', exact: true }).fill('SELECTED_STATUS_CANARY');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.getByText('Conversations not saved; this chat remains usable.', { exact: true }).waitFor();
+  }, 30_000);
+
+  it('maps real authenticated PostgreSQL capacity and rate failures to truthful adapter states', async () => {
+    const current = await fixture();
+    const capacityId = '26000000-0000-4000-8000-000000000001';
+    await current.store.create(ownerId, capacityId);
+    await current.database.pool.query(
+      `UPDATE meridian_conversation_subject_quotas
+       SET event_count = 4096, rate_tokens = 0, rate_refilled_at = clock_timestamp()
+       WHERE owner_id = $1`,
+      [ownerId],
+    );
+    const capacityController = createConversationController({
+      subjectId: ownerId,
+      request: authenticatedRequest(current.origin, ownerToken),
+    });
+    const capacityMessage = { id: 'capacity-ui-message', role: 'user', parts: [{ type: 'text', text: 'PRIVATE capacity body' }] } as UIMessage;
+    await expect(capacityController.historyFor(capacityId).append({ parentId: null, message: capacityMessage } as never)).rejects.toThrow();
+    expect(capacityController.getState(capacityId)).toMatchObject({ status: 'capacity', revision: 0 });
+    expect(conversationStatusText(capacityController.getState(capacityId).status, true)).toBe(
+      'This item was not saved because conversation storage capacity is full.',
+    );
+    expect(capacityController.isConfirmed(capacityId)).toBe(false);
+    expect(current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${capacityId}/events`)).toHaveLength(1);
+    expect(JSON.stringify(current.requests)).not.toContain('PRIVATE capacity body');
+    capacityController.dispose();
+
+    const rateId = '27000000-0000-4000-8000-000000000001';
+    await current.store.create(otherId, rateId);
+    await current.database.pool.query(
+      `UPDATE meridian_conversation_subject_quotas
+       SET rate_tokens = 0, rate_refilled_at = clock_timestamp()
+       WHERE owner_id = $1`,
+      [otherId],
+    );
+    const rateController = createConversationController({
+      subjectId: otherId,
+      request: authenticatedRequest(current.origin, otherToken),
+    });
+    const rateMessage = { id: 'rate-ui-message', role: 'user', parts: [{ type: 'text', text: 'PRIVATE rate body' }] } as UIMessage;
+    await expect(rateController.historyFor(rateId).append({ parentId: null, message: rateMessage } as never)).rejects.toThrow();
+    expect(rateController.getState(rateId)).toMatchObject({ status: 'rate-limited', revision: 0 });
+    expect(conversationStatusText(rateController.getState(rateId).status, true)).toBe(
+      'This item was not saved because saving is temporarily rate-limited.',
+    );
+    expect(rateController.isConfirmed(rateId)).toBe(false);
+    expect(current.requests.filter(request => request.method === 'POST' && request.path === `/conversations/${rateId}/events`)).toHaveLength(1);
+    expect(JSON.stringify(current.requests)).not.toContain('PRIVATE rate body');
+    rateController.dispose();
   }, 30_000);
 
   it('does not surface a retained conversation failure after switching to a new local thread', async () => {

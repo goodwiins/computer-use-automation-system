@@ -77,6 +77,8 @@ export type ConversationSaveStatus =
   | 'saving'
   | 'saved'
   | 'unavailable'
+  | 'capacity'
+  | 'rate-limited'
   | 'conflict'
   | 'unsaved';
 
@@ -283,15 +285,27 @@ function errorStatus(error: unknown): number | undefined {
 
 function statusError(status: ConversationSaveStatus): string | undefined {
   if (status === 'unavailable') return 'Conversation storage is unavailable; this chat is not saved.';
+  if (status === 'capacity') return 'Conversation storage capacity is full; this chat is not saved.';
+  if (status === 'rate-limited') return 'Conversation saving is temporarily rate-limited; this chat is not saved.';
   if (status === 'conflict') return 'Conversation changed elsewhere; saving stopped until it is refreshed.';
   if (status === 'unsaved') return 'This chat remains usable, but its conversation changes are not saved.';
   return undefined;
+}
+
+function requestFailureStatus(error: unknown): ConversationSaveStatus {
+  const status = errorStatus(error);
+  if (status === 503) return 'unavailable';
+  if (status === 507) return 'capacity';
+  if (status === 429) return 'rate-limited';
+  return 'unsaved';
 }
 
 export function conversationStatusText(status: ConversationSaveStatus, subject: boolean): string {
   if (!subject) return 'Conversations are not saved for this legacy session.';
   if (status === 'saving') return 'Saving conversation…';
   if (status === 'unavailable') return 'Conversations unavailable; this chat is not saved.';
+  if (status === 'capacity') return 'This item was not saved because conversation storage capacity is full.';
+  if (status === 'rate-limited') return 'This item was not saved because saving is temporarily rate-limited.';
   if (status === 'conflict') return 'Conversation changed elsewhere; saving stopped until it is refreshed.';
   if (status === 'unsaved') return 'Conversations not saved; this chat remains usable.';
   return 'Conversations ready.';
@@ -570,11 +584,7 @@ export function createConversationController(options: {
           await reconcile(remoteId, capturedEpoch);
           throw new Error('Conversation revision conflict; saving stopped.');
         }
-        if (status === 503) {
-          setState(remoteId, 'unavailable');
-        } else {
-          setState(remoteId, 'unsaved');
-        }
+        setState(remoteId, requestFailureStatus(error));
         throw error;
       }
     });
@@ -648,8 +658,7 @@ export function createConversationController(options: {
       return loaded;
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
+      setState(remoteId, requestFailureStatus(error));
       throw error;
     }
   };
@@ -725,7 +734,7 @@ export function createConversationController(options: {
       if (errorStatus(error) === 503) {
         for (const record of metadata.values()) setState(record.id, 'unavailable');
         setOverallStatus('unavailable');
-      } else setOverallStatus('unsaved');
+      } else setOverallStatus(requestFailureStatus(error));
       throw error;
     }
   };
@@ -759,8 +768,7 @@ export function createConversationController(options: {
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
-        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-        else setState(remoteId, 'unsaved');
+        } else setState(remoteId, requestFailureStatus(error));
         throw error;
       }
     });
@@ -795,8 +803,7 @@ export function createConversationController(options: {
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
-        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-        else setState(remoteId, 'unsaved');
+        } else setState(remoteId, requestFailureStatus(error));
         throw error;
       }
     });
@@ -814,8 +821,7 @@ export function createConversationController(options: {
     // Event persistence joins the same promise and cannot overtake creation.
     void ensureConversation(id, capturedEpoch).catch(error => {
       if (!isCurrent(capturedEpoch)) return;
-      if (errorStatus(error) === 503) setState(id, 'unavailable');
-      else setState(id, 'unsaved');
+      setState(id, requestFailureStatus(error));
     });
     return { remoteId: id, externalId: undefined };
   };
@@ -833,8 +839,7 @@ export function createConversationController(options: {
       return toMetadata(record);
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
+      setState(remoteId, requestFailureStatus(error));
       throw error;
     }
   };
