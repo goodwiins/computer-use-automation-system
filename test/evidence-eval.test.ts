@@ -233,7 +233,7 @@ it('reads authenticated journal state without recovering it and prevents clearin
     journal.update(run.runId, 'dispatching');
     expect(readJournalRecord(dir, run.runId, key).state).toBe('dispatching');
     expect(() => readJournalRecord(dir, run.runId, 'wrong-key-with-at-least-32-characters')).toThrow(/authentication/);
-    expect(() => journal.update(run.runId, 'running')).toThrow(/intent/);
+    expect(() => journal.update(run.runId, 'running')).toThrow('Run state cannot move backwards');
     journal.update(run.runId, 'failure');
     expect(readJournalRecord(dir, run.runId, key).state).toBe('POST_OUTCOME_UNKNOWN');
     expect(() => journal.update(run.runId, 'success')).toThrow(/Terminal/);
