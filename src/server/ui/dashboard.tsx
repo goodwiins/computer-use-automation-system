@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
+import { canReleaseRun, hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
@@ -65,7 +65,7 @@ export function CapabilityCatalog() {
     || recoveryPending || Boolean(actionHold);
   const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
     && acceptedRun.capability === attempt.current.capabilityId
-    && availability?.some(item => item.id === acceptedRun.capability && item.state === 'available'));
+    && canReleaseRun(acceptedRun, availability));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;

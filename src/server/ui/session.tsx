@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { MERIDIAN_CAPABILITY_LABELS } from '../capability-labels.js';
 import type { InvocationService } from '../service.js';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
@@ -60,6 +61,11 @@ export type ActionHold = ActionAttempt & {
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
+export function canReleaseRun(run: Run, availability: Availability[] | undefined): boolean {
+  return !pending(run) && run.state !== 'POST_OUTCOME_UNKNOWN' && availability !== undefined
+    && (!MERIDIAN_CAPABILITY_LABELS.has(run.capability)
+      || availability.some(item => item.id === run.capability && item.state === 'available'));
+}
 export function hasCurrentPublicIntervention(run: Pick<Run, 'state' | 'intervention'>): boolean {
   const intervention: unknown = run.intervention;
   if (run.state !== 'awaiting-human' || !plainRecord(intervention)) return false;

@@ -1,7 +1,7 @@
 import { copyFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { InvocationService } from '../src/server/service.js';
 import { Journal } from '../src/runtime/journal.js';
 import { loadProfile, profilePolicy } from '../src/runtime/profile.js';
@@ -44,6 +44,35 @@ it('checks caller access before artifact existence and quarantines unknown outco
   expect(JSON.stringify(quarantined)).not.toContain('foreign-owner');
   expect(JSON.stringify(quarantined)).not.toContain(foreign.runId);
   journal.close();
+});
+
+it('batches readiness and request history reads and fails closed when their journal is unavailable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ui-readiness-batch-')); temporary.push(root);
+  const profile = loadProfile('meridian');
+  const journal = new Journal(join(root, 'journal'), 'j'.repeat(32));
+  const service = new InvocationService(journal, profilePolicy(profile), profile, root, ['meridian-member-record', 'meridian-member-inquiry']);
+  try {
+    const unknown = vi.spyOn(journal, 'unknownCapabilities');
+    const singleUnknown = vi.spyOn(journal, 'hasUnknown');
+    await service.availability('caller');
+    expect(unknown).toHaveBeenCalledExactlyOnceWith(['meridian-member-inquiry', 'meridian-member-record']);
+    expect(singleUnknown).not.toHaveBeenCalled();
+    const run = journal.reserve('caller', 'history-key', 'meridian-member-record', '1.0.0', {});
+    journal.update(run.runId, 'success');
+    journal.bindReference('caller', 'status-key', run.runId);
+    const batch = vi.spyOn(journal, 'findRequests');
+    const get = vi.spyOn(journal, 'get');
+    const history = await service.getRequestHistory('caller', ['status-key', 'history-key', 'status-key']);
+    expect([...history.keys()]).toEqual(['status-key', 'history-key']);
+    expect(history.get('status-key')).toMatchObject({ runId: run.runId, state: 'success' });
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    expect(await service.getRequestHistory({ role: 'caller', subjectId: '11111111-1111-4111-8111-111111111111' }, ['history-key'])).toEqual(new Map());
+    journal.close();
+    expect((await service.availability('caller')).filter(item => item.state === 'temporarily_unavailable'))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'Run journal is unavailable' })]));
+    await expect(service.getRequestHistory('caller', ['history-key'])).rejects.toThrow('Journal is closed');
+  } finally { journal.close(); }
 });
 
 it('uses investigation language for unknown and does not claim a generic failure was safe', () => {

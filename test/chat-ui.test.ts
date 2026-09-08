@@ -440,9 +440,11 @@ async function fixture(
     holdRefreshCapabilities?: boolean;
     nativeZoom200?: boolean;
     failSetupAfter?: 'browser';
+    capabilityId?: string;
   } = {},
 ) {
   return withFixtureCleanup(async resources => {
+  const fixtureCapability = { ...capability, id: options.capabilityId ?? capability.id };
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   resources.evidenceDir = evidenceDir;
   mkdirSync(join(evidenceDir, runId));
@@ -478,9 +480,10 @@ async function fixture(
     offline: false,
   };
   const service = {
+    getRequestHistory: vi.fn(() => new Map()),
     journal: { findRequest: () => undefined, bindReference: () => {} },
     evidenceDir,
-    catalog: () => [capability],
+    catalog: () => [fixtureCapability],
     availability: () => availabilityOverride ? availabilityOverride() : [
       ['meridian-sign-on', 'Sign on'],
       ['meridian-member-inquiry', 'Member inquiry'],
@@ -520,7 +523,7 @@ async function fixture(
       if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
-        state.runs.push(initialRun());
+        state.runs.push({ ...initialRun(), capability: id });
       }
       return { runId };
     }),
@@ -549,7 +552,7 @@ async function fixture(
     doStream: async options => {
       const serializedTools = JSON.stringify(options.tools ?? {});
       state.toolSchemas.push(serializedTools);
-      const statusOnly = !serializedTools.includes(capability.id);
+      const statusOnly = !serializedTools.includes(fixtureCapability.id);
       const statusNeedsNoTool = statusOnly && state.runs.length === 0;
       const finishReason = statusNeedsNoTool && state.finishReason === 'tool-calls'
         ? 'stop'
@@ -562,7 +565,7 @@ async function fixture(
               controller.enqueue({
                 type: 'tool-call',
                 toolCallId: 'partial-tool',
-                toolName: capability.id,
+                toolName: fixtureCapability.id,
                 input: JSON.stringify({ member: 'offline-member' }),
               });
               controller.error(new Error('fixture stream truncated after tool input'));
@@ -579,7 +582,7 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : capability.id,
+            toolName: statusOnly ? 'run_status' : fixtureCapability.id,
             input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
           }]),
           {
@@ -631,7 +634,7 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : capability.id,
+            toolName: statusOnly ? 'run_status' : fixtureCapability.id,
             input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
           }]),
           {
@@ -3440,3 +3443,40 @@ it('gives callers history and operator-support guidance without takeover control
   await page.getByRole('dialog').waitFor();
   expect(await page.getByRole('dialog').getByRole('button', { name: /Confirm|Refuse|Retry|Stop/ }).count()).toBe(0);
 }, 15000);
+
+
+it.each([['direct', 'success'], ['chat', 'success'], ['direct', 'POST_OUTCOME_UNKNOWN'], ['chat', 'POST_OUTCOME_UNKNOWN']] as const)('handles a non-Meridian %s request ending in %s', async (mode, outcome) => {
+  const { page, state, connect } = await fixture(false, () => [], { capabilityId: 'lookup-member-balance' });
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: 'lookup-member-balance', state: state.runs[0]?.state ?? 'running' }),
+  }));
+  await connect();
+  if (mode === 'direct') {
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  } else {
+    await page.locator('#message').fill('Look up the member balance.');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+  }
+  await visible(page, '#runs', runId);
+  state.runs[0]!.state = outcome;
+  await page.locator('#refresh').click();
+  await visible(page, '#runs', outcome);
+  if (outcome === 'POST_OUTCOME_UNKNOWN') {
+    expect(await page.getByRole('button', { name: 'Start another invocation', exact: true }).count()).toBe(0);
+    await visible(page, 'body', 'Chat messages are status-only');
+    expect(state.invocations.size).toBe(1);
+    return;
+  }
+  if (mode === 'direct') {
+    await page.getByRole('button', { name: 'Start another invocation', exact: true }).click({ timeout: 2000 });
+    expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true);
+  } else {
+    await page.waitForFunction(() => !document.body.textContent?.includes('Chat messages are status-only while'), undefined, { timeout: 2000 });
+    await page.locator('#message').fill('Look up the member balance again.');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.invocations.size).toBe(2));
+  }
+});
