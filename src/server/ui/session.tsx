@@ -82,6 +82,22 @@ export async function authenticatedFetch(token: string, path: string, options: R
   if (options.body) headers.set('Content-Type', 'application/json');
   return fetch(path, { ...options, headers });
 }
+
+function isConversationRequestPath(path: string): boolean {
+  try {
+    const pathname = path.startsWith('/') ? path.split(/[?#]/, 1)[0]! : new URL(path, window.location.href).pathname;
+    return pathname === '/conversations' || pathname.startsWith('/conversations/');
+  } catch {
+    return false;
+  }
+}
+
+function conversationFailureMessage(status: number): string {
+  if (status === 409) return 'Conversation revision conflict';
+  if (status === 503) return 'Conversation storage is unavailable';
+  return `Request failed (${status})`;
+}
+
 const Context = createContext<{
   session: Session;
   runs: Run[];
@@ -182,6 +198,11 @@ export function RunProvider({
         throw new Error('Authentication expired. Connect again.');
       }
       if (!response.ok) {
+        if (isConversationRequestPath(path)) {
+          const failure = new Error(conversationFailureMessage(response.status)) as Error & { status?: number };
+          failure.status = response.status;
+          throw failure;
+        }
         const data = await response.json().catch(() => ({}));
         const failure = new Error(typeof data.error === 'string' ? data.error : `Request failed (${response.status})`) as Error & { status?: number };
         failure.status = response.status;

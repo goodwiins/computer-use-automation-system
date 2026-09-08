@@ -422,6 +422,50 @@ describe('safe conversation UI adapter', () => {
     }
   });
 
+  it.each([
+    ['list', 'capacity', 507],
+    ['list', 'rate-limited', 429],
+    ['fetch', 'capacity', 507],
+    ['fetch', 'rate-limited', 429],
+  ] as const)('preserves a %s %s state through refresh until an exact manual retry succeeds', async (refreshKind, expectedStatus, failureStatus) => {
+    let eventAttempts = 0;
+    const { calls, request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') return response(metadata);
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}/events`) {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'PRIVATE quota details', ownerId: subjectId, count: 4096 }, failureStatus);
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+
+    const message = { id: `refresh-${refreshKind}-${expectedStatus}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({ parentId: null, message })).rejects.toThrow();
+    const failure = controller.getState(conversationId);
+    expect(failure).toMatchObject({ status: expectedStatus, revision: 0 });
+    expect(failure.error).toContain('not saved');
+
+    if (refreshKind === 'list') await controller.adapter.list();
+    else await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: expectedStatus, revision: 0, error: failure.error });
+    expect(calls.filter(call => call.path === `/conversations/${conversationId}/events`)).toHaveLength(1);
+
+    await history.append({ parentId: null, message });
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'saved', revision: 1 });
+    expect(controller.getState(conversationId).error).toBeUndefined();
+    const eventBodies = calls
+      .filter(call => call.path === `/conversations/${conversationId}/events`)
+      .map(call => call.options?.body);
+    expect(eventBodies[1]).toBe(eventBodies[0]);
+  });
+
   it('scopes the formatted history cache to its remote conversation', async () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],

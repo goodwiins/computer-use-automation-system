@@ -343,6 +343,7 @@ type EventBody = {
 };
 
 type Attempt = {
+  remoteId: string;
   descriptor: Omit<EventBody, 'id' | 'expectedRevision'>;
   body?: Readonly<EventBody>;
   completed: boolean;
@@ -460,14 +461,20 @@ export function createConversationController(options: {
   const remember = (record: ConversationRecord, preserveStatus = false) => {
     metadata.set(record.id, record);
     const existing = currentState(record.id);
-    const preserve = preserveStatus || stopped.has(record.id);
-    state.set(record.id, {
+    const unresolvedFailure = [...attempts.values()].some(attempt =>
+      attempt.remoteId === record.id && !attempt.completed && attempt.body !== undefined,
+    );
+    const preserve = preserveStatus || stopped.has(record.id)
+      || (unresolvedFailure && (existing.status === 'capacity' || existing.status === 'rate-limited'));
+    const nextState: ConversationState = {
       ...existing,
       status: preserve ? existing.status : 'saved',
       revision: record.revision,
       archived: record.archived,
-      ...(preserve && existing.error ? { error: existing.error } : {}),
-    });
+    };
+    if (preserve && existing.error) nextState.error = existing.error;
+    else delete nextState.error;
+    state.set(record.id, nextState);
     if (selectedRemoteId === undefined) {
       unselectedState = state.get(record.id)!;
       overallState = unselectedState;
@@ -540,7 +547,7 @@ export function createConversationController(options: {
     const capturedEpoch = epoch;
     if (!subjectId || !isCurrent(capturedEpoch)) return Promise.reject(new ConversationEpochError());
     if (stopped.has(remoteId)) return Promise.reject(new Error('Conversation saving stopped after a revision conflict.'));
-    const attempt = attempts.get(attemptKey) ?? { descriptor, completed: false };
+    const attempt = attempts.get(attemptKey) ?? { remoteId, descriptor, completed: false };
     attempts.set(attemptKey, attempt);
     if (attempt.completed) return Promise.resolve();
     return enqueueWrite(remoteId, async () => {

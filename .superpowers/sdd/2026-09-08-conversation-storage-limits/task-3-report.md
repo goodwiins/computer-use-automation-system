@@ -83,3 +83,106 @@ git diff --check
 ```
 
 No push, PR, deploy, or live acceptance action was performed.
+
+## Fix round 1/5 — review findings
+
+Started from clean `f9bcda01322c0e54ea6099d874510064b2071889`.
+
+### Finding 1: conversation failure-body parsing
+
+Verified `RunProvider.request` in `src/server/ui/session.tsx` parsed every
+non-401 failed response with `response.json()`. Added a browser acceptance
+seam that returns a private 507 body, instruments `Response.prototype.json`,
+and asserts fixed capacity text with no canary parsing or reflection.
+
+RED: the targeted acceptance test observed
+`privateConversationBodyParsed === true` despite the fixed capacity status.
+
+GREEN: conversation paths now attach only numeric status and do not consume
+failure bodies. Non-conversation failures retain their existing JSON parsing;
+401 still disconnects. A fixed status-derived 409 message preserves the
+existing safe conflict log without reading the server body.
+
+Targeted result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts -t 'does not parse or reflect'
+1 passed
+```
+
+### Finding 2: truthful PostgreSQL capacity/rate setup
+
+RED: the added source-vs-quota assertion showed `source_events: '0'` versus
+`quota_events: '4096'` in the previous metadata-only setup.
+
+GREEN: the capacity checkpoint now inserts eight real conversations with 512
+valid retained `message_omitted` rows each, revisions 512, one target
+conversation, and matching conversation/event quota counters. The actual
+authenticated controller request through `createApp` then receives 507.
+
+The rate checkpoint now performs an authenticated HTTP create and an
+authenticated accepted event append first. It records matching source and
+quota conversation/event counts and confirms the bucket has consumed tokens
+before setting only the isolated bucket to zero at the deterministic 429
+checkpoint. The adapter then performs one real authenticated failed event
+request.
+
+Targeted result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts -t 'maps real authenticated'
+1 passed
+```
+
+### Finding 3: preserve unsaved quota status across refresh
+
+Added four focused regressions covering list/fetch refreshes × capacity/rate
+limited failures. RED showed every refreshed state became `saved` while the
+failure error remained. `remember` now preserves capacity/rate-limited status
+and error only while a matching frozen, incomplete attempt exists; normal
+refresh clears stale errors. A successful exact retry marks the attempt saved,
+updates the revision, and clears the error.
+
+Targeted result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'preserves a'
+4 passed
+```
+
+### Fix-round verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 38 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+```
+
+Additional fix-round verification:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 74 tests passed
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/chat-ui.test.ts -t 'keeps the latest capability catalog when refresh metadata omits capabilities'
+  1 passed (84 skipped)
+```
+
+The full 85-test chat UI suite had one unrelated/flaky failure in that same
+capability-catalog refresh test (84 passed); its isolated rerun passed. No
+conversation quota test failed. The initial full-suite invocation without
+`TEST_DATABASE_URL` was not used as evidence.
