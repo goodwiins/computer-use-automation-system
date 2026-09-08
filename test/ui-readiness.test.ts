@@ -43,6 +43,14 @@ it('checks caller access before artifact existence and quarantines unknown outco
   expect(quarantined).toMatchObject({ state: 'temporarily_unavailable' });
   expect(JSON.stringify(quarantined)).not.toContain('foreign-owner');
   expect(JSON.stringify(quarantined)).not.toContain(foreign.runId);
+  const transfer = journal.reserve('foreign-owner', 'transfer-key', 'meridian-funds-transfer', '1.0.0', {});
+  journal.update(transfer.runId, 'dispatching');
+  journal.update(transfer.runId, 'failure');
+  expect((await service.availability('operator')).find(item => item.id === 'meridian-funds-transfer'))
+    .toMatchObject({ state: 'temporarily_unavailable', reason: 'Outcome requires read-only investigation' });
+  expect((await service.availability('caller')).find(item => item.id === 'meridian-funds-transfer'))
+    .toMatchObject({ state: 'restricted', reason: 'Not authorized for this caller' });
+  expect(journal.get(transfer.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');
   journal.close();
 });
 
@@ -71,6 +79,8 @@ it('batches readiness and request history reads and fails closed when their jour
     journal.close();
     expect((await service.availability('caller')).filter(item => item.state === 'temporarily_unavailable'))
       .toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'Run journal is unavailable' })]));
+    expect((await service.availability('operator')).find(item => item.id === 'meridian-funds-transfer'))
+      .toMatchObject({ state: 'temporarily_unavailable', reason: 'Run journal is unavailable' });
     await expect(service.requestContexts('caller', ['history-key'])).rejects.toThrow('Journal is closed');
   } finally { journal.close(); }
 });

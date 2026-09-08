@@ -60,6 +60,8 @@ Before transfer, run the accepted member-inquiry/member-record read path only wh
 
 Result extraction now has an implemented, fixture-proven grouped `tbody`/native-CSS path with improved structural evidence; use selectors observed in the new recording for that mapping. A six-column physical table is not required. Hosted receipt mapping and confirmation verification remain pending before claiming a valid artifact. Do not require an old screenshot, guess selectors or provenance, or post solely to inspect the result. Keep selected-operation handling and human posting approval separate, and stop before launch if a complete recording still cannot establish the declared outputs from observed HTML.
 
+Failed extraction actions retain a fixed `extractionFailure` category in `action.end` evidence: `invalid_selector`, `cell_count`, `invalid_money`, `target_unresolved`, or `other`. These categories omit receipt values, selectors and raw exceptions. They do not reconstruct errors missing from older evidence. A failure after posting remains terminal `POST_OUTCOME_UNKNOWN`; availability reports the investigation requirement even when no approved artifact exists. An unavailable journal also blocks discovery readiness. Neither diagnostic metadata nor a source fix clears the unknown outcome or establishes transfer acceptance.
+
 Generate and privately save a distinct request identity before each new request. Keep the same value only for a transport retry of that exact invocation. Never generate a new key to retry an uncertain post.
 
 ```sh

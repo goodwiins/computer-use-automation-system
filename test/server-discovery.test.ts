@@ -136,6 +136,11 @@ it('refuses fresh discovery for unknown outcomes and approved recordings while k
   const f = fixture();
   f.run.mockImplementation(async () => { await f.options().beforeDispatch!({} as ActionContext); return stopped(); });
   const accepted = await f.start(); expect((await f.settle(accepted.runId)).state).toBe('POST_OUTCOME_UNKNOWN');
+  expect((await f.service.availability('operator')).find(item => item.id === id))
+    .toMatchObject({ state: 'temporarily_unavailable', reason: 'Outcome requires read-only investigation' });
+  expect((await f.service.availability('caller')).find(item => item.id === id))
+    .toMatchObject({ state: 'temporarily_unavailable', reason: 'Outcome requires read-only investigation' });
+  expect(existsSync(join(f.artifactDir, 'drafts'))).toBe(false);
   await expect(f.start('new')).rejects.toMatchObject({ status: 409 });
   expect(await f.service.discover('operator', id, args, 'hold-key', 'SUPERVISOR', true)).toEqual({ runId: accepted.runId, reused: true });
   expect(f.journal.get(accepted.runId)?.state).toBe('POST_OUTCOME_UNKNOWN');

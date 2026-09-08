@@ -8,6 +8,7 @@ import type { FrameContext, LiveControl, AppProfile, FaultScenario } from '../ru
 import { originAllowed } from '../safety/policy.js';
 import {
   TargetResolutionError,
+  TableExtractionError,
   type Observation,
   type ReadOnlyPageSnapshot,
   type ReadOnlyTableRequest,
@@ -443,18 +444,31 @@ export class BrowserSurface implements Surface {
   }
 
   private async extractTable(locator: Locator, columns: TableColumn[], rowSelector?: string) {
-    const rows = await locator.evaluate((table, { cols, rows }) => [...table.querySelectorAll(rows ?? 'tr')]
-      .filter(row => row.querySelector('td') && !row.querySelector('th'))
-      .map(row => Object.fromEntries(cols.map(col => {
-        const cells = row.querySelectorAll(col.selector);
-        if (cells.length !== 1) throw new Error('Ambiguous table column');
-        let value = (cells[0]!.textContent ?? '').trim();
-        if (col.type === 'money') {
-          value = value.replace(/[$,]/g, '');
-          if (!/^-?(0|[1-9]\d*)\.\d{2}$/.test(value)) throw new Error('Invalid money column');
+    const result = await locator.evaluate((table, { cols, rows }) => {
+      let selected: NodeListOf<Element>;
+      try { selected = table.querySelectorAll(rows ?? 'tr'); }
+      catch { return { failure: 'invalid_selector' as const }; }
+      const extracted: Array<Record<string, string>> = [];
+      for (const row of [...selected].filter(row => row.querySelector('td') && !row.querySelector('th'))) {
+        const cellsByName: Array<[string, string]> = [];
+        for (const col of cols) {
+          let cells: NodeListOf<Element>;
+          try { cells = row.querySelectorAll(col.selector); }
+          catch { return { failure: 'invalid_selector' as const }; }
+          if (cells.length !== 1) return { failure: 'cell_count' as const };
+          let value = (cells[0]!.textContent ?? '').trim();
+          if (col.type === 'money') {
+            value = value.replace(/[$,]/g, '');
+            if (!/^-?(0|[1-9]\d*)\.\d{2}$/.test(value)) return { failure: 'invalid_money' as const };
+          }
+          cellsByName.push([col.name, value]);
         }
-        return [col.name, value];
-      }))), { cols: columns, rows: rowSelector });
+        extracted.push(Object.fromEntries(cellsByName));
+      }
+      return { rows: extracted };
+    }, { cols: columns, rows: rowSelector });
+    if (result.failure) throw new TableExtractionError(result.failure);
+    const rows = result.rows!;
     this.opts.sensitive?.(rows.flatMap(row => columns.filter(c => this.opts.profile?.appId === 'meridian' || c.sensitive).map(c => row[c.name]!)));
     return rows;
   }

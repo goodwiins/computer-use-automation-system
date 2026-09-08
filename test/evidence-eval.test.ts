@@ -33,6 +33,11 @@ it('preserves valid falsy metadata while dropping absent, invalid and private fi
     attempt: 1, ms: 0, isRetry: false, approved: false, mutation: false, status: 'success',
   } });
   expect(safeEvent('replay.success', {})).toEqual({ event: 'replay.success', data: {} });
+  expect(safeEvent('action.end', { extractionFailure: 'cell_count', error: 'PRIVATE RECEIPT' }))
+    .toEqual({ event: 'action.end', data: { extractionFailure: 'cell_count' } });
+  for (const extractionFailure of ['PRIVATE RECEIPT', ['cell_count'], { cell_count: 'PRIVATE' }, null]) {
+    expect(safeEvent('action.end', { extractionFailure })).toEqual({ event: 'action.end', data: {} });
+  }
 });
 
 it('keeps sensitive data and arbitrary values out of observers, even in non-strict mode', async () => {
