@@ -4393,9 +4393,10 @@ it('operator Activity filters start in a review-first queue with accurate counts
   await page.getByRole('heading', { name: 'Operator Activity', exact: true }).waitFor();
   const needs = page.getByRole('tab', { name: /Needs review/ });
   const all = page.getByRole('tab', { name: /All runs/ });
-  await needs.waitFor();
-  expect(await needs.innerText()).toContain('(1)');
-  expect(await all.innerText()).toContain('(3)');
+  await vi.waitFor(async () => {
+    expect(await needs.innerText()).toContain('(1)');
+    expect(await all.innerText()).toContain('(3)');
+  });
   expect(await needs.getAttribute('aria-selected')).toBe('true');
   expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBeGreaterThan(0);
   expect(await page.locator(`#runs [data-run-id="${staleRunId}"]`).count()).toBe(0);
