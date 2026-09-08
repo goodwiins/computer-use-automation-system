@@ -2903,7 +2903,7 @@ it('collects and reviews all four guided operations without starting a request',
     }
     await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
     const preview = guided.locator('.operation-preview');
-    await preview.getByText('Preparation only', { exact: false }).waitFor();
+    await preview.getByText('Request preparation · This preview does not submit a transaction.', { exact: true }).waitFor();
     for (const [label, value] of fields) {
       const presented = ['Amount', 'Initial deposit'].includes(label) ? `$${value}` : value;
       await preview.getByText(presented, { exact: true }).waitFor();
@@ -2913,7 +2913,7 @@ it('collects and reviews all four guided operations without starting a request',
   expect(state.requests.filter(request => request.path.endsWith('/invoke') || request.path.endsWith('/discover'))).toEqual([]);
 }, 30000);
 
-it('requires an operator for hold discovery and recovers the exact supervisor request after response loss', async () => {
+it('requires supervisor context for hold and recovers an operator-selected role with the exact discovery request', async () => {
   const { page, state, connect } = await fixture();
   const guided = page.locator('.guided-operations');
   const fillHold = async () => {
@@ -2927,13 +2927,25 @@ it('requires an operator for hold discovery and recovers the exact supervisor re
   await connect(callerToken);
   await fillHold();
   await guided.getByText('Only an authenticated operator can start supervised discovery.', { exact: true }).waitFor();
+  expect(await guided.getByLabel('Target role', { exact: true }).count()).toBe(0);
   expect(await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).count()).toBe(0);
 
   await connect(operatorToken);
-  await fillHold();
+  await guided.getByLabel('Operation').selectOption('meridian-place-hold');
+  const targetRole = guided.getByLabel('Target role', { exact: true });
+  expect(await targetRole.inputValue()).toBe('SUPERVISOR');
+  expect(await targetRole.isDisabled()).toBe(true);
+  await guided.getByLabel('Operation').selectOption('meridian-funds-transfer');
+  await guided.getByLabel('Member number', { exact: true }).fill('9004');
+  await guided.getByLabel('From share', { exact: true }).fill('9004-S001');
+  await guided.getByLabel('To share', { exact: true }).fill('9004-S002');
+  await guided.getByLabel('Amount', { exact: true }).fill('25.00');
+  await guided.getByLabel('Memo', { exact: true }).fill('Review required');
+  await targetRole.selectOption('SUPERVISOR');
+  await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
   await guided.getByText('Requested target role: SUPERVISOR', { exact: false }).waitFor();
   let first = true;
-  await page.route('**/capabilities/meridian-place-hold/discover', async route => {
+  await page.route('**/capabilities/meridian-funds-transfer/discover', async route => {
     if (first) {
       first = false;
       await route.fetch();
@@ -2947,10 +2959,10 @@ it('requires an operator for hold discovery and recovers the exact supervisor re
   expect(await guided.getByRole('alert').textContent()).toContain('Acceptance is unconfirmed.');
   await guided.getByRole('button', { name: 'Look up original request', exact: true }).click();
   await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
-  const requests = state.requests.filter(request => request.path === '/capabilities/meridian-place-hold/discover');
+  const requests = state.requests.filter(request => request.path === '/capabilities/meridian-funds-transfer/discover');
   expect(requests).toHaveLength(2);
   expect(requests[0]?.body).toEqual({
-    args: { member: '9004', share: '9004-S001', reason: 'FRAUD', notes: 'Review required' },
+    args: { member: '9004', sourceShare: '9004-S001', destinationShare: '9004-S002', amount: '25.00', memo: 'Review required' },
     operator: 'SUPERVISOR',
   });
   expect(requests[1]?.body).toEqual({ ...requests[0]?.body, lookupOnly: true });
@@ -2974,14 +2986,17 @@ it('starts an available guided transfer and restores pending inline approval fro
   await guided.getByLabel('To share', { exact: true }).fill('9001-S002');
   await guided.getByLabel('Amount', { exact: true }).fill('25.00');
   await guided.getByLabel('Memo', { exact: true }).fill('Rent');
+  await guided.getByLabel('Target role', { exact: true }).selectOption('SUPERVISOR');
   await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
   await guided.getByRole('button', { name: 'Start operation', exact: true }).click();
   await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  await guided.getByText('Request preparation · This preview does not submit a transaction.', { exact: true }).waitFor();
+  expect(await guided.getByText('Nothing has been posted', { exact: false }).count()).toBe(0);
   const invoked = state.requests.filter(request => request.path === `/capabilities/${transfer.id}/invoke`);
   expect(invoked).toHaveLength(1);
   expect(invoked[0]?.body).toEqual({
     args: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
-    operator: 'TELLER',
+    operator: 'SUPERVISOR',
   });
 
   state.runs[0] = {
@@ -3002,17 +3017,56 @@ it('starts an available guided transfer and restores pending inline approval fro
   const current = page.locator('.guided-operations').locator(`[data-run-id="${runId}"]`);
   await current.getByRole('button', { name: 'Accept', exact: true }).waitFor();
   await current.getByText('$25.00', { exact: true }).waitFor();
-  await current.getByRole('button', { name: 'Accept', exact: true }).click();
-  await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
 
-  state.runs[0] = { ...state.runs[0], state: 'POST_OUTCOME_UNKNOWN', intervention: undefined };
+  const recovered = state.runs.find(run => run.runId === runId)!;
+  Object.assign(recovered, {
+    state: 'success', intervention: undefined, finishedAt: new Date().toISOString(),
+    result: { status: 'success', outputs: { confirmation: 'Posted' } },
+  });
   await page.locator('#refresh').click();
-  await current.getByText('Posting outcome is unknown.', { exact: false }).waitFor();
-  expect(await current.getByRole('button', { name: /Start|Accept|Retry/ }).count()).toBe(0);
+  await current.getByRole('status').filter({ hasText: 'Completed' }).waitFor();
+  await current.getByText('Posted', { exact: true }).waitFor();
+  expect(await current.getByRole('button', { name: /Accept|Reject|Retry/ }).count()).toBe(0);
+  await guided.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  expect(await current.count()).toBe(0);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   expect(await page.locator('#workspace').count()).toBe(0);
   expect(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible()).toBe(true);
 }, 20000);
+
+it('retains a recovered rejected operation until its authoritative result is dismissed', async () => {
+  const { page, state, service, connect } = await fixture();
+  const transfer = {
+    ...capability,
+    id: 'meridian-funds-transfer',
+    parameters: operationContracts[0].parameters.map(parameter => ({ ...parameter })),
+    tools: { ...capability.tools, openai: { ...capability.tools.openai, function: { ...capability.tools.openai.function, name: 'meridian-funds-transfer' } } },
+  };
+  service.catalog = () => [transfer];
+  state.runs.push({
+    ...initialRun(), capability: transfer.id, state: 'awaiting-human',
+    intervention: publicIntervention({
+      id: approvalId, expiresAt: Date.now() + 60000,
+      request: { kind: 'risk_approval', reason: 'Review transfer', capability: transfer.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+      action: {
+        runId, artifact: transfer.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post', method: 'POST',
+        operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', tokenPresent: true, control: 'Post',
+        facts: { member: '9001', amount: '25.00' }, visibleFacts: { member: '9001', amount: '25.00' },
+      },
+    }),
+  });
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  const current = guided.locator(`[data-run-id="${runId}"]`);
+  await current.getByRole('button', { name: 'Reject', exact: true }).waitFor();
+  const recovered = state.runs.find(run => run.runId === runId)!;
+  Object.assign(recovered, { state: 'interrupted', intervention: undefined });
+  await page.locator('#refresh').click();
+  await current.getByRole('status').filter({ hasText: 'Interrupted' }).waitFor();
+  expect(await current.getByRole('button', { name: /Accept|Reject|Retry/ }).count()).toBe(0);
+  await guided.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  expect(await current.count()).toBe(0);
+}, 15000);
 
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {
   const { page, state, service, connect, errors, url } = await fixture();

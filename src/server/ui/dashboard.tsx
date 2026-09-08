@@ -297,11 +297,8 @@ const enumLabels = new Map([
   ['S0001', 'Regular Shares'], ['S0070', 'Share Draft (Checking)'], ['MMKT', 'Money Market'], ['CERT', 'Certificate'],
   ['FRAUD', 'Fraud'], ['LEGAL', 'Legal'], ['DECEASED', 'Deceased'],
 ]);
-type GuidedPreview = { args: Record<string, string | number>; body: string; mode?: 'invoke' | 'discover' };
-
-function operationRole(id: string): 'TELLER' | 'SUPERVISOR' {
-  return id === 'meridian-place-hold' ? 'SUPERVISOR' : 'TELLER';
-}
+type OperationRole = 'TELLER' | 'SUPERVISOR';
+type GuidedPreview = { args: Record<string, string | number>; body: string; mode?: 'invoke' | 'discover'; role?: OperationRole };
 
 export function GuidedOperations() {
   const controls = useRuns();
@@ -310,9 +307,11 @@ export function GuidedOperations() {
   const contracts = session.operationContracts;
   const [selected, setSelected] = useState(contracts[0]?.id ?? '');
   const [preview, setPreview] = useState<GuidedPreview | undefined>(undefined);
+  const [targetRole, setTargetRole] = useState<OperationRole>('TELLER');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [acceptedId, setAcceptedId] = useState('');
+  const [trackedRunIds, setTrackedRunIds] = useState<string[]>([]);
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const active = useRef(false);
   const attempt = useRef<InvocationAttempt | undefined>(undefined);
@@ -325,9 +324,18 @@ export function GuidedOperations() {
       : status?.state === 'not_recorded' && contract.discovery && session.principal === 'operator' ? 'discover'
         : undefined;
   const acceptedRun = runs.find(run => run.runId === acceptedId);
+  const effectiveRole: OperationRole = contract?.id === 'meridian-place-hold' ? 'SUPERVISOR' : targetRole;
+  useEffect(() => {
+    const observed = runs.filter(run => guidedOperationLabels.has(run.capability) && pending(run)).map(run => run.runId);
+    if (!observed.length) return;
+    setTrackedRunIds(current => {
+      const next = [...new Set([...current, ...observed])];
+      return next.length === current.length ? current : next;
+    });
+  }, [runs]);
   const shownRunIds = [...new Set([
-    ...runs.filter(run => guidedOperationLabels.has(run.capability)
-      && (pending(run) || run.state === 'POST_OUTCOME_UNKNOWN')).map(run => run.runId),
+    ...trackedRunIds,
+    ...runs.filter(run => guidedOperationLabels.has(run.capability) && run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.runId),
     ...(acceptedId ? [acceptedId] : []),
   ])];
   const finishedDiscovery = acceptedRun?.kind === 'discovery' && !pending(acceptedRun)
@@ -365,21 +373,21 @@ export function GuidedOperations() {
     ]));
     const body = JSON.stringify({
       args,
-      ...(session.principal === 'operator' ? { operator: operationRole(contract.id) } : {}),
+      ...(session.principal === 'operator' ? { operator: effectiveRole } : {}),
     });
     const fingerprint = `${contract.id}:${mode ?? 'blocked'}:${body}`;
     if (mode && attempt.current?.fingerprint !== fingerprint) {
       attempt.current = {
         capabilityId: contract.id,
         body,
-        role: session.principal === 'operator' ? operationRole(contract.id) : undefined,
+        role: session.principal === 'operator' ? effectiveRole : undefined,
         fingerprint,
         key: crypto.randomUUID(),
         endpoint: mode,
       };
     }
     if (!mode) attempt.current = undefined;
-    setPreview({ args, body, mode });
+    setPreview({ args, body, mode, ...(session.principal === 'operator' ? { role: effectiveRole } : {}) });
     setError('');
   }
 
@@ -426,6 +434,7 @@ export function GuidedOperations() {
     if (!canRelease || !acceptedRun) return;
     if (attempt.current) controls.clearAction(attempt.current.key);
     attempt.current = undefined;
+    setTrackedRunIds(current => current.filter(runId => runId !== acceptedId));
     setAcceptedId('');
     setPreview(undefined);
     setError(acceptedRun.state === 'POST_OUTCOME_UNKNOWN'
@@ -447,12 +456,26 @@ export function GuidedOperations() {
             <label htmlFor={`${prefix}-operation`}>Operation</label>
             <select id={`${prefix}-operation`} value={contract.id} onChange={event => {
               setSelected(event.target.value);
+              setTargetRole(event.target.value === 'meridian-place-hold' ? 'SUPERVISOR' : 'TELLER');
               setPreview(undefined);
               attempt.current = undefined;
               setError('');
             }}>
               {contracts.map(item => <option key={item.id} value={item.id}>{guidedOperationLabels.get(item.id) ?? item.id}</option>)}
             </select>
+            {session.principal === 'operator' && <div className="guided-field">
+              <label htmlFor={`${prefix}-target-role`}>Target role</label>
+              <select
+                id={`${prefix}-target-role`}
+                value={effectiveRole}
+                disabled={contract.id === 'meridian-place-hold'}
+                onChange={event => setTargetRole(event.target.value as OperationRole)}
+              >
+                <option value="TELLER">TELLER</option>
+                <option value="SUPERVISOR">SUPERVISOR</option>
+              </select>
+              {contract.id === 'meridian-place-hold' && <span className="muted">Account holds require SUPERVISOR.</span>}
+            </div>}
             <div className="guided-fields" key={contract.id}>
               {contract.parameters.map(parameter => {
                 const id = `${prefix}-${parameter.name}`;
@@ -479,14 +502,14 @@ export function GuidedOperations() {
         </form>
         <p className={mode ? 'muted' : 'warning'}>{readinessMessage(contract)}</p>
         {preview && <div className="operation-preview">
-          <p className="eyebrow">Preparation only · Nothing has been posted</p>
+          <p className="eyebrow">Request preparation · This preview does not submit a transaction.</p>
           <h4>Request preview</h4>
           <dl className="review-facts">{contract.parameters.map(parameter => <div key={parameter.name}>
             <dt>{guidedFieldLabels.get(parameter.name) ?? fieldLabel(parameter.name)}</dt>
             <dd>{displayValue(parameter.name, preview.args[parameter.name])}</dd>
           </div>)}</dl>
           {session.principal === 'operator' && <p className="review-operator">
-            Requested target role: {operationRole(contract.id)}. {contract.id === 'meridian-place-hold'
+            Requested target role: {preview.role}. {contract.id === 'meridian-place-hold'
               ? session.supervisorVerified ? 'Supervisor context was verified at sign-on; native action facts still control final approval.'
                 : 'This operator credential does not by itself verify the target role; native action facts must do so before final approval.'
               : 'Native action facts must verify the actual target session before final approval.'}
@@ -510,9 +533,16 @@ export function GuidedOperations() {
           <button type="button" disabled={busy} onClick={abandonUnconfirmed}>Start a separate request</button>
         </p>}
         {acceptedId && <p role="status">Accepted run: {acceptedId}. Follow the authoritative state below; this preparation is not final Save or Post approval.</p>}
-        {shownRunIds.map(runId => <CapabilityRunCard key={runId} runId={runId} inlineApproval />)}
+        {shownRunIds.map(runId => {
+          const run = runs.find(candidate => candidate.runId === runId);
+          const recoveredTerminal = runId !== acceptedId && run && !pending(run) && run.state !== 'POST_OUTCOME_UNKNOWN';
+          return <div className="guided-run" key={runId}>
+            <CapabilityRunCard runId={runId} inlineApproval />
+            {recoveredTerminal && <button type="button" onClick={() => setTrackedRunIds(current => current.filter(id => id !== runId))}>Dismiss result</button>}
+          </div>;
+        })}
         {canRelease && <button type="button" onClick={releaseFinished}>{acceptedRun?.state === 'POST_OUTCOME_UNKNOWN'
-          ? 'Choose a separate inquiry' : acceptedRun?.kind === 'discovery' ? 'Finish discovery' : 'Start another operation'}</button>}
+          ? 'Choose a separate inquiry' : acceptedRun?.kind === 'discovery' ? 'Finish discovery' : 'Dismiss result'}</button>}
       </>}
     </section>
   );
