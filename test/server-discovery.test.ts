@@ -24,8 +24,8 @@ const args = { member: '9001', share: '9001-S0001-1', reason: 'FRAUD', notes: 'f
 const context = { operator: 'FIXTURE-SUPER', password: 'fixture-private-password', branch: 'MAIN-001', role: 'SUPERVISOR' as const };
 const origin = 'https://web-sample.interface-hiring.com';
 const stopped = (): discovery.DiscoveryResult => ({ status: 'stopped', trace: [], outputs: {}, finalUrl: `${origin}/menu` });
-function successful(): discovery.DiscoveryResult {
-  const trace: discovery.TraceEntry[] = Object.entries({ operator: '{{operator}}', password: '{{password}}', branch: '{{branch}}', ...args }).map(([name, value]) => ({
+function successful(input = args): discovery.DiscoveryResult {
+  const trace: discovery.TraceEntry[] = Object.entries({ operator: '{{operator}}', password: '{{password}}', branch: '{{branch}}', ...input }).map(([name, value]) => ({
     action: name === 'branch' || name === 'reason' ? 'select' : 'fill', reason: `Set ${name}`, value,
     descriptor: { description: name, strategies: [{ kind: 'nameAttr', name }] }, urlAfter: `${origin}/hold`,
   }));
@@ -106,6 +106,20 @@ it('binds fixed goals and server references, saves only a private validated draf
   await expect(f.service.discover('operator', id, { ...args, notes: 'changed' }, 'hold-key', 'SUPERVISOR', true)).rejects.toMatchObject({ status: 409 });
   await expect(f.service.discover('operator', id, args, 'missing', 'SUPERVISOR', true)).rejects.toMatchObject({ status: 404 });
   expect(f.construct).toHaveBeenCalledOnce(); expect(f.llm).toHaveBeenCalledOnce(); expect(f.close).toHaveBeenCalled();
+});
+
+it('records valid notes matching trusted capability metadata without quarantining the verified post', async () => {
+  const f = fixture(); const input = { ...args, notes: 'hold' };
+  f.run.mockImplementation(async () => {
+    await f.options().beforeDispatch!({} as ActionContext);
+    return successful(input);
+  });
+  const accepted = await f.start('common-note', input);
+  expect(await f.settle(accepted.runId)).toMatchObject({ state: 'success', result: { outputs: { heldShare: input.share } } });
+  const artifact = JSON.parse(readFileSync(join(f.artifactDir, 'drafts', `${accepted.runId}.json`), 'utf8'));
+  expect(artifact).toMatchObject({ id, name: id, status: 'draft' });
+  expect(artifact.steps.find((step: { target?: { description: string } }) => step.target?.description === 'notes').value).toBe('{{notes}}');
+  expect(f.journal.hasUnknown(id)).toBe(false);
 });
 
 it('keeps owner/key identity shared across discovery and replay including both lookup directions and legacy replay records', async () => {

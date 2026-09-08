@@ -437,13 +437,33 @@ export class InvocationService {
               const candidate = recordArtifact({ name: id, description: goal, goal, entryUrl: this.profile.entryUrl!, params,
                 sensitiveParams: sensitive, serverParams, allowedOrigins: this.policy.allowedOrigins, appId: this.profile.appId,
                 appDetectors: this.profile.detectors, model, discoveryRunId: record.runId }, result);
-              // Native unrelated PII is also registered by the runtime; substitution alone is insufficient.
+              const artifact = CapabilityArtifact.parse(applyMeridianContract(candidate));
+              if (artifact.status !== 'draft' || artifact.id !== id || artifact.name !== id || artifact.version !== version
+                || artifact.app.appId !== this.profile.appId || artifact.provenance.discoveryRunId !== record.runId
+                || artifact.provenance.model !== model) throw new Error('Unexpected discovery metadata');
+              // Recorder/server metadata and validated contract names are structure, not observed PII.
+              // Scan every recorded text surface; native unrelated PII remains in the mask set.
               const privacy = new Redactor();
               privacy.addSensitiveValues([...running.redactor.maskValues(), ...Object.values(normalized), context.operator, context.password, context.branch]);
-              const serialized = JSON.stringify(candidate);
-              if (JSON.stringify(privacy.redact(candidate)) !== serialized) throw new Error('Recording privacy validation failed');
-              const artifact = CapabilityArtifact.parse(applyMeridianContract(candidate));
-              if (artifact.status !== 'draft') throw new Error('Discovery must remain a draft');
+              const assertionText = (assertion: CapabilityArtifact['successCondition'] | undefined) => assertion?.kind === 'urlMatches'
+                ? [assertion.pattern] : assertion ? [assertion.text, assertion.frame] : [];
+              const recordedText = [
+                ...assertionText(artifact.successCondition),
+                ...artifact.outputs.flatMap(output => output.columns?.map(column => column.selector) ?? []),
+                ...artifact.steps.flatMap(step => [step.intent, step.url, step.value, ...assertionText(step.assert),
+                  step.target?.description, step.target?.frame, ...Object.values(step.target?.snapshot ?? {}),
+                  ...(step.target?.strategies.flatMap(({ kind: _kind, ...strategy }) => Object.values(strategy)) ?? []),
+                  step.extract?.pattern, step.extract?.rowSelector, ...(step.extract?.columns?.map(column => column.selector) ?? []),
+                ]),
+              ];
+              const names = new Set(artifact.parameters.map(parameter => parameter.name));
+              for (const text of recordedText) if (typeof text === 'string') {
+                const literal = text.replace(/\{\{(\w+)\}\}/g, (token, name: string) => {
+                  if (!names.has(name)) throw new Error('Undeclared recording parameter');
+                  return '';
+                });
+                if (privacy.redactString(literal) !== literal) throw new Error('Recording privacy validation failed');
+              }
               const drafts = join(this.artifactDir, 'drafts');
               mkdirSync(drafts, { recursive: true, mode: 0o700 });
               writeFileSync(join(drafts, `${record.runId}.json`), JSON.stringify(artifact, null, 2), { flag: 'wx', mode: 0o600 });
