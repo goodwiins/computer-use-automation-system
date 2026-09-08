@@ -70,7 +70,7 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
       description: 'Read a piece of on-screen text as a named output of the capability (e.g. a balance).',
       parameters: {
         type: 'object',
-        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'Native CSS selecting each data row or grouped container within the target table. Each match must contain td cells and no th cells. Playwright selectors such as :text-is are unsupported here.' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string', description: 'Native CSS resolved within each selected row/group; it must match exactly one descendant. Playwright selectors such as :text-is are unsupported.' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
+        properties: { ...targetProps, outputName: { type: 'string' }, pattern: { type: 'string', description: 'Optional regex with exactly one capture and one match to extract an individual value from shared text. Never extract session tokens.' }, rowSelector: { type: 'string', description: 'Native CSS selecting each data row or grouped container within the target container. Each match must contain td cells and no th cells. Playwright selectors such as :text-is are unsupported here.' }, columns: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, selector: { type: 'string', description: 'Native CSS resolved within each selected row/group; it must match exactly one descendant. Playwright selectors such as :text-is are unsupported.' }, type: { type: 'string', enum: ['string', 'money'] }, sensitive: { type: 'boolean' } }, required: ['name', 'selector', 'type'] } } },
         required: ['outputName', 'reason'],
       },
     },
@@ -91,12 +91,11 @@ export const DISCOVERY_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'done',
-      description: 'Declare the goal achieved. Include every output you extracted.',
+      description: 'Declare the goal achieved after extracting every required output. The runtime uses only outputs recorded by extract; this tool cannot add or change values.',
       parameters: {
         type: 'object',
         properties: {
           summary: { type: 'string' },
-          outputs: { type: 'object', description: 'outputName -> value you extracted', additionalProperties: { type: 'string' } },
         },
         required: ['summary'],
       },
@@ -149,9 +148,10 @@ Rules:
 - Stay within these origins: ${origins.join(', ')}. Never navigate elsewhere.
 - Prefer targeting elements by role + accessible name, or by exact visible text. Use nameAttr for form fields. CSS only as a last resort.
 - The app may use frames; pass the frame name you see in the observation.
-- Use extract to read any data the goal asks for, THEN call done with those outputs.
-- An extract target css is a Playwright target descriptor. Structured rowSelector and columns[].selector values run through the browser's native querySelectorAll inside that target table: use standard CSS only, never Playwright-only selectors such as :text-is or :has-text. Each rowSelector match must contain td cells and no th cells, and every column selector must match exactly one descendant.
-- For a vertical label/value receipt, select one grouped container such as tbody and let each column selector span its child rows, e.g. tr:nth-of-type(1) > td:nth-of-type(2). Keep headers outside the selected group. For ordinary tables, select the data tr elements and exclude headers.
+- Use extract to read every required output and column, THEN call done. Only extract records output values; done cannot merge, add, or repair missing columns.
+- An extract target css is a Playwright target descriptor. Structured rowSelector and columns[].selector values run through the browser's native querySelectorAll inside that target container: use standard CSS only, never Playwright-only selectors such as :text-is or :has-text. rowSelector selects descendants, never the target itself: :scope alone selects no rows, so target the parent when grouping the receipt element itself. Each rowSelector match must contain td cells and no th cells, and every column selector must match exactly one descendant.
+- For a vertical label/value receipt, select one grouped container such as tbody and let each column selector span its child rows, e.g. :scope > tr:nth-of-type(1) > td:nth-of-type(2). Keep headers outside the selected group. For ordinary tables, select the data tr elements and exclude headers.
+- Required output columns are not necessarily physical table rows. If confirmation or another value is outside the leaf table, target an observed common ancestor and use rowSelector to select one receipt container containing both. Use :scope > paths to avoid selecting nested table rows as extra records; prefer a value-only element for each column. A scalar pattern does not apply to table columns: if the value cannot be isolated from its label, preserve the same observed text in both the scalar output and its corresponding column so they compare exactly. Never invent a missing table row or copy a value from another output into done.
 - Request the required final submission with click. The runtime requires separate human approval before it acts; you cannot approve it. Never claim success after a human repair without recorded checks and extraction.
 - Server-bound parameters are references such as {{password}}. Fill using that reference, never request or echo the literal secret.
 - Use assert for checkpoints and extract with columns for structured table rows.
