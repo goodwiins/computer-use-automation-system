@@ -3767,6 +3767,7 @@ it('renders the dashboard and hostile chat strings inertly without storing crede
     await page.locator('#message').fill('Check my balance'); await page.getByRole('button', { name: 'Send', exact: true }).click();
     await page.getByText('<img src=x onerror=alert(1)>', { exact: true }).waitFor(); expect(await page.locator('#messages img').count()).toBe(0);
     expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+    await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await page.locator('#credential').fill('c'.repeat(32)); await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('status')?.textContent?.includes('Connected as caller'));
     expect(await page.locator('#role-label').isHidden()).toBe(true);

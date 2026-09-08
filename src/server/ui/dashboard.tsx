@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { canReleaseRun, hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
+import { completedActionReady, hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
-const MERIDIAN_IDS: ReadonlySet<string> = new Set(MERIDIAN_CAPABILITIES.map(([id]) => id));
+import { ApiRequestError } from './transport';
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
 type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
@@ -45,8 +45,7 @@ export function CapabilityCatalog() {
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
   const availability = session.availability;
-  const meridianSession = session.capabilities.some(({ id }) => MERIDIAN_IDS.has(id))
-    || availability?.some(({ id }) => MERIDIAN_IDS.has(id)) === true;
+  const meridianSession = session.readinessRequired !== false;
   const availabilityComplete = Array.isArray(availability)
     && MERIDIAN_CAPABILITIES.every(([id]) => availability.some(item => item.id === id && AVAILABILITY_STATES.has(item.state)));
   const metadataUnavailable = meridianSession && !availabilityComplete;
@@ -65,7 +64,7 @@ export function CapabilityCatalog() {
     || recoveryPending || Boolean(actionHold);
   const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
     && acceptedRun.capability === attempt.current.capabilityId
-    && canReleaseRun(acceptedRun, availability));
+    && completedActionReady(session, acceptedRun));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;
@@ -85,6 +84,13 @@ export function CapabilityCatalog() {
       bindAction(retained.key, accepted.runId, retained.capabilityId);
       watch(accepted.runId);
     } catch (e) {
+      if (!lookupOnly && e instanceof ApiRequestError && e.invocationRejected) {
+        clearAction(retained.key);
+        attempt.current = undefined;
+        setRecoveryAvailable(false);
+        setError(`${e.message} This request was not accepted. Review the request before submitting again.`);
+        return;
+      }
       markActionUncertain(retained.key);
       setRecoveryAvailable(true);
       const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
@@ -445,7 +451,8 @@ export function RunHistory() {
       <div className="section-title">
         <div>
           <h2 id="history-heading">{operator ? 'Operator Activity' : 'Run history'}</h2>
-          <p>{operator ? 'Review requests first, then browse all authenticated runs.' : 'Authoritative discovery and replay records.'}</p>
+          <p>{operator ? 'Review requests first, then browse recent authenticated runs.' : 'Recent authoritative discovery and replay records.'}</p>
+          <p>History returns up to 100 recent records, prioritizing pending reviews. Up to 32 followed runs, including the current action and open review, remain visible; older records are retained.</p>
         </div>
         <button id="refresh" onClick={() => void refresh()}>
           Refresh

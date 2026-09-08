@@ -14,12 +14,13 @@ import { AssistantChatTransport } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
 import {
   ChatRequestError,
+  allActionToolsRejected,
   chatRequest,
   observeGuardedChatStream,
   type ChatLifecycle,
   type ChatLifecycleCallbacks,
 } from './transport';
-import { canReleaseRun, useRuns } from './session';
+import { completedActionReady, pending, useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
 import {
   ConversationNavigation,
@@ -200,8 +201,8 @@ export function Chat() {
     if (actionHold?.kind !== 'chat' || actionHold.state !== 'bound' || !actionHold.runId) return;
     const run = runs.find((candidate) => candidate.runId === actionHold.runId);
     if (!run || !actionHold.boundCapabilityId || run.capability !== actionHold.boundCapabilityId) return;
-    if (canReleaseRun(run, session.availability)) clearAction(actionHold.key);
-  }, [actionHold, runs, session.availability, clearAction]);
+    if (completedActionReady(session, run)) clearAction(actionHold.key);
+  }, [actionHold, runs, session, clearAction]);
   const transport = useMemo(
     () =>
       new GuardedAssistantChatTransport({
@@ -237,6 +238,8 @@ export function Chat() {
             || !current.finishSeen
             || (current.finishReason !== 'stop' && current.finishReason !== 'tool-calls')) {
             markActionUncertain(current.key);
+          } else if (allActionToolsRejected(current)) {
+            clearAction(current.key);
           } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;

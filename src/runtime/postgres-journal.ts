@@ -17,7 +17,10 @@ import {
   validateReservationScope,
   validateIdempotencyKey,
   validateRunBatch,
-  validateKeyBatch,
+  validateTextBatch,
+  validateRecentHistory,
+  MAX_RECENT_HISTORY,
+  type RecentHistoryOptions,
 } from './journal.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -323,7 +326,7 @@ export class PostgresJournal implements RunJournal {
     if (!parsedId.success) return undefined;
     const id = parsedId.data;
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const result = await client.query<RunRow>(
         `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs WHERE run_id = $1`,
@@ -338,7 +341,7 @@ export class PostgresJournal implements RunJournal {
     const ids = validateRunBatch(runIds);
     if (ids.length === 0) return new Map();
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const result = await client.query<RunRow>(
         `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs WHERE run_id = ANY($1::uuid[])`,
@@ -358,10 +361,33 @@ export class PostgresJournal implements RunJournal {
   async list(): Promise<JournalRecord[]> {
     this.assertHealthy();
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const result = await client.query<RunRow>(
         `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs ORDER BY created_at, run_id`,
+      );
+      return result.rows.map(recordFromRow);
+    });
+  }
+
+  async recent(caller: string, options: RecentHistoryOptions = {}): Promise<JournalRecord[]> {
+    this.assertHealthy();
+    const actionable = validateRecentHistory(caller, options);
+    return this.transaction(async client => {
+      await this.lockAuthority(client, 'share');
+      const owner = options.legacyOperator ? "caller NOT LIKE 'subject:%' AND $1::text = 'operator'" : 'caller = $1';
+      const result = await client.query<RunRow>(
+        `SELECT * FROM (
+          SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity,
+            created_at, invocation_scope, state, dispatch_intent
+          FROM meridian_runs WHERE ${owner}
+            AND ((invocation_scope IS DISTINCT FROM 'member-identity'
+              AND NOT (invocation_scope IS NULL AND capability IS NOT DISTINCT FROM $2::text))
+              OR run_id = ANY($3::uuid[]))
+          ORDER BY ${actionable.length ? '(run_id = ANY($3::uuid[])) DESC,' : ''} meridian_runs.created_at DESC, meridian_runs.run_id DESC
+          LIMIT $4
+        ) recent ORDER BY created_at, run_id`,
+        [caller, options.legacyPrivateCapability ?? null, actionable, MAX_RECENT_HISTORY],
       );
       return result.rows.map(recordFromRow);
     });
@@ -371,48 +397,12 @@ export class PostgresJournal implements RunJournal {
     this.assertHealthy();
     const name = validateCapability(capability);
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const result = await client.query<{ present: boolean }>(
         `SELECT EXISTS (SELECT 1 FROM meridian_runs WHERE capability = $1 AND state = 'POST_OUTCOME_UNKNOWN') AS present`,
         [name],
       );
       return result.rows[0]?.present === true;
-    });
-  }
-
-  async unknownCapabilities(capabilities: readonly string[]): Promise<Set<string>> {
-    this.assertHealthy();
-    const names = validateKeyBatch(capabilities).map(validateCapability);
-    if (!names.length) return new Set();
-    return this.transaction(async client => {
-      await this.lockAuthority(client);
-      const result = await client.query<{ capability: string }>(
-        "SELECT DISTINCT capability FROM meridian_runs WHERE capability = ANY($1::text[]) AND state = 'POST_OUTCOME_UNKNOWN'",
-        [names],
-      );
-      return new Set(result.rows.map(row => row.capability));
-    });
-  }
-
-  async findRequests(caller: string, keys: readonly string[]): Promise<Map<string, JournalRecord>> {
-    this.assertHealthy();
-    const principal = validateCaller(caller);
-    const identities = new Map(validateKeyBatch(keys).map(key => [key, safeDigest(this.key, { caller: principal, key })]));
-    if (!identities.size) return new Map();
-    return this.transaction(async client => {
-      await this.lockAuthority(client);
-      const result = await client.query<RunRow & { lookup_identity: string }>(
-        `SELECT q.identity AS lookup_identity, r.run_id::text, r.kind, r.caller, r.capability, r.version, r.request,
-          r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
-         FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
-         WHERE q.caller = $1 AND q.identity = ANY($2::text[])`,
-        [principal, [...identities.values()]],
-      );
-      const records = new Map(result.rows.map(row => [row.lookup_identity, recordFromRow(row)]));
-      return new Map([...identities].flatMap(([key, identity]) => {
-        const record = records.get(identity);
-        return record ? [[key, record] as const] : [];
-      }));
     });
   }
 
@@ -422,8 +412,42 @@ export class PostgresJournal implements RunJournal {
     validateIdempotencyKey(key);
     const identity = safeDigest(this.key, { caller: principal, key });
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       return this.findRequestWithIdentity(client, principal, identity);
+    });
+  }
+
+  async findRequests(caller: string, keys: readonly string[]): Promise<Map<string, JournalRecord>> {
+    this.assertHealthy();
+    const principal = validateCaller(caller);
+    const requested = validateTextBatch(keys, true);
+    if (!requested.length) return new Map();
+    const identities = requested.map(key => safeDigest(this.key, { caller: principal, key }));
+    return this.transaction(async client => {
+      await this.lockAuthority(client, 'share');
+      const result = await client.query<RunRow & { request_identity: string }>(
+        `SELECT q.identity AS request_identity, r.run_id::text, r.kind, r.caller, r.capability, r.version,
+          r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
+         FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
+         WHERE q.identity = ANY($1::text[]) AND q.caller = $2 AND r.caller = $2`, [identities, principal]);
+      const records = new Map(result.rows.map(row => [row.request_identity, recordFromRow(row)]));
+      return new Map(requested.flatMap((key, index) => {
+        const record = records.get(identities[index]!);
+        return record ? [[key, record] as const] : [];
+      }));
+    });
+  }
+
+  async unknownCapabilities(capabilities: readonly string[]): Promise<Set<string>> {
+    this.assertHealthy();
+    const requested = validateTextBatch(capabilities);
+    if (!requested.length) return new Set();
+    return this.transaction(async client => {
+      await this.lockAuthority(client, 'share');
+      const result = await client.query<{ capability: string }>(
+        `SELECT DISTINCT capability FROM meridian_runs
+         WHERE capability = ANY($1::text[]) AND state = 'POST_OUTCOME_UNKNOWN'`, [requested]);
+      return new Set(result.rows.map(row => validateCapability(row.capability)));
     });
   }
 
@@ -434,7 +458,7 @@ export class PostgresJournal implements RunJournal {
     const identity = safeDigest(this.key, { caller: principal, key });
     const digest = safeDigest(this.key, request);
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const existing = await this.findRequestWithIdentity(client, principal, identity);
       if (existing && existing.request !== digest) throw requestConflict('Idempotency key already identifies another request');
       return { existing, identity, digest };
@@ -448,7 +472,7 @@ export class PostgresJournal implements RunJournal {
     const identity = safeDigest(this.key, { caller: principal, key });
     const digest = journalRecoveryDigest(this.key, request);
     return this.transaction(async client => {
-      await this.lockAuthority(client);
+      await this.lockAuthority(client, 'share');
       const existing = await this.findRequestWithIdentity(client, principal, identity);
       return { existing, matches: existing?.recoveryRequest === digest, direct: existing?.identity === identity };
     });
@@ -610,10 +634,10 @@ export class PostgresJournal implements RunJournal {
     return result.rows[0] ? recordFromRow(result.rows[0]) : undefined;
   }
 
-  private async lockAuthority(client: PoolClient): Promise<AuthorityRow> {
+  private async lockAuthority(client: PoolClient, mode: 'share' | 'update' = 'update'): Promise<AuthorityRow> {
     const result = await client.query<AuthorityRow>(
       `SELECT import_id::text, source_digest, owner_id::text
-       FROM meridian_journal_authority WHERE singleton = true FOR UPDATE`,
+       FROM meridian_journal_authority WHERE singleton = true FOR ${mode === 'share' ? 'SHARE' : 'UPDATE'}`,
     );
     const marker = result.rows[0];
     if (!marker || marker.import_id === null || marker.source_digest === null) throw requestConflict('Journal is not initialized');

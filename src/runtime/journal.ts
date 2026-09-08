@@ -23,10 +23,19 @@ export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[
 export type Awaitable<T> = T | Promise<T>;
 export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
 export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean; direct: boolean };
+export type RecentHistoryOptions = { legacyOperator?: boolean; legacyPrivateCapability?: string; actionableRunIds?: readonly string[] };
+export const MAX_RECENT_HISTORY = 100;
+export function validateRecentHistory(caller: string, options: RecentHistoryOptions) {
+  validateTextBatch([caller]);
+  if (options.legacyOperator && caller !== 'operator') throw new RequestError(400, 'Invalid history owner scope');
+  if (options.legacyPrivateCapability !== undefined) validateTextBatch([options.legacyPrivateCapability]);
+  return validateRunBatch(options.actionableRunIds ?? []);
+}
 export interface RunJournal {
   get(runId: string): Awaitable<JournalRecord | undefined>;
   getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
+  recent(caller: string, options?: RecentHistoryOptions): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
   unknownCapabilities(capabilities: readonly string[]): Awaitable<Set<string>>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
@@ -49,16 +58,20 @@ export function validateIdempotencyKey(key: string): void {
   }
 }
 export const MAX_RUN_BATCH = 100;
+export function validateTextBatch(values: readonly string[], requestKeys = false): string[] {
+  if (!Array.isArray(values) || values.length > MAX_RUN_BATCH) throw new RequestError(400, 'Journal batch does not match the contract');
+  for (const value of values) {
+    if (typeof value !== 'string') throw new RequestError(400, 'Journal batch does not match the contract');
+    if (requestKeys) validateIdempotencyKey(value);
+    else if (!/^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,199}$/.test(value)) throw new RequestError(400, 'Journal batch does not match the contract');
+  }
+  return [...new Set(values)];
+}
 const BatchRunIds = z.array(z.string().uuid().refine(value => value === value.toLowerCase())).max(MAX_RUN_BATCH);
 export function validateRunBatch(runIds: readonly string[]): string[] {
   const parsed = BatchRunIds.safeParse(runIds);
   if (!parsed.success) throw new RequestError(400, 'Journal run batch does not match the contract');
   return [...new Set(parsed.data)];
-}
-export function validateKeyBatch(keys: readonly string[]): string[] {
-  if (!Array.isArray(keys) || keys.length > MAX_RUN_BATCH) throw new RequestError(400, 'Journal key batch does not match the contract');
-  for (const key of keys) validateIdempotencyKey(key);
-  return [...new Set(keys)];
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -229,19 +242,28 @@ export class Journal implements RunJournal {
     }));
   }
   list() { this.assertHealthy(); return [...this.records.values()]; }
+  recent(caller: string, options: RecentHistoryOptions = {}) {
+    this.assertHealthy();
+    const actionable = new Set(validateRecentHistory(caller, options));
+    const selected: JournalRecord[] = [];
+    const newest = (a: JournalRecord, b: JournalRecord) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId);
+    for (const record of this.records.values()) {
+      if (options.legacyOperator ? record.caller.startsWith('subject:') : record.caller !== caller) continue;
+      const privateRun = record.invocationScope === 'member-identity'
+        || (record.invocationScope === undefined && record.capability === options.legacyPrivateCapability);
+      if (privateRun && !actionable.has(record.runId)) continue;
+      selected.push(record);
+      selected.sort((a, b) => Number(actionable.has(b.runId)) - Number(actionable.has(a.runId)) || newest(a, b));
+      if (selected.length > MAX_RECENT_HISTORY) selected.pop();
+    }
+    return selected.sort((a, b) => -newest(a, b));
+  }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
   unknownCapabilities(capabilities: readonly string[]) {
     this.assertHealthy();
-    const names = new Set(validateKeyBatch(capabilities));
-    return new Set([...this.records.values()].filter(record => names.has(record.capability)
+    const requested = new Set(validateTextBatch(capabilities));
+    return new Set([...this.records.values()].filter(record => requested.has(record.capability)
       && record.state === 'POST_OUTCOME_UNKNOWN').map(record => record.capability));
-  }
-  findRequests(caller: string, keys: readonly string[]) {
-    this.assertHealthy();
-    return new Map(validateKeyBatch(keys).flatMap(key => {
-      const record = this.findRequest(caller, key);
-      return record ? [[key, record] as const] : [];
-    }));
   }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
@@ -270,6 +292,13 @@ export class Journal implements RunJournal {
     const direct = runId === undefined ? undefined : this.records.get(runId);
     const alias = this.aliases.get(identity);
     return direct ?? (alias ? this.records.get(alias.runId) : undefined);
+  }
+  findRequests(caller: string, keys: readonly string[]) {
+    this.assertHealthy();
+    return new Map(validateTextBatch(keys, true).flatMap(key => {
+      const record = this.findRequest(caller, key);
+      return record?.caller === caller ? [[key, record] as const] : [];
+    }));
   }
   lookup(caller: string, key: string, request: unknown) {
     validateIdempotencyKey(key);
