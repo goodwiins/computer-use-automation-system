@@ -3,10 +3,15 @@
 ## Provenance
 
 The application, test, and four-image evidence source for this walkthrough is
-`a3a1827fac444d05036dd1ee9a2200a7a908d802`. It is checked out on
+`8d5a227a161b7c8f156e07fdcff5607b3fbe5015`. It is checked out on
 `codex/meridian-ui-accessibility`. This is the source/evidence SHA, not the
 documentation commit: the final documentation commit and PR head necessarily
 include a later SHA because this file is committed afterward.
+
+This source SHA includes current dev
+`ad5e62539c18986a3228a0d604b4da266d1db965` (including PR #105), normally merged
+as `6610655e76be812281bc10ea1d759c5bdeca17f6`. The PR changes only Unit 7 UI,
+browser tests, documentation and evidence; upstream storage behavior is intact.
 
 The checks were run in the shared Ubuntu environment (`Linux onubuntu`, kernel
 `6.8.0-124-generic`, x86_64). The native-zoom check starts `/usr/bin/Xvfb` for
@@ -15,7 +20,7 @@ and package output was:
 
 ```text
 git rev-parse HEAD
-a3a1827fac444d05036dd1ee9a2200a7a908d802
+8d5a227a161b7c8f156e07fdcff5607b3fbe5015
 node --version
 v22.22.0
 npm --version
@@ -41,15 +46,15 @@ output above.
 > next build
 
 ▲ Next.js 16.3.4 (Turbopack)
-✓ Running next.config.mjs took 25ms
+✓ Running next.config.mjs took 23ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 13.5s
+✓ Compiled successfully in 4.0s
   Running TypeScript ...
-  Finished TypeScript in 15.6s ...
+  Finished TypeScript in 10.7s ...
   Collecting page data using 4 workers ...
   Generating static pages using 4 workers (0/3) ...
-✓ Generating static pages using 4 workers (3/3) in 1414ms
+✓ Generating static pages using 4 workers (3/3) in 1113ms
   Finalizing page optimization ...
 Route (app)
 ┌ ○ /
@@ -93,7 +98,9 @@ image below as genuine authenticated demo acceptance.
    focus moves to `Back to conversation`; press `Enter` to close and return
    focus to `Activity`. At wide widths the chat and Activity panel remain
    side-by-side, so `Back to conversation` is hidden; pressing `Enter` on
-   `Activity` still toggles the panel.
+   `Activity` still toggles the panel. Crossing the breakpoint transfers focus
+   between Activity and Back when needed, while a visible catalog or run control
+   keeps its focus.
 
 3. For an operator run awaiting review, activate its `Review request` button.
    The neutral `Review request` heading receives focus first. `Tab` visits
@@ -119,9 +126,12 @@ and active-run status remain, and the `.messages` scroll position returns to
 320px. At 1024px and 1440px, verify the split view, hidden Back control, and
 the same draft/run preservation while toggling Activity by keyboard.
 
-The test also asserts `document.documentElement.scrollWidth <= innerWidth` at
-each width and records no new `POST` to `/api/chat`, `/invoke`, `/decision`,
-`/cancel`, or `/transaction` during Activity navigation.
+The test asserts nonzero Activity-panel width and no panel or document horizontal
+overflow while Activity is visibly open at each width. It records no new `POST`
+to `/api/chat`, `/invoke`, `/decision`, `/cancel`, or `/transaction` during navigation.
+Additional regressions preserve a newer visible scroll when wide Activity closes,
+and preserve scrollTop 520 through narrow → wide → scroll → narrow → close. The
+latest visible position is captured immediately before chat becomes hidden.
 
 The connected screenshots below show the current authenticated layout: the
 login form is hidden and the sidebar contains only the large `Disconnect`
@@ -200,34 +210,68 @@ This was genuine browser zoom in headed Chromium. No CSS `zoom`,
 was used. The image is the physical single-frame capture, not a CSS-scaled
 mockup.
 
+The owned Xvfb root display is 1441×901 to avoid Chromium's one-pixel window
+clamping. The capture covers the complete 1440×900 physical browser window at
+origin 0,0; the extra root-display margin is outside the image. Xvfb allocates a
+free display through its private `-displayfd` pipe. Before Chromium or ffmpeg
+connects, the fixture checks that its child is alive and that the allocated
+socket has not been replaced. An opt-in regression allocates two distinct
+displays and rejects capture after ownership ends. Default tests never launch
+Xvfb or xdpyinfo; native setup requires `MERIDIAN_NATIVE_ZOOM=1`.
+
 ![Native 200% browser zoom — offline synthetic fixture](evidence/ui-walkthrough/native-zoom-200.png)
 
 *Headed Chromium native 200% zoom, 1440×900 Xvfb frame — offline synthetic fixture.*
 
 ## Checks performed
 
-The focused browser checks passed from the source/evidence SHA. The merged
-`test/chat-ui.test.ts` file contains 100 tests; the offline file run passed 98
-with the native-zoom opt-in and live PostgreSQL case skipped:
+The merged `test/chat-ui.test.ts` registers 109 tests by default. Opting in to
+native verification adds one native cleanup parameter, for 110 tests. The two
+native tests are skipped by default; the full database-backed gate includes the
+real PostgreSQL recovery case against a disposable local PostgreSQL 16 database.
+These focused checks passed on the application/test/evidence tree:
 
 ```text
-MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'preserves the conversation across responsive Activity navigation|offline operator review controls require live authority'
+MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'surfaces setup and cleanup errors|refuses native display|reads only a complete valid display|rejects native allocation|registers idempotent teardown|Activity focus|visible Activity controls|scroll position|restores narrow conversation scroll|restores the latest scroll|preserves the conversation across responsive Activity navigation|offline operator review controls require live authority|neutral replacement focus resets|Connect signs on directly|Connect does not open chat after sign-on|connects a local supervisor using operator and password|reconciles a clean tool-bearing chat stream|offline direct invocation keeps an uncertain request key|status text shows the authoritative step|operator Activity filters start in a review-first queue|offline stopping the response|can stop the response before|keeps saved conversation row controls'
 Test Files  1 passed (1)
-Tests       2 passed | 98 skipped (100)
+Tests       25 passed | 84 skipped (109)
+Duration    44.08s
 
-npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%|registers idempotent teardown|preserves the conversation across responsive Activity navigation|offline operator review controls require live authority|neutral replacement focus resets|Connect signs on directly|Connect does not open chat after sign-on|connects a local supervisor using operator and password|reconciles a clean tool-bearing chat stream|offline direct invocation keeps an uncertain request key|status text shows the authoritative step|operator Activity filters start in a review-first queue'
+MERIDIAN_NATIVE_ZOOM=1 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'registers idempotent teardown|allocates distinct owned native displays|actual Chromium browser zoom at 200%'
 Test Files  1 passed (1)
-Tests       14 passed | 86 skipped (100)
+Tests       4 passed | 106 skipped (110)
+Duration    10.09s
 
-xvfb-run -a env MERIDIAN_NATIVE_ZOOM=1 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'actual Chromium browser zoom at 200%'
+npx vitest run test/chat-ui.test.ts -t 'retains focus on visible Activity controls'
 Test Files  1 passed (1)
-Tests       1 passed | 99 skipped (100)
-
-npx vitest run test/chat-ui.test.ts --testNamePattern='^(?!recovers a real PostgreSQL)'
-Test Files  1 passed (1)
-Tests       98 passed | 2 skipped (100)
-Duration    191.53s (transform 1.38s, setup 0ms, import 2.67s, tests 188.55s, environment 0ms)
+Tests       1 passed | 108 skipped (109)
+Duration    4.74s
 ```
+
+The full local gate used disposable PostgreSQL 16 at `127.0.0.1:55437` and the
+same source SHA. Exact parallel `npm run ci` passed both typechecks and build,
+then failed with 1113 passed / 2 failed / 2 native skips (1117), 49/51 files,
+in 258.71s. The unchanged approval-cli second-process case hit its 60s timeout;
+the history-structure browser case hit its 5s timeout. Both passed individually
+at the same SHA (15.42s and 1.62s test time), supporting shared-host contention
+as the cause. The failed parallel result is not treated as a pass.
+
+The requested serial equivalent passed both typechecks, the production build,
+and every executed test, including the real PostgreSQL browser recovery case:
+
+```text
+npm run typecheck
+npm run typecheck:ui
+TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55437/meridian_unit7 npm test -- --maxWorkers=1
+Test Files  51 passed (51)
+Tests       1115 passed | 2 skipped (1117)
+Duration    403.76s
+```
+
+Final documentation-head smoke/build/native checks and exact-head hosted CI
+are recorded on PR #104. All four screenshots were recaptured and visually
+inspected from the source/evidence tree; three recaptured byte-identically and
+the review image changed with its synthetic expiry time.
 
 The required evidence/link/hygiene checks also passed: all four evidence
 files exist, the required provenance/boundary phrases match this document,
