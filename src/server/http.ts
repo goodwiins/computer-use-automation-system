@@ -89,6 +89,10 @@ export function createApp(service: InvocationService, config: { callerToken: str
   });
   // ponytail: one local supervisor sign-on at a time; per-account limits if more accounts are supported.
   let supervisorLoginPending = false, supervisorLoginAfter = 0;
+  let supervisorVerification: { digest: Buffer; identity: { operator: string; branch: string; role: 'SUPERVISOR' } } | undefined;
+  const supervisorContextDigest = (context = operatorContext('SUPERVISOR')) => hash(JSON.stringify([
+    context.operator.toUpperCase(), context.password, context.branch, context.role, service.profile?.appId, service.profile?.entryUrl,
+  ]));
   app.post('/session/supervisor', (req, res, next) => { void (async () => {
     if (!localSupervisorToken) throw new RequestError(404, 'Local supervisor login is disabled');
     if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -97,14 +101,32 @@ export function createApp(service: InvocationService, config: { callerToken: str
     if (supervisorLoginPending || Date.now() < supervisorLoginAfter) throw new RequestError(429, 'Please wait before signing in again');
     supervisorLoginAfter = Date.now() + 1000;
     const input = z.object({ operator: z.string().min(1).max(128), password: z.string().min(1).max(512) }).strict().parse(req.body);
+    // Context drift invalidates proof, but a mistyped credential must not strand a pending review.
+    const verified = supervisorVerification;
+    supervisorVerification = undefined;
     const expected = operatorContext('SUPERVISOR');
+    const digest = supervisorContextDigest(expected);
+    if (verified && timingSafeEqual(verified.digest, digest)) supervisorVerification = verified;
     const matchesOperator = timingSafeEqual(hash(input.operator.toUpperCase()), hash(expected.operator.toUpperCase()));
     const matchesPassword = timingSafeEqual(hash(input.password), hash(expected.password));
     input.password = '';
     delete req.body.password;
     if (!matchesOperator || !matchesPassword) throw new RequestError(401, 'Supervisor sign-in failed. Check operator and password.');
     supervisorLoginPending = true;
+    supervisorVerification = undefined;
     try {
+      if (verified && timingSafeEqual(verified.digest, digest)) {
+        let pending = false;
+        try {
+          pending = (await service.history('operator')).some(run => run.state === 'awaiting-human'
+            && run.intervention && 'id' in run.intervention && Boolean(run.intervention.id) && Date.now() < run.intervention.expiresAt);
+        } catch { /* An unavailable authority cannot authorize reconnect; retain fresh sign-on below. */ }
+        if (pending && timingSafeEqual(digest, supervisorContextDigest())) {
+          supervisorVerification = verified;
+          res.json({ token: localSupervisorToken, ...verified.identity });
+          return;
+        }
+      }
       const { runId } = await service.invoke('operator', 'meridian-sign-on', {}, randomUUID(), 'SUPERVISOR');
       const deadline = Date.now() + 90_000;
       while (!res.destroyed && Date.now() < deadline) {
@@ -112,10 +134,12 @@ export function createApp(service: InvocationService, config: { callerToken: str
         if (run.state === 'success' && run.result?.status === 'success') {
           const outputs = run.result.outputs;
           if (typeof outputs?.operator !== 'string' || outputs.operator.toUpperCase() !== expected.operator.toUpperCase()
-            || outputs.role !== 'SUPERVISOR' || outputs.branch !== expected.branch) {
+            || outputs.role !== 'SUPERVISOR' || outputs.branch !== expected.branch
+            || !timingSafeEqual(digest, supervisorContextDigest())) {
             throw new RequestError(401, 'Meridian did not confirm supervisor access.');
           }
-          res.json({ token: localSupervisorToken, operator: outputs.operator, branch: outputs.branch, role: outputs.role });
+          supervisorVerification = { digest, identity: { operator: outputs.operator, branch: outputs.branch, role: outputs.role } };
+          res.json({ token: localSupervisorToken, ...supervisorVerification.identity });
           return;
         }
         if (run.intervention || !['accepted', 'reserved', 'running', 'dispatching', 'recovering'].includes(run.state)) {
