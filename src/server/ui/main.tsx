@@ -1,7 +1,7 @@
 'use client';
 
 import './csp';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, type Session } from './session';
 import { Chat } from './chat';
 import { CapabilityCatalog, RunHistory } from './dashboard';
@@ -152,17 +152,68 @@ export default function App() {
 
 function Workspace() {
   const [activityOpen, setActivityOpen] = useState(false);
+  const activityTriggerRef = useRef<HTMLButtonElement>(null);
+  const activityBackRef = useRef<HTMLButtonElement>(null);
+  const messageScrollTopRef = useRef(0);
+  const shouldRestoreConversationFocusRef = useRef(false);
   const { runs, session } = useRuns();
   const awaitingReview = session.principal === 'operator' ? runs.filter(hasCurrentPublicIntervention).length : 0;
+  const openActivity = () => {
+    messageScrollTopRef.current =
+      document.querySelector<HTMLElement>('.messages')?.scrollTop ?? 0;
+    setActivityOpen(true);
+  };
+  const closeActivity = () => {
+    shouldRestoreConversationFocusRef.current = true;
+    setActivityOpen(false);
+  };
+  useLayoutEffect(() => {
+    let restoreFrame: number | undefined;
+    const back = activityBackRef.current;
+    if (activityOpen && back && back.getClientRects().length > 0) {
+      back.focus();
+    } else if (!activityOpen && shouldRestoreConversationFocusRef.current) {
+      const messages = document.querySelector<HTMLElement>('.messages');
+      const restoreScroll = () => {
+        if (messages) messages.scrollTop = messageScrollTopRef.current;
+      };
+      restoreScroll();
+      restoreFrame = requestAnimationFrame(() => {
+        restoreScroll();
+        restoreFrame = requestAnimationFrame(() => {
+          restoreScroll();
+        });
+      });
+      activityTriggerRef.current?.focus();
+      shouldRestoreConversationFocusRef.current = false;
+    }
+    return () => {
+      if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
+    };
+  }, [activityOpen]);
   return <div id="workspace" data-activity-open={activityOpen}>
     <div className="workspace-header">
       <span>Assistant</span>
-      <button className="secondary" aria-expanded={activityOpen} aria-controls="activity-panel" onClick={() => setActivityOpen(!activityOpen)}>
+      <button
+        ref={activityTriggerRef}
+        className="secondary"
+        aria-expanded={activityOpen}
+        aria-controls="activity-panel"
+        onClick={activityOpen ? closeActivity : openActivity}
+      >
         Activity{awaitingReview > 0 && <span className="review-count">{awaitingReview} awaiting review</span>}
       </button>
     </div>
     <Chat />
     <aside id="activity-panel" className="activity-panel" aria-label="Activity" hidden={!activityOpen}>
+      <button
+        ref={activityBackRef}
+        className="secondary activity-back"
+        type="button"
+        onClick={closeActivity}
+      >
+        Back to conversation
+      </button>
       {session.principal === 'operator' ? <>
         <RunHistory />
         <CapabilityCatalog />

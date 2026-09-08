@@ -835,26 +835,74 @@ it('recovers a real PostgreSQL chat action after the browser loses its response 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60000);
-it('keeps the Next.js chat focused and preserves a draft when Activity is toggled', async () => {
-  const { page, errors } = await fixture(true);
+it('preserves the conversation across responsive Activity navigation', async () => {
+  const { page, state, errors } = await fixture(true);
+  state.runs.push(initialRun());
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('#workspace').waitFor();
   await page.getByRole('heading', { name: 'How can I help you today?' }).waitFor();
   expect(await page.locator('script[src*="/_next/static/"]').count()).toBeGreaterThan(0);
   const activity = page.getByRole('button', { name: 'Activity', exact: true });
   const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+  const messages = page.locator('.messages');
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const threadRoot = page.locator('.thread-root');
+  await activity.click();
+  expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+  await page.locator('#runs [data-run-id]').waitFor();
+  await activity.click();
+  expect(await activity.getAttribute('aria-expanded')).toBe('false');
+  await threadRoot.evaluate((node) => {
+    (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted = true;
+  });
+  await message.fill('Draft survives Activity');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+  const status = page.locator('#runs [role="status"]').first();
+  const navigationTargets = /(?:\/api\/chat|\/invoke|\/decision|\/cancel|\/transaction)/;
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await message.fill('A draft, not submitted');
-    const composer = await message.boundingBox();
-    expect(composer && composer.y + composer.height <= 900).toBe(true);
+    await messages.evaluate((node) => {
+      (node as HTMLElement).scrollTop = 320;
+    });
+    expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
+    expect(await threadRoot.evaluate((node) =>
+      (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
+    )).toBe(true);
+    expect(await message.inputValue()).toBe('Draft survives Activity');
+    expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const requestsBeforeNavigation = state.requests.length;
+
     await activity.focus();
     await page.keyboard.press('Enter');
-    await page.getByRole('heading', { name: 'Capability catalog', exact: true }).waitFor();
-    await activity.click();
-    expect(await message.inputValue()).toBe('A draft, not submitted');
-    expect(await activity.getAttribute('aria-expanded')).toBe('false');
-    await page.screenshot({ path: join(evidencePath, `next-chat-${width}.png`) });
+    expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+    if (width <= 768) {
+      expect(await back.isVisible()).toBe(true);
+      expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Enter');
+      expect(await activity.getAttribute('aria-expanded')).toBe('false');
+      expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+      expect(await message.inputValue()).toBe('Draft survives Activity');
+      expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+      expect(await threadRoot.evaluate((node) =>
+        (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
+      )).toBe(true);
+      await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 320);
+      expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
+    } else {
+      expect(await back.isVisible()).toBe(false);
+      expect(await page.locator('.chat').isVisible()).toBe(true);
+      expect(await page.locator('.activity-panel').isVisible()).toBe(true);
+      await activity.focus();
+      await page.keyboard.press('Enter');
+      expect(await activity.getAttribute('aria-expanded')).toBe('false');
+    }
+    const navigationPosts = state.requests.slice(requestsBeforeNavigation).filter(request =>
+      request.method === 'POST' && navigationTargets.test(request.path),
+    );
+    expect(navigationPosts).toEqual([]);
   }
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
