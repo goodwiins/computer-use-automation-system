@@ -145,8 +145,12 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.post('/chat', chat.legacy);
   app.post('/api/chat', chat.stream);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 500;
-    res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration',
+    const parserError = typeof error === 'object' && error !== null ? error as { type?: unknown; status?: unknown; statusCode?: unknown } : {};
+    const parserStatus = parserError.status ?? parserError.statusCode;
+    const bodyError = typeof parserError.type === 'string' && typeof parserStatus === 'number' && parserStatus >= 400 && parserStatus < 500;
+    const bodyStatus = bodyError ? parserStatus as number : undefined;
+    const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : bodyStatus ?? 500;
+    res.status(status).json({ error: error instanceof RequestError ? error.message : bodyError ? 'Request body is not acceptable' : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration',
       ...(error instanceof InvocationRejected ? { acceptance: error.acceptance } : {}) });
   });
   return app;

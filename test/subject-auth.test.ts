@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { request as httpRequest, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,10 +28,11 @@ import { ControlSession } from '../src/escalation/session.js';
 const a = { subjectId: '11111111-1111-4111-8111-111111111111', role: 'caller' } as const;
 const b = { subjectId: '22222222-2222-4222-8222-222222222222', role: 'caller' } as const;
 const operator = { subjectId: '33333333-3333-4333-8333-333333333333', role: 'operator' } as const;
-const aToken = 'a'.repeat(32), bToken = 'b'.repeat(32), operatorToken = 'o'.repeat(32);
+const otherOperator = { subjectId: '44444444-4444-4444-8444-444444444444', role: 'operator' } as const;
+const aToken = 'a'.repeat(32), bToken = 'b'.repeat(32), operatorToken = 'o'.repeat(32), otherOperatorToken = 'q'.repeat(32);
 const legacyCallerToken = 'c'.repeat(32), legacyOperatorToken = 'p'.repeat(32);
 const credentials: SubjectCredential[] = [
-  { ...a, token: aToken }, { ...b, token: bToken }, { ...operator, token: operatorToken },
+  { ...a, token: aToken }, { ...b, token: bToken }, { ...operator, token: operatorToken }, { ...otherOperator, token: otherOperatorToken },
 ];
 const servers: Server[] = [];
 const cleanup: (() => Promise<void>)[] = [];
@@ -171,10 +173,10 @@ it('applies exact subject ownership to run history, detail, approval projection,
   const foreign = journal.reserve(principalKey(b), 'same-key', 'lookup', '1.0.0', {});
   const legacy = journal.reserve('caller', 'legacy-key', 'lookup', '1.0.0', {});
   expect((await service.get(a, own.runId)).runId).toBe(own.runId);
-  await expect(service.get(b, own.runId)).rejects.toThrow('another principal');
+  await expect(service.get(b, own.runId)).rejects.toMatchObject({ status: 404, message: 'Unknown run' });
   expect((await service.history(a)).map(run => run.runId)).toEqual([own.runId]);
   expect((await service.history(b)).map(run => run.runId)).toEqual([foreign.runId]);
-  await expect(service.get('operator', own.runId)).rejects.toThrow('another principal');
+  await expect(service.get('operator', own.runId)).rejects.toMatchObject({ status: 404, message: 'Unknown run' });
   expect((await service.get('operator', legacy.runId)).runId).toBe(legacy.runId);
 
   const session = new ControlSession();
@@ -185,7 +187,7 @@ it('applies exact subject ownership to run history, detail, approval projection,
   const ownOperator: SubjectPrincipal = { ...a, role: 'operator' };
   expect((await service.get(ownOperator, own.runId)).intervention).toMatchObject({ id: approval.pending!.id });
   await expect(service.decide(a, own.runId, approval.pending!.id, 'abort')).rejects.toThrow('Only operators');
-  await expect(service.decide({ ...b, role: 'operator' }, own.runId, approval.pending!.id, 'abort')).rejects.toThrow('another principal');
+  await expect(service.decide({ ...b, role: 'operator' }, own.runId, approval.pending!.id, 'abort')).rejects.toMatchObject({ status: 404 });
   await service.decide(ownOperator, own.runId, approval.pending!.id, 'abort');
   expect(await pending).toBe('abort');
 });
@@ -211,9 +213,11 @@ it('authenticates subject HTTP requests and enforces ownership for history, deta
   });
   expect((await request('/runs', aToken)).json.map((run: { runId: string }) => run.runId)).toEqual([own.runId]);
   expect((await request(`/runs/${own.runId}`, aToken)).status).toBe(200);
-  expect((await request(`/runs/${foreign.runId}`, aToken)).status).toBe(403);
+  const foreignResponse = await request(`/runs/${foreign.runId}`, aToken);
+  const missingResponse = await request(`/runs/${randomUUID()}`, aToken);
+  expect(foreignResponse).toMatchObject({ status: 404, json: missingResponse.json });
   expect((await request(`/runs/${own.runId}/evidence/safe.json`, aToken)).text).toBe('{"safe":true}');
-  expect((await request(`/runs/${own.runId}/evidence/safe.json`, bToken)).status).toBe(403);
+  expect((await request(`/runs/${own.runId}/evidence/safe.json`, bToken)).status).toBe(404);
   expect((await request('/capabilities', legacyCallerToken)).status).toBe(401);
 
   for (const [token, owner] of [[aToken, principalKey(a)], [bToken, principalKey(b)]] as const) {
@@ -224,6 +228,30 @@ it('authenticates subject HTTP requests and enforces ownership for history, deta
     await vi.waitFor(() => expect(journal.records.get(response.json.runId)?.state).toBe('success'));
     expect(journal.records.get(response.json.runId)?.caller).toBe(owner);
   }
+});
+
+it('refuses subject self-approval while preserving owner abort and owner-only access', async () => {
+  const { journal, service } = makeService();
+  const own = journal.reserve(principalKey(operator), 'approval-key', 'lookup', '1.0.0', {});
+  const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+  const pending = approval.wait({ kind: 'risk_approval', capability: 'lookup', goal: 'write', reason: 'review', url: 'https://example.test' });
+  service.live.set(own.runId, { state: 'awaiting-human', inputs: {}, started: Date.now(), approval });
+  const request = await start(service);
+  const path = `/runs/${own.runId}/decision`;
+  const body = { approvalId: approval.pending!.id, decision: 'approve' };
+  expect(await request(path, operatorToken, { method: 'POST', body })).toMatchObject({
+    status: 403, json: { error: 'A run cannot be approved by the principal that requested it' },
+  });
+  expect((await request(path, otherOperatorToken, { method: 'POST', body })).status).toBe(404);
+  expect(await request(path, operatorToken, { method: 'POST', body: { ...body, decision: 'abort' } })).toMatchObject({ status: 200 });
+  expect(await pending).toBe('abort');
+});
+
+it('preserves body-parser client statuses without exposing parser details', async () => {
+  const { service } = makeService();
+  const request = await start(service);
+  const response = await request('/capabilities/unknown/invoke', aToken, { method: 'POST', body: { value: 'x'.repeat(40 * 1024) } });
+  expect(response).toMatchObject({ status: 413, json: { error: 'Request body is not acceptable' } });
 });
 
 it('disables local teller login when subject credentials are configured', async () => {

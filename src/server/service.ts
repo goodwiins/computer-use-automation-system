@@ -316,7 +316,11 @@ export class InvocationService {
   async get(principal: Principal, runId: string) {
     const record = await this.journal.get(runId);
     if (!record) throw new RequestError(404, 'Unknown run');
-    return this.projectRun(principal, record);
+    try { return this.projectRun(principal, record); }
+    catch (error) {
+      if (error instanceof RequestError && error.status === 403) throw new RequestError(404, 'Unknown run');
+      throw error;
+    }
   }
   async getOwnedMany(principal: Principal, runIds: readonly string[]) {
     const records = await this.journal.getMany(runIds);
@@ -403,6 +407,8 @@ export class InvocationService {
     if (principalRole(principal) !== 'operator') throw new RequestError(403, 'Only operators can decide interventions');
     await this.get(principal, runId);
     const record = await this.journal.get(runId);
+    if (typeof principal !== 'string' && record?.caller === principalKey(principal) && decision === 'approve')
+      throw new RequestError(403, 'A run cannot be approved by the principal that requested it');
     if (record && this.isPrivateRecord(record) && decision === 'approve') throw new RequestError(409, 'Private identity inquiry approval is unavailable');
     const live = this.live.get(runId);
     if (!live) throw new RequestError(409, 'Run has no live intervention');
