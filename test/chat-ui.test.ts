@@ -1,9 +1,10 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
 import { MockLanguageModelV3 } from 'ai/test';
 import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -43,6 +44,124 @@ const readinessLabels = [
   ['meridian-update-member', 'Update contact'],
   ['meridian-place-hold', 'Supervisor hold'],
 ] as const;
+
+function walkthroughScreenshotPath(name: string) {
+  const outputDir = process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR
+    ? resolve(process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR)
+    : evidencePath;
+  mkdirSync(outputDir, { recursive: true });
+  return join(outputDir, name);
+}
+
+function parseNativeDisplayNumber(output: string): string | undefined {
+  if (!/^\d{0,5}\n?$/.test(output) || (output && Number(output) > 65535)) {
+    throw new Error('Invalid Xvfb display allocation');
+  }
+  if (!output.endsWith('\n')) return undefined;
+  if (output === '\n') throw new Error('Invalid Xvfb display allocation');
+  return `:${Number(output)}`;
+}
+
+function readNativeDisplayAllocation(server: ReturnType<typeof spawn>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const pipe = server.stdio[3];
+    if (!pipe || !('readable' in pipe)) return reject(new Error('Missing Xvfb display allocation pipe'));
+    let output = '';
+    const finish = (error?: Error, display?: string) => {
+      clearTimeout(timer);
+      pipe.removeListener('data', onData);
+      pipe.removeListener('end', onEnd);
+      server.removeListener('error', onError);
+      server.removeListener('exit', onExit);
+      if (error) reject(error);
+      else resolve(display!);
+    };
+    const onError = (error: Error) => finish(error);
+    const onExit = () => finish(new Error('Xvfb exited before allocating its display'));
+    const onEnd = () => finish(new Error('Xvfb display allocation pipe closed without a display'));
+    const onData = (chunk: Buffer) => {
+      try {
+        output += chunk.toString('ascii');
+        const display = parseNativeDisplayNumber(output);
+        if (server.exitCode !== null || server.signalCode !== null) return onExit();
+        if (display) finish(undefined, display);
+      } catch (error) {
+        finish(error as Error);
+      }
+    };
+    const timer = setTimeout(() => finish(new Error('Timed out waiting for Xvfb display allocation')), 5000);
+    pipe.on('data', onData);
+    pipe.once('end', onEnd);
+    server.once('error', onError);
+    server.once('exit', onExit);
+    if (server.exitCode !== null || server.signalCode !== null) onExit();
+  });
+}
+
+function assertOwnedNativeDisplay(native: {
+  server: ReturnType<typeof spawn>;
+  display: string;
+  socket: { dev: number; ino: number };
+}) {
+  if (!native.server.pid || native.server.exitCode !== null || native.server.signalCode !== null) {
+    throw new Error('Owned Xvfb process is not running');
+  }
+  const socket = statSync(`/tmp/.X11-unix/X${native.display.slice(1)}`);
+  if (!socket.isSocket() || socket.dev !== native.socket.dev || socket.ino !== native.socket.ino) {
+    throw new Error('Owned Xvfb display socket was replaced');
+  }
+}
+
+async function startNativeDisplay() {
+  if (process.env.MERIDIAN_NATIVE_ZOOM !== '1') throw new Error('Native display requires MERIDIAN_NATIVE_ZOOM=1');
+  // -displayfd atomically selects an unused display; only this child can write FD 3.
+  const server = spawn('/usr/bin/Xvfb', [
+    '-displayfd', '3',
+    '-screen', '0', '1441x901x24',
+    '-nolisten', 'tcp',
+    '-ac',
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
+  try {
+    const display = await readNativeDisplayAllocation(server);
+    // Xvfb's ready message comes from this child after it binds the free socket.
+    // Remember that socket identity so a reused display number is never accepted.
+    const socket = statSync(`/tmp/.X11-unix/X${display.slice(1)}`);
+    const native = { server, display, socket };
+    assertOwnedNativeDisplay(native);
+    return native;
+  } catch (error) {
+    try {
+      await stopNativeDisplay(server);
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Native display setup and cleanup failed');
+    }
+    throw error;
+  }
+}
+
+async function stopNativeDisplay(server: ReturnType<typeof spawn>) {
+  if (!server.pid) return;
+  if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
+  if (server.exitCode === null && server.signalCode === null) {
+    await new Promise<void>(resolve => server.once('exit', () => resolve()));
+  }
+}
+
+async function captureNativeDisplay(native: Awaited<ReturnType<typeof startNativeDisplay>>, outputPath: string) {
+  assertOwnedNativeDisplay(native);
+  const { display } = native;
+  await new Promise<void>((resolve, reject) => {
+    execFile('/usr/bin/ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'x11grab', '-framerate', '1', '-video_size', '1440x900',
+      '-i', `${display}+0,0`,
+      '-frames:v', '1', '-y', outputPath,
+    ], { env: { ...process.env, DISPLAY: display } }, error => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
 
 function nativeLifecycle(key: string, intent: 'action' | 'status' = 'action') {
   return {
@@ -288,16 +407,208 @@ const initialRun = () => ({
 });
 const cleanup: (() => Promise<void>)[] = [];
 const defaultCapability = capability;
+
+type FixtureResources = {
+  evidenceDir?: string;
+  nativeProfileDir?: string;
+  nativeDisplay?: Awaited<ReturnType<typeof startNativeDisplay>>;
+  server?: ReturnType<typeof createServer>;
+  browser?: Browser | BrowserContext;
+};
+
+async function closeFixtureResources(resources: FixtureResources) {
+  const failures: unknown[] = [];
+  const attempt = async (close: () => Promise<void> | void) => {
+    try {
+      await close();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  await attempt(async () => resources.browser?.close());
+  await attempt(async () => {
+    if (!resources.server?.listening) return;
+    resources.server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => resources.server!.close(error => {
+      if (error) reject(error);
+      else resolve();
+    }));
+  });
+  await attempt(() => {
+    if (resources.evidenceDir) rmSync(resources.evidenceDir, { recursive: true, force: true });
+  });
+  await attempt(() => {
+    if (resources.nativeProfileDir) rmSync(resources.nativeProfileDir, { recursive: true, force: true });
+  });
+  await attempt(async () => {
+    if (resources.nativeDisplay) await stopNativeDisplay(resources.nativeDisplay.server);
+  });
+  if (failures.length) throw new AggregateError(failures, 'fixture cleanup failed');
+}
+
+function registerFixtureCleanup(resources: FixtureResources) {
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    await closeFixtureResources(resources);
+    closed = true;
+  };
+  cleanup.push(close);
+  return close;
+}
+
+async function withFixtureCleanup<T>(setup: (resources: FixtureResources) => Promise<T>) {
+  const resources: FixtureResources = {};
+  const close = registerFixtureCleanup(resources);
+  try {
+    return await setup(resources);
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'fixture setup and cleanup failed');
+    }
+    throw error;
+  }
+}
+
 afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) await close();
+  const failures: unknown[] = [];
+  for (const close of cleanup.splice(0).reverse()) {
+    try { await close(); } catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'fixture teardown failed');
 });
+
+it.each([
+  ['ordinary browser setup', { failSetupAfter: 'browser' }],
+  ...(process.env.MERIDIAN_NATIVE_ZOOM === '1'
+    ? [['native browser setup', { nativeZoom200: true, failSetupAfter: 'browser' }]] as const
+    : []),
+] as const)('registers idempotent teardown before %s can fail', async (_label, options) => {
+  expect(cleanup).toHaveLength(0);
+  await expect(fixture(false, undefined, options)).rejects.toThrow('injected fixture setup failure');
+  expect(cleanup).toHaveLength(1);
+  const [close] = cleanup.splice(0);
+  if (!close) throw new Error('fixture teardown was not registered');
+  await close();
+  await close();
+});
+
+it('surfaces setup and cleanup errors and retries the registered teardown', async () => {
+  const browser = await chromium.launch();
+  const closeBrowser = browser.close.bind(browser);
+  const setupError = new Error('setup failed after allocation');
+  const cleanupError = new Error('browser close failed once');
+  const directory = mkdtempSync(join(tmpdir(), 'assistant-ui-cleanup-failure-'));
+  vi.spyOn(browser, 'close').mockRejectedValueOnce(cleanupError);
+  try {
+    const result = await withFixtureCleanup(async resources => {
+      resources.browser = browser;
+      resources.evidenceDir = directory;
+      throw setupError;
+    }).catch(error => error);
+    expect(result).toBeInstanceOf(AggregateError);
+    expect(result.errors[0]).toBe(setupError);
+    expect(result.errors[1]).toBeInstanceOf(AggregateError);
+    expect(result.errors[1].errors).toEqual([cleanupError]);
+    expect(existsSync(directory)).toBe(false);
+    expect(browser.isConnected()).toBe(true);
+    const close = cleanup[0];
+    expect(close).toBeTypeOf('function');
+    await close!();
+    expect(browser.isConnected()).toBe(false);
+    await close!();
+  } finally {
+    await closeBrowser();
+  }
+});
+
+it('refuses native display setup unless explicitly opted in', async () => {
+  const previous = process.env.MERIDIAN_NATIVE_ZOOM;
+  delete process.env.MERIDIAN_NATIVE_ZOOM;
+  let display: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
+  try {
+    const result = await startNativeDisplay().then(value => { display = value; return value; }, error => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toContain('MERIDIAN_NATIVE_ZOOM=1');
+  } finally {
+    if (display) await stopNativeDisplay(display.server);
+    if (previous === undefined) delete process.env.MERIDIAN_NATIVE_ZOOM;
+    else process.env.MERIDIAN_NATIVE_ZOOM = previous;
+  }
+});
+
+it('reads only a complete valid display allocation from the spawned child pipe', async () => {
+  expect(parseNativeDisplayNumber('')).toBeUndefined();
+  expect(parseNativeDisplayNumber('12')).toBeUndefined();
+  expect(parseNativeDisplayNumber('127\n')).toBe(':127');
+  expect(parseNativeDisplayNumber('0\n')).toBe(':0');
+  for (const invalid of ['-1\n', ':7\n', '7\n8\n', '7junk\n', '65536\n']) {
+    expect(() => parseNativeDisplayNumber(invalid)).toThrow('Invalid Xvfb display allocation');
+  }
+  // A real Node child exercises the private FD protocol without any native X binaries.
+  const child = spawn(process.execPath, ['-e', "require('node:fs').writeSync(3, '12'); setTimeout(() => require('node:fs').writeSync(3, '7\\n'), 20); setInterval(() => {}, 1000)"], {
+    stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+  });
+  try {
+    expect(await readNativeDisplayAllocation(child)).toBe(':127');
+  } finally {
+    await stopNativeDisplay(child);
+  }
+});
+
+it('rejects native allocation when its child exits or emits malformed output', async () => {
+  for (const script of ["process.exit(1)", "require('node:fs').writeSync(3, 'other display\\n'); setInterval(() => {}, 1000)"]) {
+    const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
+    try {
+      await expect(readNativeDisplayAllocation(child)).rejects.toThrow(/Xvfb exited|pipe closed|Invalid Xvfb display allocation/);
+    } finally {
+      await stopNativeDisplay(child);
+    }
+  }
+});
+
+it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('allocates distinct owned native displays and refuses capture after ownership ends', async () => {
+  const first = await startNativeDisplay();
+  let second: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
+  const output = join(mkdtempSync(join(tmpdir(), 'assistant-ui-display-ownership-')), 'forbidden.png');
+  try {
+    second = await startNativeDisplay();
+    expect(second.display).not.toBe(first.display);
+    expect(() => assertOwnedNativeDisplay(first)).not.toThrow();
+    expect(() => assertOwnedNativeDisplay(second!)).not.toThrow();
+    expect(() => assertOwnedNativeDisplay({ ...first, socket: second!.socket })).toThrow('socket was replaced');
+    await stopNativeDisplay(first.server);
+    await expect(captureNativeDisplay(first, output)).rejects.toThrow('Owned Xvfb process is not running');
+    expect(existsSync(output)).toBe(false);
+  } finally {
+    await stopNativeDisplay(first.server);
+    if (second) await stopNativeDisplay(second.server);
+    rmSync(resolve(output, '..'), { recursive: true, force: true });
+  }
+});
+
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
-  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean; capability?: typeof capability; appId?: string } = {},
+  options: {
+    subjectTokens?: typeof subjectCaller[];
+    holdRefreshCapabilities?: boolean;
+    nativeZoom200?: boolean;
+    failSetupAfter?: 'browser';
+    capabilityId?: string;
+    capability?: typeof capability;
+    appId?: string;
+  } = {},
 ) {
-  const capability = options.capability ?? defaultCapability;
+  return withFixtureCleanup(async resources => {
+  const capability = {
+    ...(options.capability ?? defaultCapability),
+    id: options.capabilityId ?? (options.capability ?? defaultCapability).id,
+  };
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
+  resources.evidenceDir = evidenceDir;
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
   writeFileSync(join(evidenceDir, runId, 'result.json'), JSON.stringify({ text: hostile }));
@@ -503,6 +814,7 @@ async function fixture(
     },
   });
   const server = createServer();
+  resources.server = server;
   server.listen(0, '127.0.0.1');
   await new Promise<void>((r) => server.once('listening', r));
   const port = (server.address() as { port: number }).port;
@@ -552,8 +864,44 @@ async function fixture(
     });
     app(req, res);
   });
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
+  let browser: Browser | BrowserContext;
+  let nativeProfileDir: string | undefined;
+  let nativeDisplay: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
+  if (options.nativeZoom200) {
+    nativeProfileDir = mkdtempSync(join(tmpdir(), 'assistant-ui-native-zoom-'));
+    resources.nativeProfileDir = nativeProfileDir;
+    mkdirSync(join(nativeProfileDir, 'Default'), { recursive: true });
+    const zoomLevel200 = Math.log(2) / Math.log(1.2);
+    const preferences = {
+      partition: { default_zoom_level: { x: zoomLevel200 } },
+      credentials_enable_service: false,
+      profile: { password_manager_enabled: false },
+    };
+    writeFileSync(join(nativeProfileDir, 'Default', 'Preferences'), JSON.stringify(preferences));
+    nativeDisplay = await startNativeDisplay();
+    resources.nativeDisplay = nativeDisplay;
+    assertOwnedNativeDisplay(nativeDisplay);
+    browser = await chromium.launchPersistentContext(nativeProfileDir, {
+      headless: false,
+      viewport: null,
+      env: { ...process.env, DISPLAY: nativeDisplay.display },
+      args: [
+        '--window-size=1440,900',
+        '--window-position=0,0',
+        '--kiosk',
+        '--disable-save-password-bubble',
+        '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
+      ],
+    });
+    resources.browser = browser;
+  } else {
+    browser = await chromium.launch();
+    resources.browser = browser;
+  }
+  if (options.failSetupAfter === 'browser') throw new Error('injected fixture setup failure');
+  const page = 'pages' in browser
+    ? (browser.pages()[0] ?? await browser.newPage())
+    : await browser.newPage();
   const errors: string[] = [];
   await page.addInitScript(() => {
     (window as any).cspViolations = [];
@@ -575,11 +923,6 @@ async function fixture(
   await page.route('**/*', (route) =>
     new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort(),
   );
-  cleanup.push(async () => {
-    await browser.close();
-    await new Promise<void>((r) => server.close(() => r()));
-    rmSync(evidenceDir, { recursive: true, force: true });
-  });
   const url = `http://127.0.0.1:${port}`;
   const documentResponse = await page.goto(url);
   expect(documentResponse?.headers()['content-security-policy']).toContain("script-src 'self'");
@@ -592,13 +935,36 @@ async function fixture(
     await page.locator('#workspace').waitFor();
     await page.getByRole('button', { name: /^Activity/ }).click();
   }
-  return { state, service, model, browser, page, connect, errors, url, evidenceDir };
+  return { state, service, model, browser, page, connect, errors, url, evidenceDir, nativeDisplay };
+  });
 }
 async function visible(page: Page, selector: string, text: string) {
   await page.waitForFunction(
     ({ selector, text }) => document.querySelector(selector)?.textContent?.includes(text),
     { selector, text },
   );
+}
+async function expectNoHorizontalOverflow(page: Page, selector: string) {
+  const dimensions = await page.locator(selector).evaluate((node) => ({
+    clientWidth: (node as HTMLElement).clientWidth,
+    scrollWidth: (node as HTMLElement).scrollWidth,
+  }));
+  expect(dimensions.clientWidth).toBeGreaterThan(0);
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+}
+async function settleConversationLayout(page: Page) {
+  await page.locator('.chat').waitFor({ state: 'visible' });
+  // Let the viewport ResizeObserver and queued scroll restoration finish before simulating a new user scroll.
+  await page.evaluate(() => new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
+}
+async function expectKeyboardVisibleFocus(target: Locator) {
+  const focusStyle = await target.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+  });
+  expect(focusStyle.style).not.toBe('none');
+  expect(focusStyle.width).toBeGreaterThanOrEqual(2);
 }
 
 it('recovers a real PostgreSQL chat action after the browser loses its response before tool output', async () => {
@@ -842,30 +1208,344 @@ it('recovers a real PostgreSQL chat action after the browser loses its response 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60000);
-it('keeps the Next.js chat focused and preserves a draft when Activity is toggled', async () => {
-  const { page, errors } = await fixture(true);
+it('preserves the conversation across responsive Activity navigation', async () => {
+  const { page, state, errors } = await fixture(true);
+  state.runs.push(initialRun());
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.locator('#workspace').waitFor();
   await page.getByRole('heading', { name: 'How can I help you today?' }).waitFor();
   expect(await page.locator('script[src*="/_next/static/"]').count()).toBeGreaterThan(0);
   const activity = page.getByRole('button', { name: 'Activity', exact: true });
   const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+  const messages = page.locator('.messages');
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const threadRoot = page.locator('.thread-root');
+  await activity.click();
+  expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+  await page.locator('#runs [data-run-id]').waitFor();
+  await activity.click();
+  expect(await activity.getAttribute('aria-expanded')).toBe('false');
+  await threadRoot.evaluate((node) => {
+    (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted = true;
+  });
+  await message.fill('Draft survives Activity');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+  const status = page.locator('#runs [role="status"]').first();
+  const navigationTargets = /(?:\/api\/chat|\/invoke|\/decision|\/cancel|\/transaction)/;
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await message.fill('A draft, not submitted');
-    const composer = await message.boundingBox();
-    expect(composer && composer.y + composer.height <= 900).toBe(true);
+    await messages.evaluate((node) => {
+      (node as HTMLElement).scrollTop = 320;
+    });
+    expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
+    expect(await threadRoot.evaluate((node) =>
+      (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
+    )).toBe(true);
+    expect(await message.inputValue()).toBe('Draft survives Activity');
+    expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+    await expectNoHorizontalOverflow(page, '.messages');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const requestsBeforeNavigation = state.requests.length;
+
     await activity.focus();
     await page.keyboard.press('Enter');
-    await page.getByRole('heading', { name: 'Capability catalog', exact: true }).waitFor();
-    await activity.click();
-    expect(await message.inputValue()).toBe('A draft, not submitted');
-    expect(await activity.getAttribute('aria-expanded')).toBe('false');
-    await page.screenshot({ path: join(evidencePath, `next-chat-${width}.png`) });
+    expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+    await expectNoHorizontalOverflow(page, '.activity-panel');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width === 320 || width === 1440) {
+      await page.screenshot({ path: walkthroughScreenshotPath(`activity-${width}.png`), fullPage: true });
+    }
+    if (width <= 768) {
+      expect(await back.isVisible()).toBe(true);
+      expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Tab');
+      const disclosure = page.locator('summary').filter({ hasText: 'Invoke an approved capability directly' });
+      expect(await disclosure.evaluate(node => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Shift+Tab');
+      expect(await back.evaluate(node => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Enter');
+      expect(await activity.getAttribute('aria-expanded')).toBe('false');
+      expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+    } else {
+      expect(await back.isVisible()).toBe(false);
+      expect(await page.locator('.chat').isVisible()).toBe(true);
+      expect(await page.locator('.activity-panel').isVisible()).toBe(true);
+      await activity.focus();
+      await page.keyboard.press('Enter');
+      expect(await activity.getAttribute('aria-expanded')).toBe('false');
+    }
+    await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 320);
+    expect(await message.inputValue()).toBe('Draft survives Activity');
+    expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+    expect(await threadRoot.evaluate((node) =>
+      (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
+    )).toBe(true);
+    expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
+    const navigationPosts = state.requests.slice(requestsBeforeNavigation).filter(request =>
+      request.method === 'POST' && navigationTargets.test(request.path),
+    );
+    expect(navigationPosts).toEqual([]);
   }
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
 }, 30000);
+
+it('moves Activity focus with the responsive breakpoint while the panel stays open', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+
+  await page.setViewportSize({ width: 768, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
+  expect(await back.isVisible()).toBe(true);
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await back.waitFor({ state: 'hidden' });
+  expect(await back.isVisible()).toBe(false);
+  await page.waitForFunction(() => document.activeElement === document.querySelector('.workspace-header button'));
+  expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  expect(await back.isVisible()).toBe(true);
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('preserves a newer conversation scroll position when closing wide Activity', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+  await activity.click();
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 120;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(120);
+
+  await activity.click();
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 520;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await activity.click();
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('restores narrow conversation scroll after crossing the breakpoint while Activity stays open', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  await activity.click();
+  await settleConversationLayout(page);
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 180;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(180);
+  await activity.click();
+  expect(await back.isVisible()).toBe(true);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await settleConversationLayout(page);
+  expect(await page.locator('.chat').isVisible()).toBe(true);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  expect(await back.isVisible()).toBe(true);
+  await back.click();
+  await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 180);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(180);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('retains focus on visible Activity controls across breakpoint changes', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+  const catalogDisclosure = page.locator('summary').filter({ hasText: 'Invoke an approved capability directly' });
+  for (const control of [refresh, catalogDisclosure]) {
+    await control.focus();
+    await page.setViewportSize({ width: 320, height: 900 });
+    await back.waitFor({ state: 'visible' });
+    expect(await control.isVisible()).toBe(true);
+    expect(await control.evaluate((node) => node === document.activeElement)).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await back.waitFor({ state: 'hidden' });
+    expect(await control.isVisible()).toBe(true);
+    expect(await control.evaluate((node) => node === document.activeElement)).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  await back.focus();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => document.activeElement === document.querySelector('.workspace-header button'));
+  expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await activity.focus();
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('restores the latest scroll after wide Activity becomes narrow before closing', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  await activity.click();
+  await settleConversationLayout(page);
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 180;
+  });
+  await activity.click();
+  expect(await back.isVisible()).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await settleConversationLayout(page);
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 520;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  // A queued viewport event must still observe the retained reading position while chat is visually hidden.
+  expect(await page.locator('.chat').isVisible()).toBe(false);
+  expect(await messages.evaluate(node => node.scrollTop)).toBe(520);
+  await messages.evaluate(node => node.dispatchEvent(new Event('scroll')));
+  await back.click();
+  await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 520);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await settleConversationLayout(page);
+  // Later streamed content must not resume following the bottom after Activity hides a scrolled-up conversation.
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1202px';
+  });
+  await settleConversationLayout(page);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoom at 200%', async () => {
+  const { page, state, connect, errors, nativeDisplay } = await fixture(false, undefined, { nativeZoom200: true });
+  state.runs.push(initialRun());
+  await connect();
+  const metrics = await page.evaluate(() => ({
+    devicePixelRatio,
+    visualViewportScale: visualViewport?.scale ?? null,
+    innerWidth,
+    innerHeight,
+    outerWidth,
+    outerHeight,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  console.info(`[native-zoom] ${JSON.stringify(metrics)}`);
+  expect(metrics.devicePixelRatio).toBe(2);
+  expect(metrics.visualViewportScale).toBe(1);
+  expect(metrics.innerWidth).toBe(720);
+  expect(metrics.documentWidth).toBeLessThanOrEqual(metrics.innerWidth);
+  expect(metrics.outerWidth).toBe(1440);
+  expect(metrics.outerHeight).toBe(900);
+  expect(nativeDisplay?.display).toMatch(/^:\d+$/);
+  const catalogHeading = page.getByRole('heading', { name: 'Capability catalog', exact: true });
+  await catalogHeading.waitFor();
+  const catalogBounds = await catalogHeading.boundingBox();
+  expect(catalogBounds).not.toBeNull();
+  expect(catalogBounds!.x + catalogBounds!.width).toBeLessThanOrEqual(metrics.innerWidth);
+  const catalogOverflow = await catalogHeading.evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+  }));
+  expect(catalogOverflow.scrollWidth).toBeLessThanOrEqual(catalogOverflow.clientWidth);
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const message = page.getByRole('textbox', { name: 'Your request', exact: true });
+  const status = page.locator('#runs [role="status"]').first();
+  expect(await back.isVisible()).toBe(true);
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await message.fill('Native zoom draft survives Activity');
+  expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+  const requestsBeforeNavigation = state.requests.length;
+  await activity.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('heading', { name: 'Capability catalog', exact: true }).waitFor();
+  expect(await back.isVisible()).toBe(true);
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(back);
+  const nativeScreenshotPath = walkthroughScreenshotPath('native-zoom-200.png');
+  await page.waitForTimeout(250);
+  await captureNativeDisplay(nativeDisplay!, nativeScreenshotPath);
+  const nativeScreenshot = readFileSync(nativeScreenshotPath);
+  expect({
+    width: nativeScreenshot.readUInt32BE(16),
+    height: nativeScreenshot.readUInt32BE(20),
+  }).toEqual({ width: 1440, height: 900 });
+  await page.keyboard.press('Enter');
+  expect(await message.inputValue()).toBe('Native zoom draft survives Activity');
+  expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+  const navigationPosts = state.requests.slice(requestsBeforeNavigation).filter(request =>
+    request.method === 'POST' && /(?:\/api\/chat|\/invoke|\/decision|\/cancel|\/transaction)/.test(request.path),
+  );
+  expect(navigationPosts).toEqual([]);
+  expect(errors).toEqual([]);
+}, 30000);
+
+it('connects a local teller without input and exposes supervisor sign-on fields', async () => {
+  const { page, errors } = await fixture(true);
+  const role = page.getByLabel('Role', { exact: true });
+  await role.waitFor();
+  expect(await role.inputValue()).toBe('teller');
+  expect(await page.locator('#credential').count()).toBe(0);
+  await role.focus();
+  await page.keyboard.press('Tab');
+  expect(await page.getByRole('button', { name: 'Connect', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await visible(page, '#status', 'Connected as caller');
+  expect(await page.locator('#operator').count()).toBe(0);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await role.selectOption('operator');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  const operator = page.getByLabel('Operator', { exact: true });
+  const password = page.getByLabel('Password', { exact: true });
+  expect(await operator.inputValue()).toBe('SUPER1');
+  expect(await password.inputValue()).toBe('');
+  expect(await page.locator('#credential').count()).toBe(0);
+  for (const width of [320, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await role.isVisible()).toBe(true);
+    expect(await page.locator('#login').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  }
+  expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([]);
+}, 15000);
 
 it('Connect signs on directly and waits for verified operator details before opening chat', async () => {
   const { page, service, state, errors } = await fixture(true);
@@ -1038,7 +1718,7 @@ it('normalizes transport authority and preserves the user message key across ret
     body: { id: 'thread', intent: 'invoke', trigger: 'submit-message', messages: [messages[1]] },
   });
 });
-it('offline bundled UI streams a real SDK tool, shares authoritative run state, renders inert evidence and clears sessions', async () => {
+it('offline bundled UI streams a real SDK tool, shares readable status text, renders keyboard focus for evidence disclosure and clears sessions', async () => {
   const { page, state, connect, errors, url, service } = await fixture();
   await connect();
   expect(await page.locator('#credential').inputValue()).toBe('');
@@ -1092,8 +1772,32 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   expect(await page.locator('#messages [data-run-id]').getAttribute('data-run-id')).toBe(
     await page.locator('#runs [data-run-id]').getAttribute('data-run-id'),
   );
-  await page.getByText('Run details and evidence', { exact: true }).click();
-  await page.getByRole('button', { name: 'View result.json', exact: true }).click();
+  const runStatus = page.locator('#runs [data-run-id] .badge[role="status"]');
+  // Production break caught: replacing the human-readable state label with a class or color would hide progress from assistive technology.
+  expect(await runStatus.innerText()).toMatch(/In progress|Awaiting review|Completed|Run stopped/);
+  const evidenceDisclosure = page.getByText('Run details and evidence', { exact: true }).first();
+  await page.locator('#runs [data-run-id] .table-scroll').focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: removing the evidence disclosure from the sequential Tab order would strand keyboard users before its controls.
+  expect(await evidenceDisclosure.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: overriding :focus-visible would make the evidence disclosure invisible to keyboard users.
+  await expectKeyboardVisibleFocus(evidenceDisclosure);
+  await evidenceDisclosure.click();
+  await evidenceDisclosure.focus();
+  const resultEvidence = page.getByRole('button', { name: 'View result.json', exact: true });
+  await resultEvidence.waitFor();
+  let resultEvidenceFocused = false;
+  for (let index = 0; index < 12; index++) {
+    await page.keyboard.press('Tab');
+    if (await resultEvidence.evaluate(element => element === document.activeElement)) {
+      resultEvidenceFocused = true;
+      break;
+    }
+  }
+  expect(resultEvidenceFocused).toBe(true);
+  // Production break caught: removing a keyboard-visible indicator from evidence controls would fail this computed-style assertion.
+  await expectKeyboardVisibleFocus(resultEvidence);
+  await resultEvidence.click();
   await visible(page, '.evidence pre', hostile);
   expect(state.requests.find((r) => r.path.endsWith('/evidence/result.json'))?.authorization).toBe(
     `Bearer ${callerToken}`,
@@ -1762,7 +2466,7 @@ it('keeps historical timeline data on refresh errors and cancels late active rea
   expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(disconnectedReads);
   expect(errors).toEqual([]);
 }, 30000);
-it('offline operator controls require live authority, disable expired/duplicate decisions and never retry unknown posting', async () => {
+it('offline operator review controls require live authority, keyboard focus, readable error and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -1807,13 +2511,48 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await dialog.waitFor();
   expect(await dialog.getAttribute('data-run-id')).toBe(runId);
   expect(await page.getByRole('dialog').count()).toBe(1);
+  const heading = dialog.getByRole('heading', { name: 'Review request', exact: true });
+  // Production break caught: autofocus on an approval action instead of the neutral heading could trigger an accidental transaction.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  const dialogFocusTargets = [
+    dialog.getByRole('button', { name: 'Close', exact: true }),
+    dialog.getByText('Details', { exact: true }),
+    dialog.getByRole('button', { name: 'Confirm request', exact: true }),
+    dialog.getByRole('button', { name: 'Refuse request', exact: true }),
+  ];
+  const outsideFocusSet = dialog.locator('.approval > p').first();
+  await outsideFocusSet.evaluate(element => {
+    element.setAttribute('tabindex', '-1');
+    (element as HTMLElement).focus();
+  });
+  // Production break caught: a focusable dialog descendant outside the computed control set must wrap back to the neutral heading.
+  expect(await outsideFocusSet.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await outsideFocusSet.evaluate(element => element.removeAttribute('tabindex'));
+  await page.keyboard.press('Tab');
+  for (let index = 0; index < dialogFocusTargets.length + 2; index++) {
+    // Production break caught: losing native modal containment would let Tab move focus behind this open review dialog.
+    expect(await page.evaluate(() => document.activeElement?.closest('dialog[open]')?.getAttribute('data-run-id'))).toBe(runId);
+    if (index < dialogFocusTargets.length) {
+      // Production break caught: removing the global keyboard focus indicator would make review actions undiscoverable.
+      await expectKeyboardVisibleFocus(dialogFocusTargets[index]!);
+    }
+    await page.keyboard.press('Tab');
+  }
+  await page.keyboard.press('Escape');
+  // Production break caught: failing to restore focus after cancel strands keyboard users outside the review they opened.
+  expect(await review.evaluate(element => element === document.activeElement)).toBe(true);
+  await review.click();
+  await dialog.waitFor();
   const approve = page.getByRole('button', { name: 'Confirm request', exact: true });
   await approve.waitFor();
   expect(await dialog.innerText()).toContain('25.00');
   expect(await dialog.innerText()).not.toMatch(/short-secret|hidden-body|hidden-token|visibleFacts|businessValues/);
   await page.screenshot({ path: join(evidencePath, 'review-dialog-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 320, height: 900 });
-  await page.screenshot({ path: join(evidencePath, 'review-dialog-320.png'), fullPage: true });
+  await page.screenshot({ path: walkthroughScreenshotPath('review-320.png'), fullPage: true });
   await page.setViewportSize({ width: 1280, height: 900 });
   await approve.focus();
   await page.keyboard.press('Enter');
@@ -1829,7 +2568,39 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   await visible(page, '.approval', 'Intervention expired.');
+  // Production break caught: exposing expiry only through styling would hide the actionable error from screen-reader users.
+  expect(await page.locator('.approval').innerText()).toContain('Intervention expired.');
   expect(await approve.isDisabled()).toBe(true);
+  const expiredClose = dialog.getByRole('button', { name: 'Close', exact: true });
+  const expiredDetails = dialog.getByText('Details', { exact: true });
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  const hiddenDetailsValue = expiredDetails.locator('..').locator('dd').first();
+  await hiddenDetailsValue.evaluate(element => element.setAttribute('tabindex', '0'));
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(false);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: collecting a focusable descendant from closed Details would let sequential Tab escape instead of wrapping to the heading.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await hiddenDetailsValue.evaluate(element => element.removeAttribute('tabindex'));
+  await expiredDetails.click();
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(true);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: a disabled approval or hidden details child must not enter the sequential focus order.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(false);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: reverse traversal from the neutral heading must skip the disabled actions and return to the visible Details disclosure.
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: Shift+Tab from the first control must wrap to the neutral heading, not escape the modal.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
   state.runs[0] = {
     ...initialRun(),
     state: 'awaiting-human',
@@ -1844,6 +2615,27 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  expect(await retry.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: a retry control without a keyboard-visible indicator is unreachable for keyboard-only repair.
+  await expectKeyboardVisibleFocus(retry);
+  // Production break caught: changing retry to an icon-only action would remove its readable recovery name.
+  expect(await retry.innerText()).toBe('Retry after repair');
+  const stop = page.getByRole('button', { name: 'Stop request', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await stop.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  // Production break caught: forward Tab from the last enabled repair action must wrap to the neutral heading.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: reverse Tab from the neutral heading must wrap to the last enabled repair action.
+  expect(await stop.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await retry.evaluate(element => element === document.activeElement)).toBe(true);
+  await retry.focus();
   await retry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve', 'retry']));
   state.runs[0] = {
@@ -1867,7 +2659,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   expect(errors).toEqual([]);
 }, 20000);
 
-it('resets neutral focus when an open review receives a replacement intervention', async () => {
+it('neutral replacement focus resets when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -2716,7 +3508,7 @@ it.each(['restored', 'chat'] as const)('blocks an unknown %s run after reload an
   expect(state.requests.filter(r => r.path.endsWith('/invoke')).at(-1)?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
 }, 20000);
 
-it('shows the authoritative step and announces meaningful state changes without elapsed-time chatter', async () => {
+it('status text shows the authoritative step and announces meaningful state changes without elapsed-time chatter', async () => {
   const { page, state, connect } = await fixture();
   state.runs.push({ ...initialRun(), step: hostile });
   await connect();
@@ -2733,12 +3525,22 @@ it('shows the authoritative step and announces meaningful state changes without 
   await page.locator('#refresh').click();
   await card.getByText('Elapsed: 10.0 s', { exact: true }).waitFor();
   expect(await status.textContent()).toBe(before);
-  for (const next of ['awaiting-human', 'success', 'business_outcome', 'POST_OUTCOME_UNKNOWN']) {
+  const expectedLabels = {
+    'awaiting-human': 'Awaiting review',
+    success: 'Completed',
+    business_outcome: 'Member not found',
+    POST_OUTCOME_UNKNOWN: 'Unable to verify outcome',
+  } as const;
+  for (const next of ['awaiting-human', 'success', 'business_outcome', 'POST_OUTCOME_UNKNOWN'] as const) {
     state.runs[0]!.state = next;
     state.runs[0]!.step = 'safe-current-step';
-    state.runs[0]!.result = next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
+    state.runs[0]!.result = next === 'success'
+      ? { status: 'success' }
+      : next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
     await page.locator('#refresh').click();
     await vi.waitFor(async () => expect(await status.textContent()).toContain(next));
+    // Production break caught: replacing state labels with color or CSS classes would remove the status name from visible text.
+    expect(await status.innerText()).toContain(expectedLabels[next]);
     if (next === 'business_outcome') {
       expect(await status.textContent()).toContain('Member not found');
       await card.getByText('Run details and evidence', { exact: true }).click();
@@ -2928,12 +3730,125 @@ it('disconnects when a subject refresh loses the authenticated subject identity'
   expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
 }, 15000);
 
-it('uses credentials without a local shortcut in subject mode', async () => {
+it('keeps saved conversation row controls keyboard reachable without a local shortcut', async () => {
   const { page, connect } = await fixture(true, undefined, { subjectTokens: [subjectCaller] });
   expect(await page.locator('#login-role').count()).toBe(0);
   expect(await page.getByText('TELLER1', { exact: false }).count()).toBe(0);
+  const regularId = '30000000-0000-4000-8000-000000000001';
+  const record = {
+    id: regularId,
+    archived: false,
+    revision: 0,
+    createdAt: '2026-09-08T00:00:00.000Z',
+    updatedAt: '2026-09-08T00:00:00.000Z',
+  };
+  let deleted = false;
+  const conversationRequests: string[] = [];
+  await page.route('**/conversations**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    conversationRequests.push(`${request.method()} ${path}${url.search}`);
+    if (request.method() === 'GET' && path === '/conversations') {
+      const archived = url.searchParams.get('archived') === 'true';
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ conversations: !deleted && record.archived === archived ? [record] : [] }),
+      });
+    }
+    if (request.method() === 'GET' && path === `/conversations/${regularId}/events`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [] }) });
+    }
+    if (request.method() === 'GET' && path === `/conversations/${regularId}`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(record) });
+    }
+    if (request.method() === 'PATCH' && path === `/conversations/${regularId}`) {
+      const body = request.postDataJSON() as { archived?: boolean };
+      record.archived = body.archived === true;
+      record.revision += 1;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(record) });
+    }
+    if (request.method() === 'DELETE' && path === `/conversations/${regularId}`) {
+      deleted = true;
+      record.archived = true;
+      return route.fulfill({ status: 204, body: '' });
+    }
+    return route.continue();
+  });
   await connect(subjectCaller.token);
   await page.getByText('Dashboard access: Caller', { exact: true }).waitFor();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  await activity.click();
+  const savedConversations = page.getByRole('navigation', { name: 'Saved conversations', exact: true });
+  await savedConversations.waitFor();
+  const newConversation = savedConversations.getByRole('button', { name: 'New conversation', exact: true });
+  await activity.focus();
+  await page.keyboard.press('Tab');
+  expect(await newConversation.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: removing :focus-visible from saved-thread controls would hide the keyboard position.
+  await expectKeyboardVisibleFocus(newConversation);
+  expect(await newConversation.innerText()).toBe('New conversation');
+  const open = savedConversations.getByRole('button', { name: 'Open Saved conversation', exact: true });
+  await page.waitForTimeout(250);
+  await page.keyboard.press('Tab');
+  // Production break caught: removing a saved row's trigger from sequential focus would prevent keyboard opening.
+  expect(await open.evaluate(element => element === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(open);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(conversationRequests.some(path => path === `GET /conversations/${regularId}/events?after=0&limit=100`)).toBe(true));
+  const row = open.locator('..');
+  const archive = row.getByRole('button', { name: 'Archive conversation', exact: true });
+  const deleteRegular = row.getByRole('button', { name: 'Delete conversation', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await archive.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: saved-row archive must remain visibly keyboard focusable.
+  await expectKeyboardVisibleFocus(archive);
+  await page.keyboard.press('Tab');
+  expect(await deleteRegular.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: saved-row delete must remain visibly keyboard focusable.
+  await expectKeyboardVisibleFocus(deleteRegular);
+  await page.keyboard.press('Shift+Tab');
+  expect(await archive.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(record.archived).toBe(true));
+  const restore = savedConversations.getByRole('button', { name: 'Restore conversation', exact: true });
+  await restore.waitFor();
+  await newConversation.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: a restored row's action must be reached by sequential keyboard traversal, not only by a script-driven focus call.
+  expect(await restore.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: archived saved rows must expose a keyboard-reachable restore action.
+  await expectKeyboardVisibleFocus(restore);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(record.archived).toBe(false));
+  const restoredOpen = savedConversations.getByRole('button', { name: 'Open Saved conversation', exact: true });
+  await restoredOpen.waitFor();
+  const restoredRow = restoredOpen.locator('..');
+  const archiveRestored = restoredRow.getByRole('button', { name: 'Archive conversation', exact: true });
+  await newConversation.focus();
+  await page.keyboard.press('Tab');
+  expect(await restoredOpen.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await archiveRestored.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: archiving the restored row must remain a real keyboard action in the natural control state.
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(record.archived).toBe(true));
+  const deleteArchived = savedConversations.getByRole('button', { name: 'Delete conversation', exact: true });
+  const restoreAgain = savedConversations.getByRole('button', { name: 'Restore conversation', exact: true });
+  await restoreAgain.waitFor();
+  await newConversation.focus();
+  await page.keyboard.press('Tab');
+  expect(await restoreAgain.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  // Production break caught: the archived Delete action must be activated from keyboard, not merely traversed.
+  expect(await deleteArchived.evaluate(element => element === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(deleteArchived);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(deleted).toBe(true));
+  await vi.waitFor(async () => expect(await page.getByRole('button', { name: /Open Saved conversation|Restore conversation/ }).count()).toBe(0));
+  expect(conversationRequests).toContain(`PATCH /conversations/${regularId}`);
+  expect(conversationRequests).toContain(`DELETE /conversations/${regularId}`);
 }, 15000);
 
 it('keeps dashboard, chat, target, branch, and direct request roles distinct', async () => {
@@ -2951,7 +3866,7 @@ it('keeps dashboard, chat, target, branch, and direct request roles distinct', a
   expect(await page.getByText('Branch: Not verified', { exact: true }).count()).toBeGreaterThan(0);
 }, 15000);
 
-it('starts operator Activity in a review-first queue with accurate counts and keyboard filters', async () => {
+it('operator Activity filters start in a review-first queue with accurate counts and keyboard focus', async () => {
   const staleRunId = '11111111-1111-4111-8111-333333333333';
   const noInterventionRunId = '11111111-1111-4111-8111-444444444444';
   const { page, state, connect } = await fixture();
@@ -2970,6 +3885,15 @@ it('starts operator Activity in a review-first queue with accurate counts and ke
   expect(await needs.getAttribute('aria-selected')).toBe('true');
   expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBeGreaterThan(0);
   expect(await page.locator(`#runs [data-run-id="${staleRunId}"]`).count()).toBe(0);
+  await needs.focus();
+  await page.keyboard.press('Tab');
+  expect(await all.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: removing :focus-visible styling from Activity tabs would hide the current filter during keyboard navigation.
+  await expectKeyboardVisibleFocus(all);
+  await page.keyboard.press('Shift+Tab');
+  expect(await needs.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: the first Activity filter must retain a visible indicator when reached by reverse keyboard traversal.
+  await expectKeyboardVisibleFocus(needs);
   await needs.focus();
   await page.keyboard.press('ArrowRight');
   expect(await all.getAttribute('aria-selected')).toBe('true');
