@@ -41,7 +41,7 @@ type ConversationRow = {
   created_at: Date; updated_at: Date; deleted_at: Date | null;
 };
 type EventRow = {
-  id: string; conversation_id: string; sequence: string;
+  id: string; owner_id: string; conversation_id: string; sequence: string;
   kind: ConversationEvent['kind']; role: ConversationEvent['role'];
   run_id: string | null; created_at: Date;
 };
@@ -58,8 +58,6 @@ type LockedSubjectQuota = {
   rateTokens: number;
   rateRefilledAt: string;
 };
-type EventWithConversationOwner = EventRow & { owner_id: string; deleted_at: Date | null };
-
 const conversation = (row: ConversationRow): Conversation => ({
   id: row.id,
   archived: row.archived,
@@ -91,17 +89,17 @@ export class ConversationStore {
     [owner, id] = parse(identity, [owner, id]);
     return this.transaction(async client => {
       const quota = await this.lockQuota(client, owner);
-      const existing = await client.query<ConversationRow>('SELECT * FROM meridian_conversations WHERE id = $1', [id]);
+      const existing = await client.query<ConversationRow>('SELECT * FROM meridian_conversations WHERE id = $1 AND owner_id = $2', [id, owner]);
       const row = existing.rows[0];
       if (row) {
-        if (row.owner_id === owner && row.deleted_at === null) return conversation(row);
+        if (row.deleted_at === null) return conversation(row);
         throw new RequestError(409, 'Conversation ID is unavailable');
       }
       if (quota.conversationCount >= CONVERSATION_LIMIT) throw new RequestError(507, 'Conversation quota exceeded');
       await this.consumeRate(client, owner);
       const inserted = await client.query<ConversationRow>(
         `INSERT INTO meridian_conversations (id, owner_id) VALUES ($1, $2)
-         ON CONFLICT (id) DO NOTHING RETURNING *`,
+         ON CONFLICT (owner_id, id) DO NOTHING RETURNING *`,
         [id, owner],
       );
       if (!inserted.rows[0]) throw new RequestError(409, 'Conversation ID is unavailable');
@@ -152,8 +150,8 @@ export class ConversationStore {
       const updated = await client.query<ConversationRow>(
         `UPDATE meridian_conversations
          SET archived = $1, revision = revision + 1, updated_at = clock_timestamp()
-         WHERE id = $2 RETURNING *`,
-        [archived, id],
+         WHERE id = $2 AND owner_id = $3 RETURNING *`,
+        [archived, id, owner],
       );
       return conversation(updated.rows[0]!);
     });
@@ -166,16 +164,16 @@ export class ConversationStore {
       const row = await this.lock(client, owner, id);
       if (Number(row.revision) !== expectedRevision) throw new RequestError(409, 'Conversation revision conflict');
       const retained = await client.query<{ count: string }>(
-        'SELECT count(*)::bigint AS count FROM meridian_conversation_events WHERE conversation_id = $1',
-        [id],
+        'SELECT count(*)::bigint AS count FROM meridian_conversation_events WHERE conversation_id = $1 AND owner_id = $2',
+        [id, owner],
       );
       await this.consumeRate(client, owner);
-      await client.query('DELETE FROM meridian_conversation_events WHERE conversation_id = $1', [id]);
+      await client.query('DELETE FROM meridian_conversation_events WHERE conversation_id = $1 AND owner_id = $2', [id, owner]);
       await client.query(
         `UPDATE meridian_conversations
          SET deleted_at = clock_timestamp(), revision = revision + 1, updated_at = clock_timestamp()
-         WHERE id = $1`,
-        [id],
+         WHERE id = $1 AND owner_id = $2`,
+        [id, owner],
       );
       await client.query(
         `UPDATE meridian_conversation_subject_quotas
@@ -191,17 +189,13 @@ export class ConversationStore {
     const pending = parse(appendEvent, value);
     return this.transaction(async client => {
       const quota = await this.lockQuota(client, owner);
-      const found = await client.query<EventWithConversationOwner>(
-        `SELECT events.*, conversations.owner_id, conversations.deleted_at
-         FROM meridian_conversation_events events
-         JOIN meridian_conversations conversations ON conversations.id = events.conversation_id
-         WHERE events.id = $1`,
-        [pending.id],
+      const found = await client.query<EventRow>(
+        `SELECT * FROM meridian_conversation_events WHERE id = $1 AND owner_id = $2`,
+        [pending.id, owner],
       );
       const existing = found.rows[0];
       if (existing) {
         if (existing.conversation_id === id) {
-          if (existing.owner_id !== owner || existing.deleted_at !== null) throw new RequestError(404, 'Conversation not found');
           if (existing.kind === pending.kind && existing.role === pending.role && existing.run_id === (pending.runId ?? null)) return event(existing);
           throw new RequestError(409, 'Conversation event conflicts with an existing event');
         }
@@ -218,8 +212,8 @@ export class ConversationStore {
       if (Number(row.revision) !== pending.expectedRevision) throw new RequestError(409, 'Conversation revision conflict');
 
       const conversationEvents = await client.query<{ count: string }>(
-        'SELECT count(*)::bigint AS count FROM meridian_conversation_events WHERE conversation_id = $1',
-        [id],
+        'SELECT count(*)::bigint AS count FROM meridian_conversation_events WHERE conversation_id = $1 AND owner_id = $2',
+        [id, owner],
       );
       if (Number(conversationEvents.rows[0]?.count ?? '0') >= CONVERSATION_EVENT_LIMIT
           || quota.eventCount >= SUBJECT_EVENT_LIMIT) {
@@ -231,14 +225,14 @@ export class ConversationStore {
       await client.query(
         `UPDATE meridian_conversations
          SET revision = $1, updated_at = clock_timestamp()
-         WHERE id = $2`,
-        [sequence, id],
+         WHERE id = $2 AND owner_id = $3`,
+        [sequence, id, owner],
       );
       const inserted = await client.query<EventRow>(
-        `INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role, run_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO NOTHING RETURNING *`,
-        [pending.id, id, sequence, pending.kind, pending.role, pending.runId ?? null],
+        `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role, run_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (owner_id, id) DO NOTHING RETURNING *`,
+        [pending.id, owner, id, sequence, pending.kind, pending.role, pending.runId ?? null],
       );
       if (!inserted.rows[0]) throw new RequestError(409, 'Conversation event conflicts with an existing event');
       await client.query(
@@ -258,9 +252,9 @@ export class ConversationStore {
       await this.lock(client, owner, id, 'FOR SHARE');
       const result = await client.query<EventRow>(
         `SELECT * FROM meridian_conversation_events
-         WHERE conversation_id = $1 AND sequence > $2
-         ORDER BY sequence LIMIT $3`,
-        [id, parsed.after, parsed.limit + 1],
+         WHERE conversation_id = $1 AND owner_id = $2 AND sequence > $3
+         ORDER BY sequence LIMIT $4`,
+        [id, owner, parsed.after, parsed.limit + 1],
       );
       const rows = result.rows.slice(0, parsed.limit);
       return {

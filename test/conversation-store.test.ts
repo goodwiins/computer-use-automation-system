@@ -64,6 +64,30 @@ describe.sequential('ConversationStore', () => {
     expect(await store.events(owner, ids.third)).toEqual(history);
   });
 
+  it('namespaces conversation and event identities by owner', async () => {
+    const namespaceOwner = '31111111-1111-4111-8111-111111111111';
+    const namespaceOtherOwner = '32222222-2222-4222-8222-222222222222';
+    const conversationId = randomUUID();
+    const eventId = randomUUID();
+    const first = await store.create(namespaceOwner, conversationId);
+    const second = await store.create(namespaceOtherOwner, conversationId);
+    expect(first.id).toBe(second.id);
+    await expect(store.create(namespaceOwner, conversationId)).resolves.toEqual(first);
+    await expect(store.append(namespaceOwner, conversationId, {
+      id: eventId, kind: 'message_omitted', role: 'user', expectedRevision: 0,
+    })).resolves.toMatchObject({ id: eventId, sequence: 1 });
+    await expect(store.append(namespaceOtherOwner, conversationId, {
+      id: eventId, kind: 'message_omitted', role: 'assistant', expectedRevision: 0,
+    })).resolves.toMatchObject({ id: eventId, sequence: 1 });
+    const otherConversation = randomUUID();
+    await store.create(namespaceOwner, otherConversation);
+    await expect(store.append(namespaceOwner, otherConversation, {
+      id: eventId, kind: 'message_omitted', role: 'user', expectedRevision: 0,
+    })).rejects.toMatchObject({ status: 409, message: 'Conversation event conflicts with an existing event' });
+    expect((await store.events(namespaceOwner, conversationId)).events).toHaveLength(1);
+    expect((await store.events(namespaceOtherOwner, conversationId)).events).toHaveLength(1);
+  });
+
   it('deduplicates an identical concurrent event before stale checks and rejects conflicting reuse', async () => {
     const event = {
       id: randomUUID(), kind: 'run_linked', role: 'assistant', runId: randomUUID(), expectedRevision: 0,
@@ -272,12 +296,12 @@ async function seedConversationRows(database: Awaited<ReturnType<typeof createPo
   return Array.from({ length: count }, (_, index) => `${prefix}${(index + 1).toString(16).padStart(12, '0')}`);
 }
 
-async function seedEvents(database: Awaited<ReturnType<typeof createPostgresFixture>>, conversationId: string, count: number, prefix: string) {
+async function seedEvents(database: Awaited<ReturnType<typeof createPostgresFixture>>, owner: string, conversationId: string, count: number, prefix: string) {
   await database.pool.query(`
-    INSERT INTO meridian_conversation_events (id, conversation_id, sequence, kind, role)
-    SELECT ($3 || lpad(value::text, 12, '0'))::uuid, $1, value, 'message_omitted', 'user'
-    FROM generate_series(1, $2::int) AS values(value)
-  `, [conversationId, count, prefix]);
+    INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role)
+    SELECT ($4 || lpad(value::text, 12, '0'))::uuid, $1, $2, value, 'message_omitted', 'user'
+    FROM generate_series(1, $3::int) AS values(value)
+  `, [owner, conversationId, count, prefix]);
   return Array.from({ length: count }, (_, index) => `${prefix}${(index + 1).toString(16).padStart(12, '0')}`);
 }
 
@@ -361,7 +385,7 @@ describe.sequential('ConversationStore durable quotas', () => {
       });
 
       const deletionBoundary = await seedConversationRows(database, quotaBoundaryOwner, 128, '71000000-0000-4000-8000-');
-      await seedEvents(database, deletionBoundary[0]!, 1, '71010000-0000-4000-9000-');
+      await seedEvents(database, quotaBoundaryOwner, deletionBoundary[0]!, 1, '71010000-0000-4000-9000-');
       await database.pool.query('UPDATE meridian_conversations SET revision = 1 WHERE id = $1', [deletionBoundary[0]]);
       await store.migrate();
       const beforeDelete = await quotaSnapshot(database, quotaBoundaryOwner);
@@ -378,7 +402,7 @@ describe.sequential('ConversationStore durable quotas', () => {
 
       const eventConversation = testUuid('72000000-0000-4000-8000-', 1);
       await store.create(quotaOtherOwner, eventConversation);
-      const eventIds = await seedEvents(database, eventConversation, 512, '73000000-0000-4000-9000-');
+      const eventIds = await seedEvents(database, quotaOtherOwner, eventConversation, 512, '73000000-0000-4000-9000-');
       await database.pool.query('UPDATE meridian_conversations SET revision = 512 WHERE id = $1', [eventConversation]);
       await store.migrate();
       const retry = await store.append(quotaOtherOwner, eventConversation, {
@@ -392,7 +416,7 @@ describe.sequential('ConversationStore durable quotas', () => {
       const subjectConversations = await seedConversationRows(database, quotaOwner, 9, '75000000-0000-4000-8000-');
       for (const [index, conversationId] of subjectConversations.entries()) {
         if (index < 8) {
-          await seedEvents(database, conversationId, 512, `${(0x76 + index).toString(16).padStart(8, '0')}-0000-4000-9000-`);
+          await seedEvents(database, quotaOwner, conversationId, 512, `${(0x76 + index).toString(16).padStart(8, '0')}-0000-4000-9000-`);
           await database.pool.query('UPDATE meridian_conversations SET revision = 512 WHERE id = $1', [conversationId]);
         }
       }
@@ -474,7 +498,7 @@ describe.sequential('ConversationStore durable quotas', () => {
 
       const capacityConversation = testUuid('81000000-0000-4000-8000-', 1);
       await store.create(quotaOtherOwner, capacityConversation);
-      await seedEvents(database, capacityConversation, 512, '82000000-0000-4000-9000-');
+      await seedEvents(database, quotaOtherOwner, capacityConversation, 512, '82000000-0000-4000-9000-');
       await database.pool.query('UPDATE meridian_conversations SET revision = 512 WHERE id = $1', [capacityConversation]);
       await store.migrate();
       await database.pool.query(
@@ -563,21 +587,20 @@ describe.sequential('ConversationStore durable quotas', () => {
         firstStore.append(quotaOwner, firstConversation, { ...event, id: globallyConflictingId, expectedRevision: 1 }),
         secondStore.append(quotaOtherOwner, otherConversation.id, { ...event, id: globallyConflictingId, expectedRevision: 0 }),
       ]);
-      expect(globalRace.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-      expect(globalRace.filter(result => result.status === 'rejected')).toMatchObject([{ reason: { status: 409 } }]);
+      expect(globalRace.filter(result => result.status === 'fulfilled')).toHaveLength(2);
       const afterGlobalOwner = await quotaSnapshot(database, quotaOwner);
       const afterGlobalOtherOwner = await quotaSnapshot(database, quotaOtherOwner);
       expectQuotaSnapshotConsistent(afterGlobalOwner);
       expectQuotaSnapshotConsistent(afterGlobalOtherOwner);
       expect(afterGlobalOwner.sourceEventCount + afterGlobalOtherOwner.sourceEventCount).toBe(
-        beforeGlobalOwner.sourceEventCount + beforeGlobalOtherOwner.sourceEventCount + 1,
+        beforeGlobalOwner.sourceEventCount + beforeGlobalOtherOwner.sourceEventCount + 2,
       );
       expect(afterGlobalOwner.eventCount + afterGlobalOtherOwner.eventCount).toBe(
-        beforeGlobalOwner.eventCount + beforeGlobalOtherOwner.eventCount + 1,
+        beforeGlobalOwner.eventCount + beforeGlobalOtherOwner.eventCount + 2,
       );
       const globalOwnerEventDelta = afterGlobalOwner.eventCount - beforeGlobalOwner.eventCount;
       const globalOtherEventDelta = afterGlobalOtherOwner.eventCount - beforeGlobalOtherOwner.eventCount;
-      expect([globalOwnerEventDelta, globalOtherEventDelta].sort()).toEqual([0, 1]);
+      expect([globalOwnerEventDelta, globalOtherEventDelta].sort()).toEqual([1, 1]);
       expectSuccessfulTokenDelta(beforeGlobalOwner, afterGlobalOwner, globalOwnerEventDelta);
       expectSuccessfulTokenDelta(beforeGlobalOtherOwner, afterGlobalOtherOwner, globalOtherEventDelta);
 

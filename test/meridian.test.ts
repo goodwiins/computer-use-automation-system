@@ -3001,14 +3001,14 @@ it.each([false, true])('authenticates API/evidence, denies caller decisions and 
       expect((await request('/capabilities/missing/invoke', { Authorization: `Bearer ${token}` }, 'POST', '{"args":{},"lookupOnly":false}')).status).toBe(400);
     } else expect((await login()).status).toBe(404);
     const caller = { Authorization: `Bearer ${token}` };
-    expect((await request(`/runs/${run.runId}`, caller)).status).toBe(403);
+    expect((await request(`/runs/${run.runId}`, caller)).status).toBe(404);
     expect((await request('/capabilities', { ...caller, Origin: 'https://evil.test' })).status).toBe(403);
     expect((await request(`/runs/${run.runId}/decision`, caller, 'POST', JSON.stringify({ approvalId: randomUUID(), decision: 'approve' }))).status).toBe(403);
     const fixture = CapabilityArtifact.parse(JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8')));
     vi.spyOn(service, 'catalog').mockReturnValue([{ id: fixture.id, version: fixture.version, description: fixture.description, parameters: fixture.parameters, outputs: fixture.outputs, tools: toToolSchema(fixture) }]);
     const chatHeaders = { Authorization: `Bearer ${'o'.repeat(32)}`, 'Idempotency-Key': 'chat-status' };
     const chatBody = JSON.stringify({ messages: [{ role: 'user', content: 'Get status' }] });
-    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403); // operator chat is caller-bound
+    expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(404); // operator chat is caller-bound
     for (tool of ['approve', 'select_supervisor']) expect((await request('/chat', chatHeaders, 'POST', chatBody)).status).toBe(403);
 
     const session = new ControlSession();
@@ -3022,7 +3022,7 @@ it.each([false, true])('authenticates API/evidence, denies caller decisions and 
     expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'abort' }))).status).toBe(200);
     expect(await pending).toBe('abort');
     expect((await request(`/runs/${run.runId}/decision`, operator, 'POST', JSON.stringify({ approvalId, decision: 'retry' }))).status).toBe(409);
-    expect((await request(`/runs/${run.runId}/evidence/missing.json`, caller)).status).toBe(403);
+    expect((await request(`/runs/${run.runId}/evidence/missing.json`, caller)).status).toBe(404);
     expect((await request(`/runs/${run.runId}/evidence/missing.json`, operator)).status).toBe(404);
     expect(journal.records.size).toBe(1);
     const response = await request('/capabilities', caller); expect(response.status).toBe(200); expect(response.headers.get('content-security-policy')).toContain("object-src 'none'");
