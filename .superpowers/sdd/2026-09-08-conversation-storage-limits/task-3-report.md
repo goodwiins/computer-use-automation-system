@@ -236,6 +236,55 @@ git diff --check
   passed after the final report append
 ```
 
+## Fix round 3/5 — per-operation quota aggregation
+
+RED: four regressions showed that one conversation-wide marker was
+insufficient: an unrelated successful archive or event hid an older append
+failure; a capacity failure overwrote a rate failure and clearing the latest
+operation reported `saved`; and history hydration changed an unresolved
+append failure from `loading` to `saved`.
+
+GREEN: quota failures are now tracked per conversation and operation. The UI
+aggregates all unresolved operations deterministically, preferring `capacity`
+over `rate-limited`; a successful mutation clears only its own operation, then
+reports any remaining aggregate warning. List, fetch, and history hydration
+retain unresolved quota warnings, while an explicit retry may truthfully show
+`saving`; delete success and disposal clear lifecycle state for the record.
+No automatic retry, frozen-body, 409, 503, or epoch behavior changed.
+
+Targeted RED/GREEN result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'unresolved|older rate|history hydration'
+RED: 4 failed
+GREEN: 4 passed
+```
+
+### Fix-round 3 verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 46 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 82 tests passed
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
+```
+
 The first combined invocation had one transient fresh-browser assistant-event
 failure (77/78); the unchanged combined rerun passed 78/78. No quota-state
 test failed in either run.
@@ -249,4 +298,53 @@ combined quota/UI: 78/78 passed
 npm run typecheck:ui: passed
 npm run typecheck: passed
 npm run test:smoke: 2 files, 19 tests passed
+```
+
+## Fix round 3/5 — per-operation quota aggregation
+
+RED: four regressions showed that one conversation-wide marker was
+insufficient: an unrelated successful archive or event hid an older append
+failure; a capacity failure overwrote a rate failure and clearing the latest
+operation reported `saved`; and history hydration changed an unresolved
+append failure from `loading` to `saved`.
+
+GREEN: quota failures are now tracked per conversation and operation. The UI
+aggregates all unresolved operations deterministically, preferring `capacity`
+over `rate-limited`; a successful mutation clears only its own operation, then
+reports any remaining aggregate warning. List, fetch, and history hydration
+retain unresolved quota warnings, while an explicit retry may truthfully show
+`saving`; delete success and disposal clear lifecycle state for the record.
+No automatic retry, frozen-body, 409, 503, or epoch behavior changed.
+
+Targeted RED/GREEN result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'unresolved|older rate|history hydration'
+RED: 4 failed
+GREEN: 4 passed
+```
+
+### Fix-round 3 verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 46 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 82 tests passed
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
 ```

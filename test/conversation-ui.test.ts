@@ -531,6 +531,82 @@ describe('safe conversation UI adapter', () => {
     expect(controller.getState(conversationId).error).toBeUndefined();
   });
 
+  it.each(['archive', 'event'] as const)('does not hide an unresolved append failure after an unrelated successful %s', async unrelatedMutation => {
+    let eventAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        eventAttempts += 1;
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        const body = JSON.parse(String(options.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ ...metadata, archived: true, revision: 1 }, 200);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({
+      parentId: null,
+      message: { id: `unresolved-${unrelatedMutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    if (unrelatedMutation === 'archive') {
+      await controller.adapter.archive(conversationId);
+    } else {
+      await history.append({
+        parentId: null,
+        message: { id: `unrelated-${unrelatedMutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+      } as never);
+    }
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
+  it('keeps an older rate failure after a capacity failure and only retries the matching operation', async () => {
+    let archiveAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private rate details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        archiveAttempts += 1;
+        if (archiveAttempts === 1) return response({ error: 'private capacity details' }, 507);
+        return response({ ...metadata, archived: true, revision: 1 }, 200);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'coexist-rate', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'capacity' });
+    await controller.adapter.archive(conversationId);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('temporarily rate-limited');
+  });
+
+  it('preserves an unresolved append failure through history hydration', async () => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private quota details' }, 429);
+      }
+      if (path === `/conversations/${conversationId}/events?after=0&limit=100`) return response({ events: [] });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({
+      parentId: null,
+      message: { id: 'load-unresolved', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await history.load();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    expect(controller.getState(conversationId).error).toContain('not saved');
+  });
+
   it('scopes the formatted history cache to its remote conversation', async () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],

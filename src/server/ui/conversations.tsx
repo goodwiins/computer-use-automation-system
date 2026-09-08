@@ -349,10 +349,7 @@ type Attempt = {
 };
 
 type QuotaFailureStatus = Extract<ConversationSaveStatus, 'capacity' | 'rate-limited'>;
-type QuotaFailure = {
-  status: QuotaFailureStatus;
-  operation: string;
-};
+type QuotaFailures = Map<string, QuotaFailureStatus>;
 
 export function createConversationController(options: {
   subjectId?: string;
@@ -369,7 +366,7 @@ export function createConversationController(options: {
   const state = new Map<string, ConversationState>();
   const queues = new Map<string, Promise<void>>();
   const attempts = new Map<string, Attempt>();
-  const quotaFailures = new Map<string, QuotaFailure>();
+  const quotaFailures = new Map<string, QuotaFailures>();
   const stopped = new Set<string>();
   const historyAdapters = new Map<string, ThreadHistoryAdapter>();
   const messageConversations = new Map<string, Set<string>>();
@@ -417,17 +414,39 @@ export function createConversationController(options: {
     notify();
   };
 
+  const quotaFailureStatus = (remoteId: string): QuotaFailureStatus | undefined => {
+    const failures = quotaFailures.get(remoteId);
+    if (!failures) return undefined;
+    // Capacity remains the strongest unresolved warning until every capacity
+    // operation succeeds, even when a rate-limited operation also remains.
+    if ([...failures.values()].some(status => status === 'capacity')) return 'capacity';
+    if ([...failures.values()].some(status => status === 'rate-limited')) return 'rate-limited';
+    return undefined;
+  };
+
   const markQuotaFailure = (remoteId: string, operation: string, error: unknown): ConversationSaveStatus => {
     const status = requestFailureStatus(error);
     if (status === 'capacity' || status === 'rate-limited') {
-      quotaFailures.set(remoteId, { status, operation });
+      const failures = quotaFailures.get(remoteId) ?? new Map<string, QuotaFailureStatus>();
+      failures.set(operation, status);
+      quotaFailures.set(remoteId, failures);
     }
     return status;
   };
 
   const clearQuotaFailure = (remoteId: string, operation?: string) => {
-    const failure = quotaFailures.get(remoteId);
-    if (failure && (operation === undefined || failure.operation === operation)) quotaFailures.delete(remoteId);
+    if (operation === undefined) {
+      quotaFailures.delete(remoteId);
+      return;
+    }
+    const failures = quotaFailures.get(remoteId);
+    if (!failures) return;
+    failures.delete(operation);
+    if (failures.size === 0) quotaFailures.delete(remoteId);
+  };
+
+  const statusAfterSuccessfulMutation = (remoteId: string): ConversationSaveStatus => {
+    return quotaFailureStatus(remoteId) ?? 'saved';
   };
 
   const selectConversation = (remoteId?: string) => {
@@ -480,18 +499,18 @@ export function createConversationController(options: {
   const remember = (record: ConversationRecord, preserveStatus = false) => {
     metadata.set(record.id, record);
     const existing = currentState(record.id);
-    const quotaFailure = quotaFailures.get(record.id);
-    const preserveQuota = quotaFailure !== undefined
-      && (existing.status === 'capacity' || existing.status === 'rate-limited' || existing.status === 'saving');
+    const quotaFailure = quotaFailureStatus(record.id);
+    const preserveQuota = quotaFailure !== undefined;
     const preserve = preserveStatus || stopped.has(record.id) || preserveQuota;
-    const preservedStatus = existing.status === 'saving' ? 'saving' : quotaFailure?.status ?? existing.status;
+    const preservedStatus = existing.status === 'saving' && preserveQuota ? 'saving' : quotaFailure ?? existing.status;
     const nextState: ConversationState = {
       ...existing,
       status: preserve ? preservedStatus : 'saved',
       revision: record.revision,
       archived: record.archived,
     };
-    if (preserve && existing.error) nextState.error = existing.error;
+    if (nextState.status === 'capacity' || nextState.status === 'rate-limited') nextState.error = statusError(nextState.status);
+    else if (preserve && existing.error) nextState.error = existing.error;
     else delete nextState.error;
     state.set(record.id, nextState);
     if (selectedRemoteId === undefined) {
@@ -608,7 +627,7 @@ export function createConversationController(options: {
         }
         attempt.completed = true;
         clearQuotaFailure(remoteId, operation);
-        setState(remoteId, 'saved', { revision: event.sequence });
+        setState(remoteId, statusAfterSuccessfulMutation(remoteId), { revision: event.sequence });
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         const status = errorStatus(error);
@@ -688,12 +707,11 @@ export function createConversationController(options: {
         after = raw.nextCursor;
       }
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      const quotaFailure = quotaFailures.get(remoteId);
+      const quotaFailure = quotaFailureStatus(remoteId);
       const existing = currentState(remoteId);
-      const preservedStatus = quotaFailure !== undefined
-        && (existing.status === 'capacity' || existing.status === 'rate-limited' || existing.status === 'saving')
-        ? (existing.status === 'saving' ? 'saving' : quotaFailure.status)
-        : 'saved';
+      const preservedStatus = quotaFailure !== undefined && existing.status === 'saving'
+        ? 'saving'
+        : quotaFailure ?? 'saved';
       setState(remoteId, stopped.has(remoteId) ? 'conflict' : preservedStatus);
       return loaded;
     } catch (error) {
@@ -803,7 +821,7 @@ export function createConversationController(options: {
         }
         metadata.set(remoteId, record);
         clearQuotaFailure(remoteId, operation);
-        setState(remoteId, 'saved', { revision: record.revision, archived: record.archived });
+        setState(remoteId, statusAfterSuccessfulMutation(remoteId), { revision: record.revision, archived: record.archived });
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         if (errorStatus(error) === 409) {
