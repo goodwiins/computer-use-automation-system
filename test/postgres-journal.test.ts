@@ -141,6 +141,44 @@ describe.sequential('PostgresJournal', () => {
     expect(rows.rows.map(row => row.invocation_scope).sort()).toEqual([null, 'public']);
   });
 
+  it('batches owner-scoped direct and alias requests in one transaction', async () => {
+    const first = await journal.reserve(caller, 'batch-direct', capability, version, {});
+    await journal.update(first.runId, 'success');
+    await journal.bindReference(caller, 'batch-alias', first.runId);
+    const other = await journal.reserve('other-caller', 'batch-direct', capability, version, {});
+    await journal.update(other.runId, 'success');
+    const transaction = vi.spyOn(journal as unknown as {
+      transaction<T>(work: (client: unknown) => Promise<T>): Promise<T>;
+    }, 'transaction');
+    expect([...await journal.findRequests(caller, ['batch-alias', 'batch-direct', 'missing', 'batch-alias'])])
+      .toEqual([['batch-alias', { ...first, state: 'success' }], ['batch-direct', { ...first, state: 'success' }]]);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect((await journal.findRequests('other-caller', ['batch-direct', 'batch-alias'])).size).toBe(1);
+    expect((await journal.findRequests('unrelated', ['batch-direct', 'batch-alias'])).size).toBe(0);
+    transaction.mockClear();
+    await expect(journal.findRequests(caller, Array(101).fill('batch-direct'))).rejects.toMatchObject({ status: 400 });
+    await expect(journal.findRequests(caller, ['invalid key'])).rejects.toMatchObject({ status: 400 });
+    expect(await journal.findRequests(caller, [])).toEqual(new Map());
+    expect(transaction).not.toHaveBeenCalled();
+    expect(() => journal.assertHealthy()).not.toThrow();
+  });
+
+  it('reads unknown capability quarantine in one bounded transaction', async () => {
+    const run = await journal.reserve(caller, 'unknown-batch', capability, version, {});
+    await journal.update(run.runId, 'dispatching');
+    await journal.update(run.runId, 'failure');
+    const transaction = vi.spyOn(journal as unknown as {
+      transaction<T>(work: (client: unknown) => Promise<T>): Promise<T>;
+    }, 'transaction');
+    expect(await journal.unknownCapabilities([capability, 'read-only', capability])).toEqual(new Set([capability]));
+    expect(transaction).toHaveBeenCalledTimes(1);
+    transaction.mockClear();
+    await expect(journal.unknownCapabilities(Array(101).fill(capability))).rejects.toMatchObject({ status: 400 });
+    await expect(journal.unknownCapabilities(['invalid capability'])).rejects.toMatchObject({ status: 400 });
+    expect(await journal.unknownCapabilities([])).toEqual(new Set());
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('reads one bounded, deduplicated run batch in one authority transaction', async () => {
     const first = await journal.reserve(caller, 'pg-batch-first', capability, version, {});
     await journal.update(first.runId, 'success');
