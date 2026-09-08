@@ -1,7 +1,7 @@
 'use client';
 
 import './csp';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, validateReadinessMetadata, type Session } from './session';
 import { Chat } from './chat';
 import { signOn } from './sign-on';
@@ -181,17 +181,84 @@ export default function App() {
 
 function Workspace() {
   const [activityOpen, setActivityOpen] = useState(false);
+  const [narrowActivity, setNarrowActivity] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches);
+  const activityTriggerRef = useRef<HTMLButtonElement>(null);
+  const activityBackRef = useRef<HTMLButtonElement>(null);
+  const messageScrollTopRef = useRef(0);
+  const shouldRestoreConversationFocusRef = useRef(false);
+  const chatWasHiddenRef = useRef(false);
+  const focusBackAfterResizeRef = useRef(false);
+  const chatHidden = activityOpen && narrowActivity;
   const { runs, session } = useRuns();
   const awaitingReview = session.principal === 'operator' ? runs.filter(hasCurrentPublicIntervention).length : 0;
-  return <div id="workspace" data-activity-open={activityOpen}>
+  const openActivity = () => {
+    messageScrollTopRef.current =
+      document.querySelector<HTMLElement>('.messages')?.scrollTop ?? 0;
+    setActivityOpen(true);
+  };
+  const closeActivity = () => {
+    shouldRestoreConversationFocusRef.current = chatHidden;
+    setActivityOpen(false);
+  };
+  useLayoutEffect(() => {
+    const breakpoint = window.matchMedia('(max-width: 1023px)');
+    const changeLayout = () => {
+      const active = document.activeElement;
+      const chat = document.querySelector<HTMLElement>('.chat');
+      if (activityOpen && breakpoint.matches && chat?.getClientRects().length) {
+        // React hides chat after this snapshot, so a recent wide-layout scroll is retained.
+        messageScrollTopRef.current = document.querySelector<HTMLElement>('.messages')?.scrollTop ?? 0;
+        focusBackAfterResizeRef.current = active === activityTriggerRef.current || !!(active && chat.contains(active));
+      } else if (activityOpen && !breakpoint.matches && active === activityBackRef.current) {
+        activityTriggerRef.current?.focus();
+      }
+      setNarrowActivity(breakpoint.matches);
+    };
+    breakpoint.addEventListener('change', changeLayout);
+    return () => breakpoint.removeEventListener('change', changeLayout);
+  }, [activityOpen]);
+  useLayoutEffect(() => {
+    if (chatHidden && !chatWasHiddenRef.current) {
+      const active = document.activeElement;
+      if (focusBackAfterResizeRef.current || active === activityTriggerRef.current || document.querySelector('.chat')?.contains(active)) {
+        activityBackRef.current?.focus();
+      }
+      focusBackAfterResizeRef.current = false;
+    }
+    if (!chatHidden && chatWasHiddenRef.current) {
+      const messages = document.querySelector<HTMLElement>('.messages');
+      if (messages) messages.scrollTop = messageScrollTopRef.current;
+    }
+    if (!activityOpen && shouldRestoreConversationFocusRef.current) {
+      activityTriggerRef.current?.focus();
+      shouldRestoreConversationFocusRef.current = false;
+    }
+    chatWasHiddenRef.current = chatHidden;
+  }, [activityOpen, chatHidden]);
+  return <div id="workspace" data-activity-open={activityOpen} data-chat-hidden={chatHidden}>
     <div className="workspace-header">
       <span>Assistant</span>
-      <button className="secondary" aria-expanded={activityOpen} aria-controls="activity-panel" onClick={() => setActivityOpen(!activityOpen)}>
+      <button
+        ref={activityTriggerRef}
+        className="secondary"
+        aria-expanded={activityOpen}
+        aria-controls="activity-panel"
+        onClick={activityOpen ? closeActivity : openActivity}
+      >
         Activity{awaitingReview > 0 && <span className="review-count">{awaitingReview} awaiting review</span>}
       </button>
     </div>
     <Chat />
     <aside id="activity-panel" className="activity-panel" aria-label="Activity" hidden={!activityOpen}>
+      <button
+        ref={activityBackRef}
+        className="secondary activity-back"
+        type="button"
+        onClick={closeActivity}
+      >
+        Back to conversation
+      </button>
       {session.principal === 'operator' ? <>
         <RunHistory />
         <CapabilityCatalog />
