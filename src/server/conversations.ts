@@ -332,7 +332,7 @@ export class ConversationStore {
     );
     const row = result.rows[0];
     if (!row || !row.consumed || Number(row.available) < 1) {
-      throw new RequestError(429, 'Conversation write rate limit exceeded');
+      throw new RequestError(429, 'Conversation write rate limit exceeded', { 'Retry-After': '1' });
     }
   }
 

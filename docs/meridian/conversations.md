@@ -40,6 +40,14 @@ Subject mode accepts only the configured subject bearer tokens. Legacy caller/op
 
 To rotate a token, replace the token while keeping the same `subjectId`, restart the server, and retire the old token. Tokens must remain unique and are never written to PostgreSQL or the journal.
 
+## Fixed storage limits and write responses
+
+Each subject may retain at most 128 conversation rows, including archived and deleted (tombstone) rows. Each conversation may retain at most 512 events, and a subject may retain at most 4096 events across all conversations. Conversation writes use a durable PostgreSQL token bucket with a burst of 20 successful mutations and a refill rate of 1 token per second, measured using PostgreSQL time. Reads do not consume tokens.
+
+When a create or append would exceed a fixed capacity, the API returns exactly `507` with `{"error":"Conversation quota exceeded"}` and no retry header. When the write bucket is empty, it returns exactly `429` with `{"error":"Conversation write rate limit exceeded"}` and the server-authored `Retry-After: 1` header. Capacity is checked before rate consumption, so a full capacity returns `507` even when the bucket is also empty. Counts, bucket values, owner identifiers, SQL details, and foreign-row existence are never included in these responses. Other established `400`, `404`, `409`, and `503` responses remain unchanged.
+
+An identical create retry for an existing owner/ID, or an identical append retry for an existing event ID and content, returns the original success even when capacity or rate is exhausted. The retry bypasses both capacity and token consumption; a changed body or ownership remains a conflict or not-found response. The server and clients do not add automatic retries, timers, or backoff.
+
 ## HTTP contract
 
 All routes require `Authorization: Bearer <subject token>`. IDs are client-generated lowercase UUIDs. Request bodies and query strings reject unknown fields.
@@ -79,6 +87,10 @@ The safe run projection can include validated structure whose values are `withhe
 An event page deduplicates its at-most-100 linked run IDs and reads them in one bounded authenticated journal batch; duplicate events remain in their original sequence. Only one linked-run batch is admitted per subject at a time. An overlapping event-page read or linked-run append for that subject returns `429` with `Linked-run projection is busy` instead of waiting on journal authority; another subject is admitted independently. Rejected reads and appends do not change conversations, runs, aliases, or runtime state.
 
 Archived conversations are read-only until unarchived and are the normal UI removal mechanism. Explicit deletion removes stored events but keeps an opaque tombstone so stale retries cannot resurrect an ID. It does not delete or change journal records, idempotency aliases, evidence, run status, or unknown-outcome quarantine. Apply journal/evidence retention separately according to the existing run policy.
+
+Deletion releases the retained event quota for the subject, but it does not restore conversation-row quota: the tombstone continues to count toward the subject's 128 conversation rows and its ID cannot be reused.
+
+The quota migration is additive and idempotent. It reconciles durable counters from the existing conversation and event rows, preserves existing bucket state on repeat migrations, keeps archived and tombstoned rows, and does not trim over-limit legacy data. Such legacy data remains readable and deletable; new creates/appends that would increase an exhausted dimension return `507` until event deletion creates headroom. After quota-aware writes begin, do not run an older writer. If rollback is required, disable conversation writes while retaining the additive quota table, then resolve the migration before re-enabling writes.
 
 Saved events are display references only. They are never replayed into `/chat` or `/api/chat`, never start an invocation, and never make an approval decision. Clients must use the existing run and chat APIs for those actions.
 

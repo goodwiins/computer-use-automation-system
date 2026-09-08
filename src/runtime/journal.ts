@@ -41,7 +41,11 @@ export interface RunJournal {
   close(): Awaitable<void>;
 }
 export class RequestError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly headers?: Readonly<Record<string, string>>,
+  ) { super(message); }
 }
 export function validateIdempotencyKey(key: string): void {
   if (!/^[\x21-\x7e]{1,200}$/.test(key)) {

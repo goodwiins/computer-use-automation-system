@@ -103,6 +103,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.post('/api/chat', chat.stream);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 500;
+    if (error instanceof RequestError && error.headers?.['Retry-After'] === '1') res.set('Retry-After', '1');
     res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration' });
   });
   return app;
