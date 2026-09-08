@@ -236,6 +236,104 @@ git diff --check
   passed after the final report append
 ```
 
+## Fix round 4/5 — latest outcome clears stale quota state
+
+RED: four sequence regressions showed that after a 429 append, a matching
+retry returning 409 or 503 left the old quota marker active. List/fetch then
+reported `rate-limited` instead of terminal `conflict` or recovered `saved`.
+
+GREEN: every later non-quota result clears only that operation's quota entry
+before current-status handling. `stopped` conflict now has precedence over
+independent quota markers during list/fetch; a successful refresh after a
+transient 503 recovers to `saved` when no other marker remains. Coexistence
+tests also verify that an independent rate warning survives a 503 refresh,
+while a terminal conflict remains authoritative.
+
+Targeted RED/GREEN result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'does not resurrect'
+RED: 4 failed
+GREEN: 4 passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'deterministic precedence'
+GREEN: 2 passed after terminal-conflict precedence correction
+```
+
+### Fix-round 4 verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 52 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 88 tests passed
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
+```
+
+## Fix round 4/5 — latest outcome clears stale quota state
+
+RED: four sequence regressions showed that after a 429 append, a matching
+retry returning 409 or 503 left the old quota marker active. List/fetch then
+reported `rate-limited` instead of terminal `conflict` or recovered `saved`.
+
+GREEN: every later non-quota result clears only that operation's quota entry
+before current-status handling. `stopped` conflict now has precedence over
+independent quota markers during list/fetch; a successful refresh after a
+transient 503 recovers to `saved` when no other marker remains. Coexistence
+tests also verify that an independent rate warning survives a 503 refresh,
+while a terminal conflict remains authoritative.
+
+Targeted RED/GREEN result:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'does not resurrect'
+RED: 4 failed
+GREEN: 4 passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts -t 'deterministic precedence'
+GREEN: 2 passed after terminal-conflict precedence correction
+```
+
+### Fix-round 4 verification
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui.test.ts
+  1 file, 52 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-ui-acceptance.test.ts
+  1 file, 12 tests passed
+
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/conversation-ui.test.ts test/conversation-ui-acceptance.test.ts
+  4 files, 88 tests passed
+
+npm run typecheck:ui
+  passed
+
+npm run typecheck
+  passed
+
+npm run test:smoke
+  2 files, 19 tests passed
+
+git diff --check
+  passed after the final report append
+```
+
 ## Fix round 3/5 — per-operation quota aggregation
 
 RED: four regressions showed that one conversation-wide marker was

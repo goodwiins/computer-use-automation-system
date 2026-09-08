@@ -430,7 +430,7 @@ export function createConversationController(options: {
       const failures = quotaFailures.get(remoteId) ?? new Map<string, QuotaFailureStatus>();
       failures.set(operation, status);
       quotaFailures.set(remoteId, failures);
-    }
+    } else clearQuotaFailure(remoteId, operation);
     return status;
   };
 
@@ -502,7 +502,9 @@ export function createConversationController(options: {
     const quotaFailure = quotaFailureStatus(record.id);
     const preserveQuota = quotaFailure !== undefined;
     const preserve = preserveStatus || stopped.has(record.id) || preserveQuota;
-    const preservedStatus = existing.status === 'saving' && preserveQuota ? 'saving' : quotaFailure ?? existing.status;
+    const preservedStatus = stopped.has(record.id)
+      ? 'conflict'
+      : existing.status === 'saving' && preserveQuota ? 'saving' : quotaFailure ?? existing.status;
     const nextState: ConversationState = {
       ...existing,
       status: preserve ? preservedStatus : 'saved',
@@ -593,6 +595,7 @@ export function createConversationController(options: {
     if (stopped.has(remoteId)) return Promise.reject(new Error('Conversation saving stopped after a revision conflict.'));
     const attempt = attempts.get(attemptKey) ?? { descriptor, completed: false };
     attempts.set(attemptKey, attempt);
+    const operation = `event:${attemptKey}`;
     if (attempt.completed) return Promise.resolve();
     return enqueueWrite(remoteId, async () => {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
@@ -600,7 +603,6 @@ export function createConversationController(options: {
       if (attempt.completed) return;
       setState(remoteId, 'saving');
       try {
-        const operation = `event:${attemptKey}`;
         await ensureConversation(remoteId, capturedEpoch, operation);
         if (!attempt.body) {
           attempt.body = Object.freeze({ id: newUuid(), ...attempt.descriptor, expectedRevision: currentState(remoteId).revision });
@@ -632,6 +634,7 @@ export function createConversationController(options: {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         const status = errorStatus(error);
         if (status === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
@@ -825,6 +828,7 @@ export function createConversationController(options: {
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         if (errorStatus(error) === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
@@ -862,6 +866,7 @@ export function createConversationController(options: {
       } catch (error) {
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         if (errorStatus(error) === 409) {
+          clearQuotaFailure(remoteId, operation);
           stopped.add(remoteId);
           setState(remoteId, 'conflict');
           await reconcile(remoteId, capturedEpoch);
