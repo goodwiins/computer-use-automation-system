@@ -114,7 +114,7 @@ function RunTool({ result, status }: { result?: unknown; status?: { type: string
   }, [runId, watch]);
   if (runId) return <>
     {output?.reused === true && <p role="status">Using a previously accepted run. No new operation was started.</p>}
-    <CapabilityRunCard runId={runId} />
+    <CapabilityRunCard runId={runId} inlineApproval />
   </>;
   if (output?.kind === 'error')
     return (
@@ -367,7 +367,7 @@ export function Chat() {
                   <button type="button" disabled={lookupBusy} onClick={abandonUnknownChat}>Start a separate inquiry</button>
                 </AuiIf>
               </p>}
-              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} /></div>}
+              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} inlineApproval /></div>}
               {error && <p role="alert">{error}</p>}
               <ComposerPrimitive.Root className="composer">
                 <label htmlFor="message" className="sr-only">Your request</label>

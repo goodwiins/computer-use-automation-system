@@ -1880,6 +1880,73 @@ it('offline operator controls require live authority, submit browser-expired dec
   expect(errors).toEqual([]);
 }, 30000);
 
+it.each([
+  ['operator accept', operatorToken, 'Accept', 'approve'],
+  ['operator reject', operatorToken, 'Reject', 'abort'],
+  ['caller', callerToken, undefined, undefined],
+] as const)('shows exact inline approval only to the %s and shares one decision lock with Activity', async (_role, token, buttonLabel, expectedDecision) => {
+  const { page, state, service, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId,
+    expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Read fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post',
+      destination: 'https://offline.example/post', method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { private: 'withheld' }, visibleFacts: { member: 'offline-member', action: 'Read shares' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    const key = route.request().headers()['idempotency-key'] ?? '';
+    service.invoke('caller', capability.id, { member: 'offline-member' }, key);
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(token);
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor({ timeout: 5000 });
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`).first();
+  await chatCard.waitFor({ timeout: 5000 });
+  if (buttonLabel) await chatCard.getByRole('button', { name: buttonLabel, exact: true }).waitFor({ timeout: 5000 });
+  expect(await chatCard.getByRole('button', { name: 'Accept', exact: true }).count()).toBe(buttonLabel ? 1 : 0);
+  expect(await chatCard.getByRole('button', { name: 'Reject', exact: true }).count()).toBe(buttonLabel ? 1 : 0);
+  if (!buttonLabel) return;
+
+  await chatCard.getByText('offline-member', { exact: true }).waitFor();
+  await chatCard.getByText('Read shares', { exact: true }).waitFor();
+  let posts = 0;
+  let decision: unknown;
+  await page.route('**/decision', route => {
+    posts += 1;
+    decision = route.request().postDataJSON();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+  const inlineDecision = chatCard.getByRole('button', { name: buttonLabel, exact: true });
+  await inlineDecision.click();
+  await vi.waitFor(() => expect(posts).toBe(1));
+  expect(decision).toEqual({ approvalId, decision: expectedDecision });
+  const inlineSubmitted = chatCard.getByText('Decision submitted. Waiting for authoritative run updates.', { exact: true });
+  await inlineSubmitted.waitFor();
+  expect(await inlineSubmitted.evaluate(element => element === document.activeElement)).toBe(true);
+  await chatCard.getByRole('button', { name: 'Review request', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const dialogConfirm = dialog.getByRole('button', { name: 'Confirm request', exact: true });
+  await dialogConfirm.waitFor();
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(await dialog.getByRole('button', { name: 'Refuse request', exact: true }).isDisabled()).toBe(true);
+  await dialogConfirm.evaluate(button => (button as HTMLButtonElement).click());
+  expect(posts).toBe(1);
+  expect(state.decisions).toEqual([]);
+}, 30000);
+
 it('resets neutral focus when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();
   const intervention = publicIntervention({

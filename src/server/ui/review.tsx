@@ -68,7 +68,7 @@ function ReviewDetails({ run, intervention }: { run: Run; intervention: PublicIn
   );
 }
 
-export function ApprovalPanel({ run, intervention }: { run: Run; intervention: PublicIntervention }) {
+export function ApprovalPanel({ run, intervention, inline = false }: { run: Run; intervention: PublicIntervention; inline?: boolean }) {
   const { request, refresh, refreshVersion, error: connectionError, getReviewAttempt, updateReviewAttempt } = useRuns();
   const [now, setNow] = useState(Date.now());
   const key = `${run.runId}:${intervention.id}`;
@@ -77,14 +77,18 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
   const deadlinePassed = now >= intervention.expiresAt;
   const action = intervention.action;
   const submitted = useRef<HTMLParagraphElement>(null);
+  const activeSubmission = useRef(false);
   const actionContextValid = hasActionContext(action, run, intervention);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
   useLayoutEffect(() => {
-    if (attempt.sent) submitted.current?.focus();
+    if (attempt.sent && activeSubmission.current) submitted.current?.focus();
   }, [attempt.sent]);
+  useEffect(() => {
+    if (!attempt.sent) activeSubmission.current = false;
+  }, [attempt.sent, key]);
   useEffect(() => {
     if (!attempt.uncertain) return;
     if (!attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
@@ -116,6 +120,7 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     const originalInterventionId = intervention.id;
     const current = getReviewAttempt(key);
     if (connectionError || current.locked || (decision === 'approve' && !actionContextValid)) return;
+    activeSubmission.current = true;
     updateReviewAttempt(key, { locked: true, sent: true, error: undefined });
     try {
       await request(`/runs/${segment(originalRunId)}/decision`, {
@@ -165,14 +170,14 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
           disabled={Boolean(connectionError) || attempt.sent || attempt.locked || (approval && !actionContextValid)}
           onClick={() => void decide(approval ? 'approve' : 'retry')}
         >
-          {approval ? confirmLabel(intervention.request.capability) : 'Retry after repair'}
+          {approval && inline ? 'Accept' : approval ? confirmLabel(intervention.request.capability) : 'Retry after repair'}
         </button>
         <button
           className="abort"
           disabled={Boolean(connectionError) || attempt.sent || attempt.locked}
           onClick={() => void decide('abort')}
         >
-          {approval ? 'Refuse request' : 'Stop request'}
+          {approval && inline ? 'Reject' : approval ? 'Refuse request' : 'Stop request'}
         </button>
       </div>
       {attempt.sent && <p ref={submitted} role="status" tabIndex={-1}>Decision submitted. Waiting for authoritative run updates.</p>}

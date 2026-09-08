@@ -6,6 +6,7 @@ import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
 import { ApiRequestError } from './transport';
+import { ApprovalPanel } from './review';
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
 type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
@@ -366,8 +367,8 @@ export function RunDetail({ run }: { run: Run }) {
     </details>
   );
 }
-export function CapabilityRunCard({ runId, detail = false }: { runId: string; detail?: boolean }) {
-  const { runs, error, refresh } = useRuns();
+export function CapabilityRunCard({ runId, detail = false, inlineApproval = false }: { runId: string; detail?: boolean; inlineApproval?: boolean }) {
+  const { session, runs, error, refresh } = useRuns();
   const run = runs.find((r) => r.runId === runId);
   if (!run)
     return (
@@ -408,6 +409,9 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
           Run updates disconnected; last confirmed state shown.
         </p>
       )}
+      {inlineApproval && session.principal === 'operator' && run.state === 'awaiting-human'
+        && run.intervention && 'id' in run.intervention && run.intervention.request.kind === 'risk_approval'
+        && <ApprovalPanel run={run} intervention={run.intervention} inline />}
       <ReviewRequestButton run={run} />
       {detail && (
         <>
