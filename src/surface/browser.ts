@@ -40,6 +40,9 @@ export const escapeAttrValue = (v: string) => v.replace(/["\\]/g, '\\$&');
 
 export class BrowserSurface implements Surface {
   private browser!: Browser;
+  private launching?: Promise<Browser>;
+  private closing = false;
+  private closePromise?: Promise<void>;
   private context!: BrowserContext;
   page!: Page; // exposed for escalation handoff (human drives the same page)
   private faultInjected = false;
@@ -97,6 +100,8 @@ export class BrowserSurface implements Surface {
   }
 
   async start(entryUrl: string): Promise<void> {
+    this.assertOpen();
+    if (this.launching) throw new Error('Browser surface already started');
     // CU_CDP_PORT exposes the live session over the Chrome DevTools Protocol.
     // This is the handoff seam: a human operator's console (here, a demo
     // script; in production, a remote co-browsing bridge) attaches to the
@@ -116,14 +121,18 @@ export class BrowserSurface implements Surface {
       }
       args.push(`--remote-debugging-port=${n}`);
     }
-    this.browser = await chromium.launch({ headless: !this.opts.headful, args });
+    this.launching = chromium.launch({ headless: !this.opts.headful, args });
+    this.browser = await this.launching;
+    this.assertOpen();
     this.context = await this.browser.newContext(this.opts.profile?.appId === 'meridian' ? { serviceWorkers: 'block' } : {});
+    this.assertOpen();
     if (this.opts.profile?.appId === 'meridian') await this.context.routeWebSocket(/.*/, async socket => {
       await socket.close({ code: 1008, reason: 'WebSocket transport is disabled for MERIDIAN' });
     });
     // Context interception precedes page creation: page routes and popup events
     // miss a popup's first request. The newer read-only route handles its own
     // bound auxiliary page and falls back here only for the primary page.
+    this.assertOpen();
     if (this.opts.profile || this.opts.allowedOrigins) await this.context.route('**/*', async route => {
       const request = route.request();
       let frame: Frame;
@@ -149,7 +158,9 @@ export class BrowserSurface implements Surface {
       }
       return route.continue();
     });
+    this.assertOpen();
     this.page = await this.context.newPage();
+    this.assertOpen();
     this.trackFrame(this.page.mainFrame());
     this.page.on('frameattached', frame => this.trackFrame(frame));
     this.page.on('framenavigated', frame => this.bumpFrame(frame));
@@ -164,6 +175,7 @@ export class BrowserSurface implements Surface {
       d.dismiss().catch(() => {});
     });
     await this.page.goto(entryUrl, { waitUntil: 'load' });
+    this.assertOpen();
     await this.verifySignon();
   }
 
@@ -681,8 +693,19 @@ export class BrowserSurface implements Surface {
     };
   }
 
-  async close(): Promise<void> {
-    await this.browser?.close();
+  private assertOpen(): void {
+    if (this.closing) throw new Error('Browser surface is closed');
+  }
+
+  close(): Promise<void> {
+    this.closing = true;
+    // Launch may still be in flight when a deadline or journal failure closes
+    // the runtime. Await the owned browser, never cache a premature no-op.
+    // A rejected close remains rejected; later cleanup cannot mask failure.
+    return this.closePromise ??= (async () => {
+      const browser = this.browser ?? await this.launching?.catch(() => undefined);
+      await browser?.close();
+    })();
   }
 
   // ---------- Locator resolution (the determinism core) ----------

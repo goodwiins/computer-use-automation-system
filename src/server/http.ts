@@ -1,5 +1,7 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import { operatorContext } from '../runtime/run.js';
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +12,7 @@ import { RequestError, type RunJournal } from '../runtime/journal.js';
 import { openRunJournal } from '../runtime/open-journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
-import { InvocationService } from './service.js';
+import { InvocationRejected, InvocationService } from './service.js';
 import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
 import { conversationRouter } from './conversation-http.js';
 import { ConversationStore } from './conversations.js';
@@ -51,6 +53,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   const origin = `http://127.0.0.1:${config.port}`;
   // Local demo callers share the existing caller principal; restart revokes this token.
   const localTellerToken = localTellerLogin ? randomBytes(32).toString('hex') : undefined;
+  const localSupervisorToken = localTellerToken ? randomBytes(32).toString('hex') : undefined;
   app.use((req, res, next) => {
     if (req.headers.host !== `127.0.0.1:${config.port}` || (req.headers.origin && req.headers.origin !== origin)) return res.status(403).json({ error: 'Host or Origin is not allowed' });
     res.set({ 'Content-Security-Policy': `default-src 'self'; script-src 'self' ${scriptHashes}; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
@@ -68,16 +71,56 @@ export function createApp(service: InvocationService, config: { callerToken: str
     z.object({}).strict().parse(req.body);
     res.json({ token: localTellerToken });
   });
+  // ponytail: one local supervisor sign-on at a time; per-account limits if more accounts are supported.
+  let supervisorLoginPending = false, supervisorLoginAfter = 0;
+  app.post('/session/supervisor', (req, res, next) => { void (async () => {
+    if (!localSupervisorToken) throw new RequestError(404, 'Local supervisor login is disabled');
+    if (req.get('Origin') !== origin || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
+      throw new RequestError(403, 'Local same-origin login required');
+    }
+    if (supervisorLoginPending || Date.now() < supervisorLoginAfter) throw new RequestError(429, 'Please wait before signing in again');
+    supervisorLoginAfter = Date.now() + 1000;
+    const input = z.object({ operator: z.string().min(1).max(128), password: z.string().min(1).max(512) }).strict().parse(req.body);
+    const expected = operatorContext('SUPERVISOR');
+    const matchesOperator = timingSafeEqual(hash(input.operator.toUpperCase()), hash(expected.operator.toUpperCase()));
+    const matchesPassword = timingSafeEqual(hash(input.password), hash(expected.password));
+    input.password = '';
+    delete req.body.password;
+    if (!matchesOperator || !matchesPassword) throw new RequestError(401, 'Supervisor sign-in failed. Check operator and password.');
+    supervisorLoginPending = true;
+    try {
+      const { runId } = await service.invoke('operator', 'meridian-sign-on', {}, randomUUID(), 'SUPERVISOR');
+      const deadline = Date.now() + 90_000;
+      while (!res.destroyed && Date.now() < deadline) {
+        const run = await service.get('operator', runId);
+        if (run.state === 'success' && run.result?.status === 'success') {
+          const outputs = run.result.outputs;
+          if (typeof outputs?.operator !== 'string' || outputs.operator.toUpperCase() !== expected.operator.toUpperCase()
+            || outputs.role !== 'SUPERVISOR' || outputs.branch !== expected.branch) {
+            throw new RequestError(401, 'Meridian did not confirm supervisor access.');
+          }
+          res.json({ token: localSupervisorToken, operator: outputs.operator, branch: outputs.branch, role: outputs.role });
+          return;
+        }
+        if (run.intervention || !['accepted', 'reserved', 'running', 'dispatching', 'recovering'].includes(run.state)) {
+          throw new RequestError(401, 'Meridian supervisor sign-on did not complete.');
+        }
+        await delay(250);
+      }
+      if (!res.destroyed) throw new RequestError(504, 'Supervisor sign-on timed out. Access has not been confirmed.');
+    } finally { supervisorLoginPending = false; }
+  })().catch(next); });
   app.use((req, res, next) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (!token) return res.status(401).json({ error: 'Bearer credential required' });
-    const principal = authenticate(token) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
+    const principal = authenticate(token) ?? (localSupervisorToken && timingSafeEqual(hash(token), hash(localSupervisorToken)) ? 'operator' : undefined) ?? (localTellerToken && timingSafeEqual(hash(token), hash(localTellerToken)) ? 'caller' : undefined);
     if (!principal) return res.status(401).json({ error: 'Invalid credential' });
     res.locals.principal = principal; next();
   });
   app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;
     res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+      readinessRequired: service.profile?.appId ? service.profile.appId === 'meridian' : true,
       availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
   }));
   app.get('/runs', asyncRoute(async (_req, res) => { res.json(await service.history(res.locals.principal)); }));
@@ -104,7 +147,8 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 500;
     if (error instanceof RequestError && error.headers?.['Retry-After'] === '1') res.set('Retry-After', '1');
-    res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration' });
+    res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration',
+      ...(error instanceof InvocationRejected ? { acceptance: error.acceptance } : {}) });
   });
   return app;
 }

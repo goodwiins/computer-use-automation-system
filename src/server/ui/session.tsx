@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { MERIDIAN_CAPABILITY_LABELS } from '../capability-labels.js';
 import type { InvocationService } from '../service.js';
+import { ApiRequestError } from './transport';
+import { fetchMissingRuns, RunWatch } from './run-watch';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
 export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
@@ -12,6 +14,7 @@ export type Session = {
   subjectId?: string;
   capabilities: Capability[];
   availability?: Availability[];
+  readinessRequired?: boolean;
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,6 +29,14 @@ export class CapabilityAuthorityError extends Error {
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+export function validateReadinessMetadata(value: unknown): boolean {
+  if (!plainRecord(value) || (value.readinessRequired !== undefined && typeof value.readinessRequired !== 'boolean')) {
+    throw new CapabilityAuthorityError('Invalid capability readiness metadata. Reconnect before continuing.');
+  }
+  // Missing metadata never enables the profile-specific readiness bypass.
+  return value.readinessRequired !== false;
 }
 
 export function validateCapabilityAuthority(value: unknown): { principal: ProjectedRole; subjectId?: string } {
@@ -61,10 +72,10 @@ export type ActionHold = ActionAttempt & {
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
-export function canReleaseRun(run: Run, availability: Availability[] | undefined): boolean {
-  return !pending(run) && run.state !== 'POST_OUTCOME_UNKNOWN' && availability !== undefined
-    && (!MERIDIAN_CAPABILITY_LABELS.has(run.capability)
-      || availability.some(item => item.id === run.capability && item.state === 'available'));
+export function completedActionReady(session: Session, run: Run): boolean {
+  if (pending(run) || !['success', 'business_outcome', 'failure', 'interrupted'].includes(run.state)) return false;
+  if (!Array.isArray(session.availability) || !session.capabilities.some(item => item.id === run.capability)) return false;
+  return session.readinessRequired === false || session.availability.some(item => item.id === run.capability && item.state === 'available');
 }
 export function hasCurrentPublicIntervention(run: Pick<Run, 'state' | 'intervention'>): boolean {
   const intervention: unknown = run.intervention;
@@ -155,8 +166,10 @@ export function RunProvider({
   const abort = useRef(new AbortController());
   const busy = useRef(false);
   const queued = useRef(false);
-  const watched = useRef(new Set<string>());
+  const watched = useRef(new RunWatch<Run>({ maxEntries: 32 }));
   const [reviewRunId, setReviewRunId] = useState<string>();
+  const reviewRunIdRef = useRef<string | undefined>(undefined);
+  const reviewOnlyWatchRef = useRef<string | undefined>(undefined);
   const reviewAttempts = useRef(new Map<string, ReviewAttempt>());
   const [, rerenderReview] = useState(0);
   const updateAction = useCallback((key: string, update: (current: ActionHold) => ActionHold | undefined) => {
@@ -204,9 +217,7 @@ export function RunProvider({
           throw failure;
         }
         const data = await response.json().catch(() => ({}));
-        const failure = new Error(typeof data.error === 'string' ? data.error : `Request failed (${response.status})`) as Error & { status?: number };
-        failure.status = response.status;
-        throw failure;
+        throw new ApiRequestError(response.status, data);
       }
       return response;
     },
@@ -231,6 +242,9 @@ export function RunProvider({
       if (!sameCapabilityAuthority(session, authority)) {
         throw new CapabilityAuthorityError('Capability authority changed. Reconnect before continuing.');
       }
+      if (validateReadinessMetadata(rawMetadata) !== (session.readinessRequired !== false)) {
+        throw new CapabilityAuthorityError('Capability readiness policy changed. Reconnect before continuing.');
+      }
       const metadata = rawMetadata as Record<string, unknown>;
       const history: Run[] = await historyResponse.json();
       const hasCapabilities = Array.isArray(metadata.capabilities);
@@ -238,10 +252,19 @@ export function RunProvider({
       const nextAvailability = hasCapabilities && Array.isArray(metadata.availability)
         ? metadata.availability as Availability[]
         : undefined;
-      const missing = [...watched.current].filter((id) => !history.some((run) => run.runId === id));
-      const extra: Run[] = await Promise.all(
-        missing.map(async (id) => (await request(`/runs/${segment(id)}`)).json()),
+      const pinned = new Set<string>();
+      const held = actionHoldRef.current;
+      if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+      if (reviewRunIdRef.current) pinned.add(reviewRunIdRef.current);
+      const missing = watched.current.missing(history, pinned);
+      const extra: Run[] = await fetchMissingRuns(
+        missing,
+        async id => (await request(`/runs/${segment(id)}`)).json() as Promise<Run>,
+        4,
       );
+      for (const run of history) watched.current.observe(run);
+      for (const run of extra) watched.current.observe(run);
+      watched.current.prune(pinned);
       if (!abort.current.signal.aborted) {
         setRuns([...history, ...extra]);
         setRefreshVersion(version => version + 1);
@@ -276,19 +299,36 @@ export function RunProvider({
   }, [disconnect, request, session]);
   const watch = useCallback(
     (id: string) => {
-      watched.current.add(id);
+      if (reviewOnlyWatchRef.current === id) reviewOnlyWatchRef.current = undefined;
+      const pinned = new Set<string>();
+      const held = actionHoldRef.current;
+      if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+      if (reviewRunIdRef.current) pinned.add(reviewRunIdRef.current);
+      watched.current.watch(id, pinned);
       void refresh();
     },
     [refresh],
   );
   const openReview = useCallback((runId: string) => {
+    const previous = reviewOnlyWatchRef.current;
+    if (previous && previous !== runId) watched.current.forget(previous);
+    if (previous !== runId) reviewOnlyWatchRef.current = watched.current.has(runId) ? undefined : runId;
+    reviewRunIdRef.current = runId;
     setReviewRunId(runId);
+    const pinned = new Set<string>([runId]);
+    const held = actionHoldRef.current;
+    if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
+    watched.current.watch(runId, pinned);
     if (!runs.some(run => run.runId === runId)) {
-      watched.current.add(runId);
       void refresh();
     }
   }, [refresh, runs]);
-  const closeReview = useCallback(() => setReviewRunId(undefined), []);
+  const closeReview = useCallback(() => {
+    if (reviewOnlyWatchRef.current) watched.current.forget(reviewOnlyWatchRef.current);
+    reviewOnlyWatchRef.current = undefined;
+    reviewRunIdRef.current = undefined;
+    setReviewRunId(undefined);
+  }, []);
   const getReviewAttempt = useCallback((key: string): ReviewAttempt => reviewAttempts.current.get(key) ?? {
     locked: false,
     uncertain: false,
@@ -302,8 +342,10 @@ export function RunProvider({
   }, [getReviewAttempt]);
   useEffect(() => {
     reviewAttempts.current.clear();
+    reviewRunIdRef.current = undefined;
     setReviewRunId(undefined);
     watched.current.clear();
+    reviewOnlyWatchRef.current = undefined;
     actionHoldRef.current = undefined;
     setActionHold(undefined);
     setRuns([]);
@@ -324,15 +366,15 @@ export function RunProvider({
     };
   }, [refresh]);
   useEffect(() => {
-    if (!error && !runs.some(pending) && !loading) return;
+    if (!error && !runs.some(pending) && !loading && actionHold?.state !== 'bound') return;
     const timer = setInterval(() => {
       void refresh();
     }, 1500);
     return () => clearInterval(timer);
-  }, [runs, error, loading, refresh]);
+  }, [runs, error, loading, refresh, actionHold?.state]);
   const currentSession = { ...session, capabilities, availability };
   return (
-    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, actionHold,
+    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current.ids, loading, error, actionHold,
       beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>
       {children}
     </Context.Provider>
