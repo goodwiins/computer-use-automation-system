@@ -424,14 +424,16 @@ it.each(['escalate', 'completion'] as const)('distinguishes post-intent discover
   f.deps.validateCompletion = validateCompletion;
   const result = await f.run();
   expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN' });
-  expect(f.create).toHaveBeenCalledTimes(2); expect(click).toHaveBeenCalledOnce();
-  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'completion' ? 1 : 0);
+  // Post-intent completion rejections are retried up to the consecutive-failure budget
+  // (the fixture model keeps answering done); escalation is immediately terminal.
+  expect(f.create).toHaveBeenCalledTimes(mode === 'completion' ? 4 : 2); expect(click).toHaveBeenCalledOnce();
+  expect(validateCompletion).toHaveBeenCalledTimes(mode === 'completion' ? 3 : 0);
   expect(f.escalate).not.toHaveBeenCalled();
   const log = readFileSync(join(f.logger.dir, 'log.jsonl'), 'utf8');
   const events = log.trim().split('\n').map(line => JSON.parse(line));
   const diagnostic = events.filter(event => ['discovery.escalate', 'discovery.completion'].includes(event.event));
   expect(diagnostic.map(({ ts, seq, ...metadata }) => metadata)).toEqual(mode === 'escalate'
-    ? [{ event: 'discovery.escalate' }] : [{ event: 'discovery.completion', status: 'failure' }]);
+    ? [{ event: 'discovery.escalate' }] : Array(3).fill({ event: 'discovery.completion', status: 'failure' }));
   expect(diagnostic[0].seq).toBeLessThan(events.find(event => event.event === 'discovery.finish').seq);
   f.logger.writeResult(result);
   const saved = readFileSync(join(f.logger.dir, 'result.json'), 'utf8');
