@@ -534,7 +534,8 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     const serializedPrompts = JSON.stringify(current.modelPrompts);
     expect(serializedPrompts).toContain(liveCanary);
     expect(serializedPrompts).toContain('LIVE_TOOL_FOLLOWUP_CANARY');
-    expect(serializedPrompts).toContain('LIVE_ASSISTANT_TEXT_CANARY');
+    // Historical assistant text is display-only; the server never replays it into model prompts.
+    expect(serializedPrompts).not.toContain('LIVE_ASSISTANT_TEXT_CANARY');
     expect(serializedPrompts).not.toMatch(/Message text was not saved\.|Linked run\./);
     for (const canary of liveToolCanaries) expect(serializedPrompts).not.toContain(canary);
     expectNoPrivateCanaries(current.modelPrompts);
