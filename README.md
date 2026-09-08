@@ -15,6 +15,8 @@ Evidence from real runs: **[evidence/](evidence/)**.
 
 ![Architecture](docs/architecture.png)
 
+[MERIDIAN architecture walkthrough](docs/meridian/architecture.md) · [Editable Eraser diagram](https://app.eraser.io/workspace/ziyIb2vBMV2jgfB78FB4)
+
 ## MERIDIAN hosted demo
 
 The assignment target is **https://web-sample.interface-hiring.com**. Start here:
