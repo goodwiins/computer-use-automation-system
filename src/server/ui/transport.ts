@@ -101,10 +101,19 @@ export function observeGuardedChatStream(
 
 export class ChatRequestError extends Error {}
 
+function isSavedConversationMessage(message: UIMessage): boolean {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+  const custom = (metadata as Record<string, unknown>).custom;
+  return custom !== null && typeof custom === 'object' && !Array.isArray(custom)
+    && (custom as Record<string, unknown>).meridianSaved === true;
+}
+
 // Keep user IDs: the server reconstructs prior run context from caller-scoped journal keys.
 // Client tool payloads are display-only. The latest stable ID is also its request key.
 export function chatRequest(messages: UIMessage[], id: string, intent: 'invoke' | 'status' | 'auto' = 'invoke') {
-  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
+  const modelMessages = messages.filter(message => !isSavedConversationMessage(message));
+  const latestUser = [...modelMessages].reverse().find((message) => message.role === 'user');
   const text = (message: UIMessage) =>
     message.parts
       .filter((part) => part.type === 'text')
@@ -124,7 +133,7 @@ export function chatRequest(messages: UIMessage[], id: string, intent: 'invoke' 
   let current:
     | { id: string; role: 'user' | 'assistant'; parts: { type: 'text'; text: string }[] }
     | undefined;
-  const history = messages.flatMap((message) => {
+  const history = modelMessages.flatMap((message) => {
     if (message.role !== 'user' && message.role !== 'assistant') return [];
     if (!message.id.length || message.id.length > 200) return [];
     let content = text(message);

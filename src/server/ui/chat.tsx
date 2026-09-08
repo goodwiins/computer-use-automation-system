@@ -10,7 +10,7 @@ import {
   ComposerPrimitive,
   AuiIf,
 } from '@assistant-ui/react';
-import { AssistantChatTransport, useChatRuntime } from '@assistant-ui/ai-sdk';
+import { AssistantChatTransport } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
 import {
   ChatRequestError,
@@ -21,6 +21,13 @@ import {
 } from './transport';
 import { pending, useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
+import {
+  ConversationNavigation,
+  ConversationStatus,
+  SavedRunCard,
+  trackConversationWriteFailure,
+  useConversationRuntime,
+} from './conversations';
 
 type ChatRunBinding = { runId: string; capability: string; state: string };
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -120,6 +127,7 @@ function Message() {
           File: () => null,
           Source: () => null,
           Reasoning: () => null,
+          data: { by_name: { 'saved-run': SavedRunCard } },
           tools: { Fallback: RunTool },
         }}
       /></div>
@@ -145,6 +153,14 @@ export function Chat() {
   const [lookupRunId, setLookupRunId] = useState('');
   const actionHoldRef = useRef(actionHold);
   const lifecycleRef = useRef(new Map<string, ChatLifecycle>());
+  const runLinksRef = useRef(new Map<string, string>());
+  const runLinksSessionKeyRef = useRef('');
+  const linkRunRef = useRef<(userMessageId: string, runId: string) => Promise<void>>(() => Promise.resolve());
+  const runLinksSessionKey = `${session.principal}:${session.subjectId ?? 'legacy'}:${session.token}`;
+  if (runLinksSessionKeyRef.current !== runLinksSessionKey) {
+    runLinksRef.current.clear();
+    runLinksSessionKeyRef.current = runLinksSessionKey;
+  }
   actionHoldRef.current = actionHold;
   const lookupRun = useCallback(async (key: string): Promise<ChatRunBinding> => {
     const response = await request('/api/chat/request', {
@@ -197,6 +213,8 @@ export function Chat() {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
               setLookupRunId(binding.runId);
+              runLinksRef.current.set(current.key, binding.runId);
+              trackConversationWriteFailure(linkRunRef.current(current.key, binding.runId), () => { void refresh(); });
               bindAction(current.key, binding.runId, binding.capability);
               watch(binding.runId);
             }).catch(() => markActionUncertain(current.key));
@@ -213,21 +231,28 @@ export function Chat() {
           markActionUncertain(key);
         },
       }),
-    [request, beginAction, markActionUncertain, bindAction, clearAction, watch, lookupRun],
+    [request, beginAction, markActionUncertain, bindAction, clearAction, watch, lookupRun, refresh],
   );
-  const runtime = useChatRuntime({
-    transport,
-    generateId: () => crypto.randomUUID(),
-    onError: (error) => {
-      setError(
-        error instanceof ChatRequestError
-          ? error.message
-          : 'Response interrupted. A run may already have started. Refresh run history before making another request.',
-      );
-      void refresh();
+  const { runtime, controller, linkRun } = useConversationRuntime({
+    session,
+    request,
+    getRunIdForUserMessage: userMessageId => runLinksRef.current.get(userMessageId),
+    chatOptions: {
+      transport,
+      generateId: () => crypto.randomUUID(),
+      adapters: undefined,
+      onError: (error) => {
+        setError(
+          error instanceof ChatRequestError
+            ? error.message
+            : 'Response interrupted. A run may already have started. Refresh run history before making another request.',
+        );
+        void refresh();
+      },
+      onFinish: () => { void refresh(); },
     },
-    onFinish: () => { void refresh(); },
   });
+  linkRunRef.current = linkRun;
   const toolkit = useMemo(
     () =>
       defineToolkit(
@@ -250,6 +275,8 @@ export function Chat() {
       const binding = await lookupRun(hold.key);
       if (actionHoldRef.current?.key !== hold.key) return;
       setLookupRunId(binding.runId);
+      runLinksRef.current.set(hold.key, binding.runId);
+      void linkRun(hold.key, binding.runId).catch(() => {});
       bindAction(hold.key, binding.runId, binding.capability);
       watch(binding.runId);
     } catch (e) {
@@ -274,6 +301,8 @@ export function Chat() {
     <section aria-labelledby="chat-heading" className="chat">
       <h2 id="chat-heading" className="sr-only">Assistant</h2>
       <AssistantRuntimeProvider runtime={runtime} config={config}>
+        {session.subjectId ? <ConversationNavigation /> : null}
+        <ConversationStatus controller={controller} subject={Boolean(session.subjectId)} />
         <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">
             <div className="conversation">
