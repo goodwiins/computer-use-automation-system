@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import type { PoolClient } from 'pg';
 import { describe, expect, it } from 'vitest';
 import { ConversationStore } from '../src/server/conversations.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
@@ -87,6 +88,40 @@ async function expectQuotaMatchesSource(database: Awaited<ReturnType<typeof crea
   const quota = await readQuota(database, subject);
   expect(quota.conversation_count).toBe(source.rows[0]!.conversations);
   expect(quota.event_count).toBe(source.rows[0]!.events);
+}
+
+type BlockedActivity = { pid: number; blockers: number[]; query: string };
+
+async function waitForBlockedActivity(
+  database: Awaited<ReturnType<typeof createPostgresFixture>>,
+  blockerPid: number,
+  queryFragment: string,
+) {
+  const applicationName = new URL(database.connectionString).searchParams.get('application_name');
+  if (!applicationName) throw new Error('fixture application_name is missing');
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const blocked = await database.pool.query<BlockedActivity>(`
+      SELECT activity.pid, pg_blocking_pids(activity.pid) AS blockers, activity.query
+      FROM pg_stat_activity activity
+      WHERE activity.pid <> pg_backend_pid()
+        AND activity.application_name = $1
+        AND activity.wait_event_type = 'Lock'
+        AND activity.query LIKE $2
+    `, [applicationName, `%${queryFragment}%`]);
+    const matching = blocked.rows.find(activity => activity.blockers.includes(blockerPid));
+    if (matching) return matching;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const activity = await database.pool.query<{ pid: number; query: string; state: string; wait_event_type: string | null; wait_event: string | null; blockers: number[] }>(`
+    SELECT activity.pid, activity.query, activity.state, activity.wait_event_type, activity.wait_event,
+           pg_blocking_pids(activity.pid) AS blockers
+    FROM pg_stat_activity activity
+    WHERE activity.pid <> pg_backend_pid()
+      AND activity.application_name = $1
+      AND activity.query LIKE $2
+  `, [applicationName, `%${queryFragment}%`]);
+  throw new Error(`fixture activity did not show ${queryFragment} blocked by ${blockerPid}: ${JSON.stringify(activity.rows)}`);
 }
 
 describe.sequential('ConversationStore prior-schema migration compatibility', () => {
@@ -328,4 +363,126 @@ describe.sequential('ConversationStore prior-schema migration compatibility', ()
       await database.close();
     }
   });
+
+  it('does not overwrite a concurrent quota-aware write during reconciliation', async () => {
+    const database = await createPostgresFixture();
+    const writerPool = database.openPool();
+    let writer: PoolClient | undefined;
+    let migration: Promise<void> | undefined;
+    let queuedWrite: Promise<unknown> | undefined;
+    try {
+      const store = new ConversationStore(database.pool);
+      await store.migrate();
+      await store.create(owner, '98000000-0000-4000-8000-000000000001');
+      writer = await writerPool.connect();
+      const writerPid = (await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      await writer.query('BEGIN');
+      await writer.query(
+        'SELECT owner_id FROM meridian_conversation_subject_quotas WHERE owner_id = $1 FOR UPDATE',
+        [owner],
+      );
+      migration = store.migrate();
+      void migration.catch(() => undefined);
+      const blockedMigration = await waitForBlockedActivity(
+        database,
+        writerPid,
+        'LOCK TABLE meridian_conversation_subject_quotas IN EXCLUSIVE MODE',
+      );
+      const queuedId = '98000000-0000-4000-8000-000000000003';
+      queuedWrite = store.create(otherOwner, queuedId);
+      void queuedWrite.catch(() => undefined);
+      await waitForBlockedActivity(
+        database,
+        blockedMigration.pid,
+        'VALUES ($1) ON CONFLICT (owner_id) DO NOTHING',
+      );
+      await writer.query(
+        'INSERT INTO meridian_conversations (id, owner_id) VALUES ($1, $2)',
+        ['98000000-0000-4000-8000-000000000002', owner],
+      );
+      await writer.query(
+        `UPDATE meridian_conversation_subject_quotas
+         SET conversation_count = conversation_count + 1
+         WHERE owner_id = $1`,
+        [owner],
+      );
+      await writer.query('COMMIT');
+      await migration;
+      migration = undefined;
+      await queuedWrite;
+      queuedWrite = undefined;
+
+      await expectQuotaMatchesSource(database, owner);
+      await expectQuotaMatchesSource(database, otherOwner);
+    } finally {
+      await writer?.query('ROLLBACK').catch(() => undefined);
+      if (migration) await migration.catch(() => undefined);
+      if (queuedWrite) await queuedWrite.catch(() => undefined);
+      writer?.release();
+      await database.closePool(writerPool);
+      await database.close();
+    }
+  }, 15000);
+
+  it('drains an in-flight legacy delete before reconciling source rows', async () => {
+    const database = await createPostgresFixture();
+    const writerPool = database.openPool();
+    let writer: PoolClient | undefined;
+    let migration: Promise<void> | undefined;
+    try {
+      await initializePriorSchema(database);
+      const conversationId = '99000000-0000-4000-8000-000000000001';
+      const eventId = '99000000-0000-4000-9000-000000000001';
+      await database.pool.query(
+        'INSERT INTO meridian_conversations (id, owner_id) VALUES ($1, $2)',
+        [conversationId, owner],
+      );
+      await database.pool.query(
+        `INSERT INTO meridian_conversation_events
+           (id, conversation_id, sequence, kind, role)
+         VALUES ($1, $2, 1, 'message_omitted', 'user')`,
+        [eventId, conversationId],
+      );
+      writer = await writerPool.connect();
+      const writerPid = (await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      await writer.query('BEGIN');
+      await writer.query(
+        'SELECT id FROM meridian_conversations WHERE id = $1 FOR UPDATE',
+        [conversationId],
+      );
+      await writer.query(
+        'DELETE FROM meridian_conversation_events WHERE conversation_id = $1',
+        [conversationId],
+      );
+
+      const store = new ConversationStore(database.pool);
+      migration = store.migrate();
+      void migration.catch(() => undefined);
+      // PostgreSQL truncates long multi-statement activity text; match its
+      // migration prefix while requiring the exact legacy writer blocker PID.
+      await waitForBlockedActivity(database, writerPid, 'CREATE TABLE IF NOT EXISTS meridian_conversation_subject_quotas');
+
+      await writer.query(
+        `UPDATE meridian_conversations
+         SET deleted_at = clock_timestamp(), revision = revision + 1
+         WHERE id = $1`,
+        [conversationId],
+      );
+      await writer.query('COMMIT');
+      await migration;
+      migration = undefined;
+      expect(await readQuota(database, owner)).toMatchObject({ conversation_count: '1', event_count: '0' });
+      await expectQuotaMatchesSource(database, owner);
+      await expect(database.pool.query(
+        'SELECT deleted_at FROM meridian_conversations WHERE id = $1',
+        [conversationId],
+      )).resolves.toMatchObject({ rows: [{ deleted_at: expect.any(Date) }] });
+    } finally {
+      await writer?.query('ROLLBACK').catch(() => undefined);
+      if (migration) await migration.catch(() => undefined);
+      writer?.release();
+      await database.closePool(writerPool);
+      await database.close();
+    }
+  }, 15000);
 });
