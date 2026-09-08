@@ -935,6 +935,7 @@ it('connects a local supervisor using operator and password, clearing the passwo
     expect(await page.locator('#workspace').count()).toBe(0);
     expect(service.invoke).not.toHaveBeenCalled();
     await page.waitForTimeout(1100); // Local login throttle intentionally covers failed attempts.
+    await operator.fill('SUPER1');
     await password.fill('offline-supervisor-password');
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
