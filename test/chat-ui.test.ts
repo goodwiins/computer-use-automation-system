@@ -2605,13 +2605,21 @@ it('offline operator review controls require live authority, keyboard focus, bro
   await page.setViewportSize({ width: 320, height: 900 });
   await page.screenshot({ path: walkthroughScreenshotPath('review-320.png'), fullPage: true });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await approve.focus();
-  await page.keyboard.press('Enter');
-  await page.keyboard.press('Enter');
+  let releaseDecision!: () => void;
+  const decisionReady = new Promise<void>(resolve => { releaseDecision = resolve; });
+  // Keep the submission state observable before authoritative refresh removes the approval panel.
+  await page.route(`**/runs/${runId}/decision`, async route => { await decisionReady; await route.continue(); }, { times: 1 });
+  try {
+    await approve.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
+    await submitted.waitFor();
+    expect(await approve.isDisabled()).toBe(true);
+    expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+    expect(state.decisions).toEqual([]);
+  } finally { releaseDecision(); }
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
-  const submitted = dialog.locator('[role="status"]', { hasText: 'Decision submitted. Waiting for authoritative run updates.' });
-  await submitted.waitFor();
-  expect(await dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
   expect(state.requests.find(request => request.path.endsWith('/decision'))?.body).toEqual({ approvalId, decision: 'approve' });
   state.runs[0] = {
     ...initialRun(),
@@ -3697,6 +3705,43 @@ it('keeps exact-run locks through switch-away and unlocks only after fresh confi
   await page.unroute('**/decision');
   await firstRetry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['retry']));
+}, 15000);
+
+it('keeps contact-update confirmation available when a hidden value collides with the capability name', async () => {
+  const { page, state, connect, errors } = await fixture();
+  const secrets = new Redactor();
+  secrets.addSensitiveValues(['update', 'private-credential']);
+  const capability = 'meridian-update-member';
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability, goal: 'Update contact', url: 'https://offline.example/members/9001/update' },
+    action: {
+      runId, artifact: capability, version: '1.0.0', stepId: 's13',
+      destination: 'https://offline.example/members/9001/update?token=private-credential',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { member: '9001', token: 'private-credential' }, visibleFacts: { member: '9001' }, tokenPresent: true, control: 'Save Changes',
+    },
+  }, secrets);
+  state.runs.push({ ...initialRun(), capability, state: 'awaiting-human', intervention });
+  await connect(operatorToken);
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  const dialog = page.getByRole('dialog');
+  const confirm = dialog.getByRole('button', { name: 'Confirm contact update', exact: true });
+  await confirm.waitFor();
+  expect(await confirm.isDisabled()).toBe(false);
+  await dialog.getByText('Target session: Verified for this run', { exact: false }).waitFor();
+  expect(await dialog.innerText()).not.toContain('private-credential');
+  expect(state.decisions).toEqual([]);
+
+  // A real identity mismatch must still disable confirmation; masking cannot waive it.
+  state.runs[0]!.intervention!.action!.artifact = 'meridian-place-hold';
+  await page.keyboard.press('Escape');
+  await page.locator('#refresh').click();
+  await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
+  expect(await confirm.isDisabled()).toBe(true);
+  expect(await dialog.getByRole('button', { name: 'Refuse request', exact: true }).isDisabled()).toBe(false);
+  expect(state.decisions).toEqual([]);
+  expect(errors).toEqual([]);
 }, 15000);
 
 it('fails closed for mismatched or incomplete action context while keeping refusal available', async () => {

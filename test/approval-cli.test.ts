@@ -8,6 +8,7 @@ import { describePendingApproval, requestApproval, startApprovalServer } from '.
 import { OperatorConsole } from '../src/escalation/operator.js';
 import { ControlSession } from '../src/escalation/session.js';
 import { Approval, publicIntervention, type ActionContext } from '../src/runtime/approval.js';
+import { meridianContracts } from '../src/runtime/contracts.js';
 
 import { createRuntime } from '../src/runtime/run.js';
 import { RunLogger } from '../src/evidence/logger.js';
@@ -53,6 +54,40 @@ afterEach(() => {
 });
 
 describe('standalone approval CLI transport', () => {
+  it.each(Object.keys(meridianContracts))('preserves canonical approval identity despite credential collisions: %s', async capability => {
+    process.env.CU_APPROVAL_DIR = temp();
+    const runId = randomUUID();
+    const secrets = new Redactor();
+    secrets.addSensitiveValues(['update', capability, 'private-credential']);
+    const approval = new Approval(new ControlSession(), () => {}, Date.now() + 60_000);
+    const waiting = approval.wait({ ...request, capability, reason: 'private-credential' }, {
+      ...action(runId), artifact: capability,
+      destination: 'https://example.test/members/123/update?token=private-credential',
+    });
+    const original = structuredClone(approval.pending!);
+    const server = await startApprovalServer(runId, approval, secrets);
+    try {
+      const api = publicIntervention(approval.pending!, secrets);
+      const prompt = describePendingApproval(approval.pending, secrets);
+      expect(api.request.capability).toBe(capability);
+      expect(api.action!.artifact).toBe(capability);
+      expect(prompt.capability).toBe(capability);
+      expect(prompt.action).toEqual(api.action);
+      expect(await requestApproval(runId, { action: 'status' })).toEqual({ ok: true, pending: prompt });
+      expect(JSON.stringify(api)).not.toContain('private-credential');
+      expect(decodeURIComponent(api.action!.destination)).toContain('/123/•••redacted•••?token=•••redacted•••');
+      const unknown = publicIntervention({ ...original, request: { ...original.request, capability: 'meridian-private-credential' },
+        action: { ...original.action!, artifact: 'meridian-private-credential' } }, secrets);
+      expect(unknown.request.capability).toBe('meridian-•••redacted•••');
+      expect(unknown.action!.artifact).toBe('meridian-•••redacted•••');
+      const incomplete = publicIntervention({ ...original, request: { ...original.request, capability: undefined },
+        action: { ...original.action!, artifact: undefined } } as never, secrets);
+      expect(incomplete.request.capability).toBeUndefined();
+      expect(incomplete.action!.artifact).toBeUndefined();
+      expect(approval.pending).toEqual(original);
+    } finally { approval.cancel(); await waiting; await server.close(); }
+  });
+
   it('shows facts and records exact approve/refuse commands from a second process', async () => {
     process.env.CU_APPROVAL_DIR = temp();
     const runId = randomUUID();
