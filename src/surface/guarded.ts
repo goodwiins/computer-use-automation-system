@@ -10,7 +10,7 @@ import type { ControlSession } from '../escalation/session.js';
 import { moneyCents, RiskClass, type Detector, type OutputValue, type TargetDescriptor, type TableColumn } from '../artifact/schema.js';
 import { BUILTIN_DETECTORS } from '../replay/detectors.js';
 import { checkAction, originAllowed, type Policy, type PolicyVerdict } from '../safety/policy.js';
-import type { Observation, ReadOnlyPageSnapshot, ResolutionReport, Surface } from './types.js';
+import { TableExtractionError, TargetResolutionError, type Observation, type ReadOnlyPageSnapshot, type ResolutionReport, type Surface } from './types.js';
 
 const DEFAULT_TIMEOUT = 10_000;
 const TRANSFER_ROUTE = /^\/members\/(\d+)\/transfer(?:\/(review|post))?$/;
@@ -192,7 +192,10 @@ export class GuardedSurface implements Surface {
       this.emit('action.end', { action, effectiveRisk: this.effectiveRisk, status: 'success', ms: performance.now() - started });
       return result;
     } catch (error) {
-      this.emit('action.end', { action, effectiveRisk: this.effectiveRisk, status: 'failure', ms: performance.now() - started });
+      this.emit('action.end', { action, effectiveRisk: this.effectiveRisk, status: 'failure', ms: performance.now() - started,
+        ...(action === 'extract' ? { extractionFailure: error instanceof TableExtractionError ? error.failure
+          : error instanceof TargetResolutionError ? 'target_unresolved' : 'other' } : {}),
+      });
       throw error;
     }
   }

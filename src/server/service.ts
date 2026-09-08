@@ -88,8 +88,8 @@ export class InvocationService {
   async availability(principal: Principal): Promise<CapabilityAvailability[]> {
     if (this.profile.appId !== 'meridian') return [];
     return this.withReadProjection(principal, async () => {
-      const candidates = MERIDIAN_CAPABILITIES.filter(([id]) => this.artifacts.has(id)
-        && (principalRole(principal) === 'operator' || this.allowlist.includes(id))).map(([id]) => id);
+      const candidates = MERIDIAN_CAPABILITIES.filter(([id]) =>
+        principalRole(principal) === 'operator' || this.allowlist.includes(id)).map(([id]) => id);
       let unknown: Set<string> | undefined;
       if (!this.closing && !this.cleanupFailed && !this.active && candidates.length) {
         try { unknown = await this.journal.unknownCapabilities(candidates); } catch { /* Project storage failure below. */ }
@@ -101,11 +101,11 @@ export class InvocationService {
         if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
         if (this.cleanupFailed) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Runtime cleanup failed; operator recovery is required' };
         if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
-        if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
         if (!unknown) {
           return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
         }
         if (unknown.has(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
+        if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
         return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
       });
     }, 'availability');

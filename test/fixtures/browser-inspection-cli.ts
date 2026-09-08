@@ -71,6 +71,12 @@ try {
   });
   await assert.rejects(changed.dispatch(approved, 1000), /missing or ambiguous/);
   assert.equal(posted, 1);
+
+  const table = { description: 'review facts', strategies: [{ kind: 'css' as const, selector: '.box > table' }] };
+  const rows = await browser.readTable(table, [{ name: 'value', selector: 'td:nth-child(2)', type: 'string' }]);
+  assert.equal(rows.length, 5);
+  await assert.rejects(browser.readTable(table, [{ name: 'value', selector: 'td', type: 'string' }]), { failure: 'cell_count' });
+  await assert.rejects(browser.readTable(table, [{ name: 'value', selector: 'td:has-text("PRIVATE")', type: 'string' }]), { failure: 'invalid_selector' });
 } finally {
   await browser.close();
   server.closeAllConnections();

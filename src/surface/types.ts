@@ -61,6 +61,13 @@ export class TargetResolutionError extends Error {
   }
 }
 
+/** Fixed categories survive strict evidence without retaining receipt text or selectors. */
+export class TableExtractionError extends Error {
+  constructor(readonly failure: 'invalid_selector' | 'cell_count' | 'invalid_money') {
+    super({ invalid_selector: 'Invalid table selector', cell_count: 'Ambiguous table column', invalid_money: 'Invalid money column' }[failure]);
+  }
+}
+
 export interface Surface {
   /** True when runtime conditions must use guarded operation recovery. */
   readonly strictOperationRecovery?: boolean;

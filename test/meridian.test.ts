@@ -26,7 +26,7 @@ import { Redactor } from '../src/safety/redact.js';
 import { runReplay } from '../src/replay/executor.js';
 import { InsufficientFundsError } from '../src/replay/outcomes.js';
 import { promoteToApproved } from '../src/artifact/promote.js';
-import type { Surface } from '../src/surface/types.js';
+import { TableExtractionError, TargetResolutionError, type Surface } from '../src/surface/types.js';
 import { createApp } from '../src/server/http.js';
 import { InvocationService } from '../src/server/service.js';
 import express from 'express';
@@ -2692,6 +2692,36 @@ it('awaits delayed discovery completion rejection and keeps the dispatched outco
   expect(log.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).some(event => event.event === 'discovery.finish' && event.status === 'success')).toBe(false);
 });
 
+it.each([
+  [new TableExtractionError('cell_count'), 'cell_count'],
+  [new TargetResolutionError({ description: 'PRIVATE RECEIPT', strategies: [{ kind: 'css', selector: '#private' }] }, []), 'target_unresolved'],
+  [Object.assign(new Error('PRIVATE RECEIPT'), { failure: 'invalid_money' }), 'other'],
+] as const)('retains a safe extraction category after dispatch without retrying: %s', async (error, extractionFailure) => {
+  const calls = [
+    { name: 'click', args: { nameAttr: 'submit', reason: 'post transfer', risk: 'irreversible' } },
+    { name: 'extract', args: { nameAttr: 'receipt', outputName: 'transaction', reason: 'read receipt', columns: [{ name: 'amount', selector: 'td', type: 'money' }], rowSelector: 'tbody' } },
+  ];
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  const readTable = vi.fn(async () => { throw error; });
+  const stub = guarded({ readTable }, async () => true, {}, (event, data) => logger.log(event, data));
+  const create = vi.fn(async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const result = await runDiscovery('transfer', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger, openai: { chat: { completions: { create } } } as never, model: 'fixture', maxSteps: 4,
+  });
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN', outputs: {} });
+  expect(stub.dispatch).toHaveBeenCalledOnce();
+  expect(readTable).toHaveBeenCalledOnce();
+  expect(create).toHaveBeenCalledTimes(2);
+  const raw = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8');
+  const events = raw.trim().split('\n').map(line => JSON.parse(line));
+  expect(events).toContainEqual(expect.objectContaining({ event: 'action.end', action: 'extract', attempt: 3, status: 'failure', extractionFailure }));
+  expect(events.at(-1)).toMatchObject({ event: 'discovery.finish', code: 'POST_OUTCOME_UNKNOWN' });
+  expect(raw).not.toMatch(/PRIVATE RECEIPT|#private/);
+});
+
 it('runs discovery completion validation before emitting success', async () => {
   const calls = [{ name: 'done', args: { summary: 'complete' } }];
   const stub = guarded();
@@ -3372,6 +3402,22 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
     expect(transaction).toEqual([{ ...request, confirmation: 'CONF-123' }]);
     expect(() => assertTransferOutputs(request, outputs)).not.toThrow();
     expect(() => assertTransferOutputs(request, { ...outputs, transaction: [{ ...transaction[0]!, amount: '2.00' }] })).toThrow(/validation/);
+
+    for (const [selector, type, failure] of [
+      ['td', 'string', 'cell_count'],
+      ['tr:nth-of-type(7) > td', 'string', 'cell_count'],
+      ['tr:has-text("PRIVATE")', 'string', 'invalid_selector'],
+      ['tr:nth-of-type(1) > td:nth-of-type(2)', 'money', 'invalid_money'],
+    ] as const) {
+      await expect(browser.readTable(
+        { description: 'receipt', strategies: [{ kind: 'css', selector: '#transaction' }] },
+        [{ name: 'value', selector, type }], 1000, 'tbody',
+      )).rejects.toMatchObject({ failure });
+    }
+    await expect(browser.readTable(
+      { description: 'receipt', strategies: [{ kind: 'css', selector: '#transaction' }] },
+      columns, 1000, 'tr:has-text("PRIVATE")',
+    )).rejects.toMatchObject({ failure: 'invalid_selector' });
 
     const logger = new RunLogger('replay', new Redactor(), temp(), true);
     const screenshot = await logger.screenshot(browser, 'receipt');
