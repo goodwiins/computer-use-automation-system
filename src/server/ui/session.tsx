@@ -1,10 +1,51 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { InvocationService, Principal } from '../service.js';
+import type { InvocationService } from '../service.js';
 
 export type Capability = ReturnType<InvocationService['catalog']>[number];
 export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
 export type Run = Awaited<ReturnType<InvocationService['get']>>;
-export type Session = { token: string; principal: Principal; capabilities: Capability[]; availability?: Availability[] };
+export type ProjectedRole = 'caller' | 'operator';
+export type Session = {
+  token: string;
+  principal: ProjectedRole;
+  subjectId?: string;
+  capabilities: Capability[];
+  availability?: Availability[];
+};
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export class CapabilityAuthorityError extends Error {
+  constructor(message = 'Invalid capability authority metadata. Reconnect with an authorized credential.') {
+    super(message);
+    this.name = 'CapabilityAuthorityError';
+  }
+}
+
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+export function validateCapabilityAuthority(value: unknown): { principal: ProjectedRole; subjectId?: string } {
+  if (!plainRecord(value) || (value.principal !== 'caller' && value.principal !== 'operator')) {
+    throw new CapabilityAuthorityError();
+  }
+  if (!Object.prototype.hasOwnProperty.call(value, 'subjectId')) {
+    return { principal: value.principal };
+  }
+  if (typeof value.subjectId !== 'string' || !uuidPattern.test(value.subjectId)) {
+    throw new CapabilityAuthorityError();
+  }
+  return { principal: value.principal, subjectId: value.subjectId.toLowerCase() };
+}
+
+export function sameCapabilityAuthority(
+  session: Pick<Session, 'principal' | 'subjectId'>,
+  authority: Pick<Session, 'principal' | 'subjectId'>,
+): boolean {
+  return session.principal === authority.principal && session.subjectId === authority.subjectId;
+}
 export type ActionAttempt = {
   kind: 'chat' | 'direct';
   key: string;
@@ -19,6 +60,11 @@ export type ActionHold = ActionAttempt & {
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
+export function hasCurrentPublicIntervention(run: Pick<Run, 'state' | 'intervention'>): boolean {
+  const intervention: unknown = run.intervention;
+  if (run.state !== 'awaiting-human' || !plainRecord(intervention)) return false;
+  return typeof intervention.id === 'string' && intervention.id.trim().length > 0;
+}
 export const segment = (value: string) => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value) || value.includes('..'))
     throw new Error('Invalid evidence or run identity');
@@ -143,13 +189,26 @@ export function RunProvider({
       return;
     }
     busy.current = true;
+    let authorityFailure = false;
     try {
       const [historyResponse, capabilitiesResponse] = await Promise.all([request('/runs'), request('/capabilities')]);
+      let rawMetadata: unknown;
+      try {
+        rawMetadata = await capabilitiesResponse.json();
+      } catch {
+        throw new CapabilityAuthorityError();
+      }
+      const authority = validateCapabilityAuthority(rawMetadata);
+      if (!sameCapabilityAuthority(session, authority)) {
+        throw new CapabilityAuthorityError('Capability authority changed. Reconnect before continuing.');
+      }
+      const metadata = rawMetadata as Record<string, unknown>;
       const history: Run[] = await historyResponse.json();
-      const metadata = await capabilitiesResponse.json() as { capabilities?: Capability[]; availability?: Availability[] | null };
       const hasCapabilities = Array.isArray(metadata.capabilities);
-      const nextCapabilities = hasCapabilities ? metadata.capabilities! : capabilitiesRef.current;
-      const nextAvailability = hasCapabilities && Array.isArray(metadata.availability) ? metadata.availability : undefined;
+      const nextCapabilities = hasCapabilities ? metadata.capabilities as Capability[] : capabilitiesRef.current;
+      const nextAvailability = hasCapabilities && Array.isArray(metadata.availability)
+        ? metadata.availability as Availability[]
+        : undefined;
       const missing = [...watched.current].filter((id) => !history.some((run) => run.runId === id));
       const extra: Run[] = await Promise.all(
         missing.map(async (id) => (await request(`/runs/${segment(id)}`)).json()),
@@ -163,6 +222,12 @@ export function RunProvider({
         setError('');
       }
     } catch (e) {
+      if (e instanceof CapabilityAuthorityError) {
+        if (abort.current.signal.aborted) return;
+        authorityFailure = true;
+        disconnect();
+        return;
+      }
       if (!abort.current.signal.aborted) {
         setAvailability(undefined);
         setError(
@@ -171,7 +236,7 @@ export function RunProvider({
       }
     } finally {
       busy.current = false;
-      if (!abort.current.signal.aborted) {
+      if (!authorityFailure && !abort.current.signal.aborted) {
         setLoading(false);
         if (queued.current) {
           queued.current = false;
@@ -179,7 +244,7 @@ export function RunProvider({
         }
       }
     }
-  }, [request]);
+  }, [disconnect, request, session]);
   const watch = useCallback(
     (id: string) => {
       watched.current.add(id);
@@ -189,8 +254,10 @@ export function RunProvider({
   );
   const openReview = useCallback((runId: string) => {
     setReviewRunId(runId);
-    watched.current.add(runId);
-    if (!runs.some(run => run.runId === runId)) void refresh();
+    if (!runs.some(run => run.runId === runId)) {
+      watched.current.add(runId);
+      void refresh();
+    }
   }, [refresh, runs]);
   const closeReview = useCallback(() => setReviewRunId(undefined), []);
   const getReviewAttempt = useCallback((key: string): ReviewAttempt => reviewAttempts.current.get(key) ?? {
@@ -207,7 +274,11 @@ export function RunProvider({
   useEffect(() => {
     reviewAttempts.current.clear();
     setReviewRunId(undefined);
-  }, [session.token]);
+    watched.current.clear();
+    actionHoldRef.current = undefined;
+    setActionHold(undefined);
+    setRuns([]);
+  }, [session.principal, session.subjectId, session.token]);
   useEffect(() => {
     void refresh();
     const online = () => {

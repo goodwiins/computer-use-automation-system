@@ -128,6 +128,7 @@ it('restores recorded discovery/replay structure through the real service and br
     await page.getByLabel('API credential').fill(operatorToken);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('tab', { name: /All runs/ }).click();
     await page.getByText('Recorded output structure; values withheld.', { exact: true }).first().waitFor();
     const replayCard = page.locator(`[data-run-id="${replay.runId}"]`);
     await replayCard.getByText('Run details and evidence', { exact: true }).click();

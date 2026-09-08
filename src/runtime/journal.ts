@@ -7,12 +7,13 @@ const RecordSchema = z.object({
   kind: z.enum(['discovery', 'replay']).default('replay'),
   runId: z.string().uuid(), caller: z.string(), capability: z.string(), version: z.string(),
   request: z.string(), identity: z.string(), createdAt: z.string(),
+  recoveryRequest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   invocationScope: z.enum(['public', 'member-identity']).optional(),
   state: z.enum(['reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN']),
 });
 export type JournalRecord = z.infer<typeof RecordSchema>;
 export type InvocationScope = 'public' | 'member-identity';
-export type ReservationOptions = { invocationScope?: InvocationScope };
+export type ReservationOptions = { invocationScope?: InvocationScope; recoveryRequest?: unknown };
 const AliasSchema = z.object({
   caller: z.string(), identity: z.string().regex(/^[a-f0-9]{64}$/),
   request: z.string().regex(/^[a-f0-9]{64}$/), runId: z.string().uuid(),
@@ -21,11 +22,14 @@ export type RequestAlias = z.infer<typeof AliasSchema>;
 export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[] };
 export type Awaitable<T> = T | Promise<T>;
 export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
+export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean; direct: boolean };
 export interface RunJournal {
   get(runId: string): Awaitable<JournalRecord | undefined>;
+  getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
+  recover(caller: string, key: string, request: unknown): Awaitable<JournalRecoveryLookup>;
   findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
   reserve(caller: string, key: string, capability: string, version: string, request: unknown,
     kind?: 'discovery' | 'replay', options?: ReservationOptions): Awaitable<JournalRecord>;
@@ -42,6 +46,13 @@ export function validateIdempotencyKey(key: string): void {
     throw new RequestError(400, 'A valid Idempotency-Key is required');
   }
 }
+export const MAX_RUN_BATCH = 100;
+const BatchRunIds = z.array(z.string().uuid().refine(value => value === value.toLowerCase())).max(MAX_RUN_BATCH);
+export function validateRunBatch(runIds: readonly string[]): string[] {
+  const parsed = BatchRunIds.safeParse(runIds);
+  if (!parsed.success) throw new RequestError(400, 'Journal run batch does not match the contract');
+  return [...new Set(parsed.data)];
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
@@ -50,6 +61,10 @@ function canonical(value: unknown): string {
 export function journalDigest(key: string, value: unknown): string {
   if (key.length < 32) throw new Error('JOURNAL_HMAC_KEY requires at least 32 characters');
   return createHmac('sha256', key).update(canonical(value)).digest('hex');
+}
+
+export function journalRecoveryDigest(key: string, value: unknown): string {
+  return journalDigest(key, { domain: 'meridian.external-invocation-recovery.v1', request: value });
 }
 
 export function readSignedEnvelope(path: string, key: string): unknown {
@@ -198,6 +213,14 @@ export class Journal implements RunJournal {
     if (!this.runIdsByIdentity.has(record.identity)) this.runIdsByIdentity.set(record.identity, record.runId);
   }
   get(runId: string) { this.assertHealthy(); return this.records.get(runId); }
+  getMany(runIds: readonly string[]) {
+    this.assertHealthy();
+    const ids = validateRunBatch(runIds);
+    return new Map(ids.flatMap(runId => {
+      const record = this.records.get(runId);
+      return record ? [[runId, record] as const] : [];
+    }));
+  }
   list() { this.assertHealthy(); return [...this.records.values()]; }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
@@ -235,13 +258,26 @@ export class Journal implements RunJournal {
     if (existing && existing.request !== digest) throw new RequestError(409, 'Idempotency key already identifies another request');
     return { existing, identity, digest };
   }
+  recover(caller: string, key: string, request: unknown) {
+    validateIdempotencyKey(key);
+    const identity = this.mac({ caller, key });
+    const existing = this.findRequest(caller, key);
+    return {
+      existing,
+      matches: existing?.recoveryRequest === journalRecoveryDigest(this.key, request),
+      direct: existing?.identity === identity,
+    };
+  }
   reserve(caller: string, key: string, capability: string, version: string, request: unknown,
     kind: 'discovery' | 'replay' = 'replay', options?: ReservationOptions) {
     const invocationScope = validateReservationScope(capability, kind, options);
     const { existing, identity, digest } = this.lookup(caller, key, request);
     if (existing) return existing;
     if (this.hasUnknown(capability)) throw new RequestError(409, 'This capability has an unknown posting outcome; use a separate read-only inquiry');
+    const recoveryRequest = options?.recoveryRequest === undefined
+      ? undefined : journalRecoveryDigest(this.key, options.recoveryRequest);
     const record: JournalRecord = { kind, runId: randomUUID(), caller, capability, version, request: digest, identity,
+      ...(recoveryRequest === undefined ? {} : { recoveryRequest }),
       invocationScope, createdAt: new Date().toISOString(), state: 'reserved' };
     this.persist(record); return record;
   }

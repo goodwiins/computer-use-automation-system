@@ -76,6 +76,8 @@ All routes require `Authorization: Bearer <subject token>`. IDs are client-gener
 
 The safe run projection can include validated structure whose values are `withheld`. It never includes inputs, member identity, raw outputs, interventions, or evidence paths. Cross-owner or missing runs and conversations return `404`. A subject request made while storage is disabled returns `503`; legacy principals receive `403`.
 
+An event page deduplicates its at-most-100 linked run IDs and reads them in one bounded authenticated journal batch; duplicate events remain in their original sequence. Only one linked-run batch is admitted per subject at a time. An overlapping event-page read or linked-run append for that subject returns `429` with `Linked-run projection is busy` instead of waiting on journal authority; another subject is admitted independently. Rejected reads and appends do not change conversations, runs, aliases, or runtime state.
+
 Archived conversations are read-only until unarchived and are the normal UI removal mechanism. Explicit deletion removes stored events but keeps an opaque tombstone so stale retries cannot resurrect an ID. It does not delete or change journal records, idempotency aliases, evidence, run status, or unknown-outcome quarantine. Apply journal/evidence retention separately according to the existing run policy.
 
 Saved events are display references only. They are never replayed into `/chat` or `/api/chat`, never start an invocation, and never make an approval decision. Clients must use the existing run and chat APIs for those actions.

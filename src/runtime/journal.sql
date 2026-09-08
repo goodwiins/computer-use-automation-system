@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS meridian_runs (
   capability text NOT NULL CHECK (capability ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,199}$'),
   version text NOT NULL CHECK (version ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,199}$'),
   request text NOT NULL CHECK (request ~ '^[a-f0-9]{64}$'),
+  recovery_request text NULL,
   identity text NOT NULL UNIQUE CHECK (identity ~ '^[a-f0-9]{64}$'),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   state text NOT NULL CHECK (state IN ('reserved', 'running', 'dispatching', 'success', 'business_outcome', 'failure', 'interrupted', 'POST_OUTCOME_UNKNOWN')),
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS meridian_runs (
 );
 
 ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS invocation_scope text;
+ALTER TABLE meridian_runs ADD COLUMN IF NOT EXISTS recovery_request text;
 
 DO $$
 BEGIN
@@ -33,6 +35,14 @@ BEGIN
     ALTER TABLE meridian_runs
       ADD CONSTRAINT meridian_runs_invocation_scope_check
       CHECK (invocation_scope IN ('public', 'member-identity'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'meridian_runs'::regclass AND conname = 'meridian_runs_recovery_request_check'
+  ) THEN
+    ALTER TABLE meridian_runs
+      ADD CONSTRAINT meridian_runs_recovery_request_check
+      CHECK (recovery_request IS NULL OR recovery_request ~ '^[a-f0-9]{64}$');
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint

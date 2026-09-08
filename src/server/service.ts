@@ -110,6 +110,19 @@ export class InvocationService {
   private async invokeRun(principal: Principal, id: string, args: Record<string, string | number>, key: string,
     role: 'TELLER' | 'SUPERVISOR', privateInvocation: boolean, lookupOnly = false) {
     if (principalRole(principal) !== 'operator' && (role !== 'TELLER' || !this.allowlist.includes(id))) throw new RequestError(403, 'Capability or operator context is not authorized');
+    const owner = principalKey(principal);
+    const recoveryRequest = { capability: id, args, role };
+    if (lookupOnly && !privateInvocation) {
+      const recovery = await this.journal.recover(owner, key, recoveryRequest);
+      const existing = recovery.existing;
+      if (!existing || this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
+      if (existing.capability !== id) throw new RequestError(409, 'Idempotency key already identifies another request');
+      if (existing.recoveryRequest !== undefined) {
+        if (!recovery.direct || !recovery.matches) throw new RequestError(409, 'Idempotency key already identifies another request');
+        return { runId: existing.runId, reused: true as const };
+      }
+      // Legacy records without a recovery digest retain the current-artifact exact lookup below.
+    }
     const artifact = this.artifacts.get(id);
     if (!artifact) throw new RequestError(404, 'Unknown approved capability');
     const context = this.profile.appId === 'meridian' ? operatorContext(role) : undefined;
@@ -125,7 +138,6 @@ export class InvocationService {
     }
     // Secrets are excluded from identity. The configured operator/branch/role are included.
     const request = { mode: 'replay', capability: id, version: artifact.version, args: normalized, context: context ? { operator: context.operator, branch: context.branch, role } : null };
-    const owner = principalKey(principal);
     const { existing, identity } = await this.lookupInvocation(owner, key, request, privateInvocation);
     if (existing) {
       if (!privateInvocation && this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
@@ -143,6 +155,7 @@ export class InvocationService {
     if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
     const record = await this.journal.reserve(owner, key, id, artifact.version, request, 'replay', {
       invocationScope: privateInvocation ? 'member-identity' : 'public',
+      ...(privateInvocation ? {} : { recoveryRequest }),
     });
     if (!privateInvocation && this.isPrivateRecord(record)) throw new RequestError(404, 'No accepted request found');
     if (privateInvocation && record.invocationScope !== 'member-identity') throw new RequestError(409, 'Member identity inquiry is unavailable');
@@ -251,6 +264,25 @@ export class InvocationService {
   async get(principal: Principal, runId: string) {
     const record = await this.journal.get(runId);
     if (!record) throw new RequestError(404, 'Unknown run');
+    return this.projectRun(principal, record);
+  }
+  async getOwnedMany(principal: Principal, runIds: readonly string[]) {
+    const records = await this.journal.getMany(runIds);
+    const owner = principalKey(principal);
+    return new Map([...new Set(runIds)].map(runId => {
+      const record = records.get(runId);
+      if (!record || record.caller !== owner) throw new RequestError(404, 'Unknown run');
+      try { return [runId, this.projectRun(principal, record)] as const; }
+      catch (error) {
+        if (error instanceof RequestError && (error.status === 403 || error.status === 404)) {
+          throw new RequestError(404, 'Unknown run');
+        }
+        throw error;
+      }
+    }));
+  }
+  private projectRun(principal: Principal, record: JournalRecord) {
+    const runId = record.runId;
     if (!canAccessRun(principal, record.caller)) throw new RequestError(403, 'Run belongs to another principal');
     const privateRun = this.isPrivateRecord(record);
     if (privateRun && principalRole(principal) !== 'operator') throw new RequestError(404, 'Unknown run');
@@ -306,8 +338,8 @@ export class InvocationService {
     const operator = principalRole(principal) === 'operator';
     const visible = records.filter(record => canAccessRun(principal, record.caller)
       && (!this.isPrivateRecord(record) || operator));
-    const projected = await Promise.all(visible.map(record => this.get(principal, record.runId)));
-    return projected.filter((run, index) => !this.isPrivateRecord(visible[index]!) || Boolean(this.live.get(visible[index]!.runId)?.approval.pending));
+    const projected = visible.map(record => this.projectRun(principal, record));
+    return projected.filter((run, index) => !this.isPrivateRecord(visible[index]!) || Boolean(run.intervention));
   }
   async decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
     if (principalRole(principal) !== 'operator') throw new RequestError(403, 'Only operators can decide interventions');

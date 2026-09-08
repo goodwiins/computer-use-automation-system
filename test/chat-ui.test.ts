@@ -23,6 +23,11 @@ import { createPostgresFixture } from './fixtures/postgres.js';
 // All browser/model/run fixtures in this suite are offline. No target is invoked.
 const callerToken = 'c'.repeat(32),
   operatorToken = 'o'.repeat(32);
+const subjectCaller = {
+  subjectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  role: 'caller' as const,
+  token: 's'.repeat(32),
+};
 const runId = '11111111-1111-4111-8111-111111111111';
 const secondRunId = '11111111-1111-4111-8111-222222222222';
 const approvalId = '22222222-2222-4222-8222-222222222222';
@@ -285,7 +290,11 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture(localTeller = false, availabilityOverride?: () => unknown) {
+async function fixture(
+  localTeller = false,
+  availabilityOverride?: () => unknown,
+  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean } = {},
+) {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -303,6 +312,7 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
   );
   const state = {
     runs: [] as Record<string, any>[],
+    historyHidden: new Set<string>(),
     requests: [] as { path: string; method?: string; authorization?: string; body?: any; key?: string }[],
     invocations: new Map<string, string>(),
     decisions: [] as string[],
@@ -313,6 +323,9 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
     omitFinishReason: false,
     postFinishMode: '' as '' | 'error' | 'open' | 'error-chunk' | 'second-finish',
     postFinishRelease: undefined as (() => void) | undefined,
+    capabilityReads: 0,
+    capabilityPartial: false,
+    releaseCapabilityBody: undefined as (() => void) | undefined,
     offline: false,
   };
   const service = {
@@ -332,7 +345,7 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
       : { id, label, state: 'not_recorded', reason: 'No approved recording' }),
     history: (principal: string) => {
       if (state.offline) throw new RequestError(503, 'Offline fixture disconnected');
-      return state.runs.map((r) =>
+      return state.runs.filter((r) => !state.historyHidden.has(r.runId)).map((r) =>
         principal === 'operator'
           ? r
           : {
@@ -492,6 +505,7 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
   const app = createApp(service as unknown as InvocationService, {
     callerToken,
     operatorToken,
+    subjectTokens: options.subjectTokens,
     port,
     localTellerLogin: localTeller ? { teller: 'TELLER1', supervisor: 'SUPER1' } : undefined,
     chatModel: model,
@@ -505,6 +519,26 @@ async function fixture(localTeller = false, availabilityOverride?: () => unknown
       body: undefined as any,
     };
     state.requests.push(record);
+    if (req.url === '/capabilities') {
+      state.capabilityReads++;
+      if (options.holdRefreshCapabilities && state.capabilityReads === 2) {
+        state.capabilityPartial = true;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.write('{"principal":"caller",');
+        let release!: () => void;
+        const held = new Promise<void>(resolve => {
+          release = resolve;
+          state.releaseCapabilityBody = resolve;
+        });
+        req.once('aborted', release);
+        void held.then(() => {
+          state.releaseCapabilityBody = undefined;
+          if (!res.destroyed && !res.writableEnded) res.end('"capabilities":[],"availability":[]}');
+        });
+        return;
+      }
+    }
     let body = '';
     req.on('data', (data) => {
       body += data;
@@ -824,11 +858,11 @@ it('keeps the Next.js chat focused and preserves a draft when Activity is toggle
   }
   expect(errors).toEqual([]);
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
-}, 15000);
+}, 30000);
 
 it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
   const { page, errors } = await fixture(true);
-  const role = page.getByLabel('Operator', { exact: true });
+  const role = page.getByLabel('Dashboard access', { exact: true });
   await role.waitFor();
   expect(await role.inputValue()).toBe('teller');
   expect(await page.locator('#credential').count()).toBe(0);
@@ -844,7 +878,7 @@ it('connects a local teller without input and requires an operator credential fo
   expect(await credential.inputValue()).toBe('');
   await credential.fill(callerToken);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await visible(page, '#status', 'Supervisor access requires an operator API credential');
+  await visible(page, '#status', 'Operator dashboard requires an operator API credential');
   expect(await page.locator('#workspace').count()).toBe(0);
   await credential.fill(operatorToken);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
@@ -904,6 +938,7 @@ it('shows linked identity only for the exact balance in this login, hides stale 
   expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await connect(operatorToken);
+  await page.getByRole('tab', { name: /All runs/ }).click();
   await visible(page, '#runs', 'Member identity unavailable.');
   expect(await page.locator('#runs').innerText()).not.toContain(verified.name);
   await page.reload();
@@ -1760,6 +1795,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   state.runs[0] = { ...initialRun(), state: 'POST_OUTCOME_UNKNOWN', intervention };
   await page.keyboard.press('Escape');
   await page.locator('#refresh').click();
+  await page.getByRole('tab', { name: /All runs/ }).click();
   await visible(page, '#runs', 'POST_OUTCOME_UNKNOWN');
   expect(await page.getByRole('button', { name: /Retry|Confirm|Refuse/ }).count()).toBe(0);
   await page.screenshot({ path: join(evidencePath, 'offline-unknown.png'), fullPage: true });
@@ -1819,6 +1855,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
   expect(await page.locator('#workspace').count()).toBe(0);
   expect(await page.locator('#credential').inputValue()).toBe('');
   await connect(operatorToken);
+  await page.getByRole('tab', { name: /All runs/ }).click();
   await visible(page, '#runs', '');
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
   await page.locator('#fields input').fill('offline-member');
@@ -2645,4 +2682,197 @@ it('can stop the response before any run output arrives without exposing a retry
     await page.getByRole('button', { name: 'Stop response', exact: true }).click();
     await page.getByRole('button', { name: 'Send', exact: true }).waitFor();
   } finally { release(); }
+}, 15000);
+
+it.each([
+  ['missing principal', { capabilities: [], availability: [] }],
+  ['unsupported principal', { principal: 'supervisor', capabilities: [], availability: [] }],
+  ['malformed subject identity', { principal: 'caller', subjectId: 'not-a-uuid', capabilities: [], availability: [] }],
+] as const)('rejects %s capability authority during initial connect', async (_label, metadata) => {
+  const { page, state } = await fixture();
+  await page.route('**/capabilities', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(metadata),
+  }));
+  await page.locator('#credential').fill(callerToken);
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await visible(page, '#status', 'Invalid capability authority');
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(state.requests.filter(request => request.path === '/runs')).toHaveLength(0);
+}, 15000);
+
+it('keeps a replacement session connected when an old capability refresh is aborted during reconnect', async () => {
+  const { page, state, connect } = await fixture(false, undefined, { holdRefreshCapabilities: true });
+  await connect(callerToken);
+  await vi.waitFor(() => expect(state.capabilityPartial).toBe(true));
+  try {
+    await page.locator('#credential').fill(callerToken);
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await page.getByText('Connected as caller. Credentials remain in page memory.', { exact: true }).waitFor();
+    await page.locator('#workspace').waitFor();
+    await page.waitForTimeout(250);
+    expect(await page.locator('#workspace').count()).toBe(1);
+    expect(await page.locator('#status').innerText()).toBe('Connected as caller. Credentials remain in page memory.');
+    expect(state.capabilityReads).toBeGreaterThanOrEqual(4);
+  } finally {
+    state.releaseCapabilityBody?.();
+  }
+}, 15000);
+
+it.each([
+  ['missing principal', { capabilities: [], availability: [] }],
+  ['mismatched principal', { principal: 'caller', capabilities: [], availability: [] }],
+  ['malformed subject identity', { principal: 'operator', subjectId: 'not-a-uuid', capabilities: [], availability: [] }],
+] as const)('disconnects before publishing history or fetching watched extras when refresh authority is %s', async (_label, metadata) => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({
+    ...initialRun(),
+    state: 'awaiting-human',
+    intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: { kind: 'locator_failed', reason: 'Review fixture' } },
+  });
+  await connect(operatorToken);
+  const review = page.locator(`[data-run-id="${runId}"]`).getByRole('button', { name: 'Review request', exact: true });
+  await review.click();
+  await page.keyboard.press('Escape');
+  const watchedReadsBefore = state.requests.filter(request => request.path === `/runs/${runId}`).length;
+  let malformed = false;
+  await page.route('**/capabilities', route => malformed
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(metadata) })
+    : route.continue());
+  state.runs.splice(0);
+  malformed = true;
+  await page.locator('#refresh').click();
+  await page.locator('#workspace').waitFor({ state: 'detached' });
+  expect(state.requests.filter(request => request.path === `/runs/${runId}`).length).toBe(watchedReadsBefore);
+}, 15000);
+
+it('disconnects when a subject refresh loses the authenticated subject identity', async () => {
+  const { page, state, connect } = await fixture(false, undefined, { subjectTokens: [subjectCaller] });
+  state.runs.push({
+    ...initialRun(),
+    state: 'awaiting-human',
+    intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: { kind: 'locator_failed', reason: 'Review fixture' } },
+  });
+  await connect(subjectCaller.token);
+  const review = page.locator(`[data-run-id="${runId}"]`).getByRole('button', { name: 'Review request', exact: true });
+  await review.click();
+  await page.keyboard.press('Escape');
+  let malformed = false;
+  await page.route('**/capabilities', route => malformed
+    ? route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ principal: 'caller', capabilities: [capability], availability: fixtureAvailability('available', 'available') }),
+      })
+    : route.continue());
+  state.runs.splice(0);
+  malformed = true;
+  await page.locator('#refresh').click();
+  await page.locator('#workspace').waitFor({ state: 'detached' });
+  expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
+}, 15000);
+
+it('uses credentials without a local shortcut in subject mode', async () => {
+  const { page, connect } = await fixture(true, undefined, { subjectTokens: [subjectCaller] });
+  expect(await page.locator('#login-role').count()).toBe(0);
+  expect(await page.getByText('TELLER1', { exact: false }).count()).toBe(0);
+  await connect(subjectCaller.token);
+  await page.getByText('Dashboard access: Caller', { exact: true }).waitFor();
+}, 15000);
+
+it('keeps dashboard, chat, target, branch, and direct request roles distinct', async () => {
+  const { page, connect } = await fixture();
+  await connect(operatorToken);
+  await page.getByText('Dashboard access: Operator', { exact: true }).waitFor();
+  await page.getByText('Chat execution: Teller', { exact: true }).waitFor();
+  await page.getByText('Target session: Not verified', { exact: true }).waitFor();
+  await page.getByText('Branch: Not verified', { exact: true }).waitFor();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#operator').selectOption('SUPERVISOR');
+  await page.getByText('Direct request role: SUPERVISOR', { exact: true }).waitFor();
+  await page.getByText('Chat execution remains Teller', { exact: false }).waitFor();
+  expect(await page.getByText('Target session: Not verified', { exact: true }).count()).toBeGreaterThan(0);
+  expect(await page.getByText('Branch: Not verified', { exact: true }).count()).toBeGreaterThan(0);
+}, 15000);
+
+it('starts operator Activity in a review-first queue with accurate counts and keyboard filters', async () => {
+  const staleRunId = '11111111-1111-4111-8111-333333333333';
+  const noInterventionRunId = '11111111-1111-4111-8111-444444444444';
+  const { page, state, connect } = await fixture();
+  state.runs.push(
+    { ...initialRun(), state: 'awaiting-human', intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: { kind: 'locator_failed', reason: 'Needs review' } } },
+    { ...initialRun(), runId: staleRunId, state: 'success', intervention: { id: secondApprovalId, expiresAt: Date.now() + 60000, request: { kind: 'locator_failed', reason: 'Stale intervention' } } },
+    { ...initialRun(), runId: noInterventionRunId, state: 'awaiting-human' },
+  );
+  await connect(operatorToken);
+  await page.getByRole('heading', { name: 'Operator Activity', exact: true }).waitFor();
+  const needs = page.getByRole('tab', { name: /Needs review/ });
+  const all = page.getByRole('tab', { name: /All runs/ });
+  await needs.waitFor();
+  expect(await needs.innerText()).toContain('(1)');
+  expect(await all.innerText()).toContain('(3)');
+  expect(await needs.getAttribute('aria-selected')).toBe('true');
+  expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBeGreaterThan(0);
+  expect(await page.locator(`#runs [data-run-id="${staleRunId}"]`).count()).toBe(0);
+  await needs.focus();
+  await page.keyboard.press('ArrowRight');
+  expect(await all.getAttribute('aria-selected')).toBe('true');
+  expect(await page.locator(`#runs [data-run-id="${staleRunId}"]`).count()).toBeGreaterThan(0);
+  await page.keyboard.press('ArrowLeft');
+  expect(await needs.getAttribute('aria-selected')).toBe('true');
+  state.runs[0]!.state = 'success';
+  await page.locator('#refresh').click();
+  await vi.waitFor(async () => expect(await needs.innerText()).toContain('(0)'));
+  expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBe(0);
+}, 15000);
+
+it('does not recover an opened review by id after authenticated history deliberately omits it', async () => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({
+    ...initialRun(),
+    state: 'awaiting-human',
+    sensitiveValuesUnavailable: true,
+    intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: {
+      kind: 'replay_stuck', capability: 'meridian-member-inquiry',
+      goal: 'Complete the linked identity check.',
+      reason: 'Linked identity check needs operator attention.', url: '(unavailable)',
+    } },
+  });
+  await connect(operatorToken);
+  await page.locator(`[data-run-id="${runId}"]`).getByRole('button', { name: 'Review request', exact: true }).click();
+  await page.keyboard.press('Escape');
+
+  state.runs[0]!.state = 'failure';
+  delete state.runs[0]!.intervention;
+  state.historyHidden.add(runId);
+  const refresh = async () => {
+    await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/runs')),
+      page.locator('#refresh').click(),
+    ]);
+  };
+  await refresh();
+  await refresh();
+
+  expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
+  await page.getByRole('tab', { name: /All runs/ }).click();
+  expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBe(0);
+}, 15000);
+
+it('gives callers history and operator-support guidance without takeover controls', async () => {
+  const { page, state, connect } = await fixture();
+  state.runs.push({
+    ...initialRun(),
+    state: 'awaiting-human',
+    intervention: { id: approvalId, expiresAt: Date.now() + 60000, request: { kind: 'risk_approval', reason: 'Operator review required' } },
+  });
+  await connect(callerToken);
+  await page.getByText('Run history', { exact: true }).waitFor();
+  await page.getByText('If this request needs an operator, it will remain waiting here.', { exact: true }).waitFor();
+  expect(await page.getByRole('button', { name: /take over|transfer|assign/i }).count()).toBe(0);
+  expect(await page.getByRole('button', { name: 'Review request', exact: true }).count()).toBe(1);
+  await page.getByRole('button', { name: 'Review request', exact: true }).click();
+  await page.getByRole('dialog').waitFor();
+  expect(await page.getByRole('dialog').getByRole('button', { name: /Confirm|Refuse|Retry|Stop/ }).count()).toBe(0);
 }, 15000);

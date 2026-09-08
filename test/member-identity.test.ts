@@ -120,6 +120,20 @@ it('lookup-only recovery does not reserve or start a missing balance request', a
   expect(f.replay).not.toHaveBeenCalled();
 });
 
+it('projects history from the journal list without reading every record again', async () => {
+  const f = fixture();
+  for (const [key, requestedMember] of [['history-one', '9001'], ['history-two', '9002']] as const) {
+    const record = f.journal.reserve('caller', key, balance, '1.0.0', {
+      mode: 'replay', capability: balance, version: '1.0.0', args: { member: requestedMember }, context: null,
+    });
+    f.journal.update(record.runId, 'success');
+  }
+  const get = vi.spyOn(f.journal, 'get');
+
+  expect((await f.service.history('caller')).map(run => run.runId)).toHaveLength(2);
+  expect(get).not.toHaveBeenCalled();
+});
+
 it('serializes the exact-member read under the same caller and role, with no replay on status or key reuse', async () => {
   const f = fixture();
   const accepted = await f.service.invoke('operator', balance, { member }, 'balance-request', 'SUPERVISOR');
@@ -425,6 +439,7 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
     expect((await journal!.get(publicInquiry.runId))?.invocationScope).toBe('public');
     releases[2]!(identity());
     await vi.waitFor(async () => expect((await service.get({ ...principal, role: 'caller' }, publicInquiry.runId)).state).toBe('success'));
+    await journal!.bindReference(principalKey({ ...principal, role: 'caller' }), 'pg-public-status-alias', publicInquiry.runId);
     await service.close();
     await journal.close();
     journal = undefined;
@@ -435,15 +450,32 @@ it('keeps private scope and caller projections across a PostgreSQL service resta
     );
     restoredJournal = await PostgresJournal.open(restoredPool, 'member-identity-fixture-hmac-key-32-characters', marker.rows[0]!.import_id, marker.rows[0]!.source_digest);
     const restored = new InvocationService(restoredJournal, policy, profile, dir, [balance, inquiry]);
+    const recordsBeforeRecovery = (await restoredJournal.list()).length;
+    const recoveryReserve = vi.spyOn(restoredJournal, 'reserve');
+    const recoveryAlias = vi.spyOn(restoredJournal, 'bindReference');
+    const runtimeCreations = create.mock.calls.length;
+    expect(await restored.invoke({ ...principal, role: 'caller' }, inquiry,
+      { searchMode: 'number', searchValue: member }, 'member-identity:client-controlled-number', 'TELLER', true))
+      .toEqual({ runId: publicInquiry.runId, reused: true });
+    await expect(restored.invoke({ ...principal, role: 'caller' }, inquiry,
+      { searchMode: 'number', searchValue: member }, 'pg-public-status-alias', 'TELLER', true))
+      .rejects.toThrow(/another request/);
+    expect((await restoredJournal.list())).toHaveLength(recordsBeforeRecovery);
+    expect(recoveryReserve).not.toHaveBeenCalled();
+    expect(recoveryAlias).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(runtimeCreations);
     expect(await restored.get({ ...principal, role: 'caller' }, accepted.runId)).toMatchObject({
       memberIdentity: { status: 'unavailable' },
     });
     await expect(restored.get({ ...principal, role: 'caller' }, child.runId)).rejects.toMatchObject({ status: 404 });
+    const historyRecordReads = vi.spyOn(restoredJournal, 'get');
     const callerHistory = await restored.history({ ...principal, role: 'caller' });
     expect(callerHistory.map(run => run.runId)).toContain(accepted.runId);
     expect(callerHistory.map(run => run.runId)).toContain(publicInquiry.runId);
     expect(callerHistory.map(run => run.runId)).not.toContain(child.runId);
     expect((await restored.history(principal)).map(run => run.runId)).not.toContain(child.runId);
+    expect(historyRecordReads).not.toHaveBeenCalled();
+    historyRecordReads.mockRestore();
     expect((await restored.get(principal, child.runId)).evidence).toEqual([]);
     await restored.close();
     await restoredJournal.close();

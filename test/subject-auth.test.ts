@@ -364,6 +364,7 @@ it('keeps lookupOnly subject recovery exact across UNKNOWN, changed facts, and f
     args: { memberId: '123' }, context: null,
   };
   const accepted = journal.reserve(principalKey(a), 'lookup-only-subject', 'hand-lookup-member-balance', '1.0.0', request);
+  expect(accepted.recoveryRequest).toBeUndefined();
   journal.update(accepted.runId, 'dispatching');
   journal.update(accepted.runId, 'failure');
   const before = journal.records.size;
@@ -379,4 +380,47 @@ it('keeps lookupOnly subject recovery exact across UNKNOWN, changed facts, and f
     .rejects.toThrow(/No accepted request/);
   expect(journal.records.size).toBe(before);
   expect(create).not.toHaveBeenCalled();
+});
+
+it.each(['removed', 'upgraded'] as const)('recovers an exact accepted request after its artifact is %s without executing or mutating', async deployment => {
+  vi.spyOn(runtime, 'createRuntime').mockReturnValue({
+    surface: { mutationDispatched: false }, promptRedactor: new Redactor(),
+  } as ReturnType<typeof runtime.createRuntime>);
+  vi.spyOn(runtime, 'executeReplay').mockResolvedValue({
+    status: 'success', outputs: { savingsBalance: 'safe' }, runId: 'fixture', evidenceDir: 'fixture', recoveries: [],
+  });
+  vi.spyOn(runtime, 'closeRuntime').mockResolvedValue();
+  const { dir, journal, service } = makeService(true);
+  const capability = 'hand-lookup-member-balance';
+  const accepted = await service.invoke(a, capability, { memberId: '123' }, 'deployment-recovery', 'TELLER');
+  await vi.waitFor(() => expect(journal.records.get(accepted.runId)?.state).toBe('success'));
+  journal.bindReference(principalKey(a), 'deployment-status-alias', accepted.runId);
+
+  const artifactDir = join(dir, `artifacts-${deployment}`);
+  mkdirSync(artifactDir);
+  if (deployment === 'upgraded') {
+    const upgraded = JSON.parse(readFileSync('test/fixtures/hand-lookup.json', 'utf8'));
+    upgraded.version = '2.0.0';
+    writeFileSync(join(artifactDir, 'lookup.json'), JSON.stringify(upgraded));
+  }
+  const restored = new InvocationService(journal, service.policy, service.profile, dir, [capability], artifactDir);
+  cleanup.push(async () => { await restored.close(); });
+  const recordsBefore = journal.records.size;
+  const reserve = vi.spyOn(journal, 'reserve');
+  const bindReference = vi.spyOn(journal, 'bindReference');
+  const runtimeCreations = vi.mocked(runtime.createRuntime).mock.calls.length;
+
+  expect(await restored.invoke(a, capability, { memberId: '123' }, 'deployment-recovery', 'TELLER', true))
+    .toEqual({ runId: accepted.runId, reused: true });
+  await expect(restored.invoke(a, capability, { memberId: '124' }, 'deployment-recovery', 'TELLER', true))
+    .rejects.toThrow(/another request/);
+  await expect(restored.invoke(b, capability, { memberId: '123' }, 'deployment-recovery', 'TELLER', true))
+    .rejects.toThrow(/No accepted request/);
+  await expect(restored.invoke(a, capability, { memberId: '123' }, 'deployment-status-alias', 'TELLER', true))
+    .rejects.toThrow(/another request/);
+  expect(journal.records.size).toBe(recordsBefore);
+  expect(reserve).not.toHaveBeenCalled();
+  expect(bindReference).not.toHaveBeenCalled();
+  expect(vi.mocked(runtime.createRuntime)).toHaveBeenCalledTimes(runtimeCreations);
+  expect(JSON.stringify(journal.records.get(accepted.runId))).not.toContain('123');
 });

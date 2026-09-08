@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
-import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
+import { journalDigest, journalRecoveryDigest, type JournalSnapshot } from '../src/runtime/journal.js';
 import { POSTGRES_LOCK_TIMEOUT_MS, PostgresJournal } from '../src/runtime/postgres-journal.js';
 import { createPostgresFixture } from './fixtures/postgres.js';
 
@@ -86,6 +86,42 @@ describe.sequential('PostgresJournal', () => {
     await journal.close();
   });
 
+  it('matches recovery only for the exact owner key and domain-separated public request digest', async () => {
+    const recoveryRequest = {
+      capability: 'meridian-member-record', args: { member: 'PRIVATE_RECOVERY_MEMBER' }, role: 'TELLER',
+    };
+    const original = await journal.reserve(caller, 'recovery-key', 'meridian-member-record', version,
+      { mode: 'replay', capability: 'meridian-member-record', version, args: { member: 'normalized' }, context: null },
+      'replay', { invocationScope: 'public', recoveryRequest });
+    await journal.update(original.runId, 'success');
+    await journal.bindReference(caller, 'recovery-status-alias', original.runId);
+
+    expect(original.recoveryRequest).toBe(journalRecoveryDigest(key, recoveryRequest));
+    expect(await journal.recover(caller, 'recovery-key', recoveryRequest)).toMatchObject({
+      existing: { runId: original.runId }, matches: true, direct: true,
+    });
+    expect(await journal.recover(caller, 'recovery-status-alias', recoveryRequest)).toMatchObject({
+      existing: { runId: original.runId }, matches: true, direct: false,
+    });
+    expect(await journal.recover(caller, 'recovery-key', {
+      ...recoveryRequest, args: { member: 'changed' },
+    })).toMatchObject({ existing: { runId: original.runId }, matches: false });
+    expect(await journal.recover(caller, 'recovery-key', {
+      ...recoveryRequest, capability: 'meridian-member-inquiry',
+    })).toMatchObject({ existing: { runId: original.runId }, matches: false });
+    expect(await journal.recover(caller, 'recovery-key', {
+      ...recoveryRequest, role: 'SUPERVISOR',
+    })).toMatchObject({ existing: { runId: original.runId }, matches: false });
+    expect(await journal.recover('other-caller', 'recovery-key', recoveryRequest)).toEqual({
+      existing: undefined, matches: false, direct: false,
+    });
+    const persisted = await database.pool.query<{ recovery_request: string }>(
+      'SELECT recovery_request FROM meridian_runs WHERE run_id = $1', [original.runId],
+    );
+    expect(persisted.rows).toEqual([{ recovery_request: journalRecoveryDigest(key, recoveryRequest) }]);
+    expect(JSON.stringify(persisted.rows)).not.toContain('PRIVATE_RECOVERY_MEMBER');
+  });
+
   it('persists explicit invocation scope and leaves legacy NULL scope unclassified', async () => {
     const publicRun = await journal.reserve(caller, 'public-member-key', 'meridian-member-inquiry', version,
       { searchMode: 'number', searchValue: '42' }, 'replay', { invocationScope: 'public' });
@@ -105,12 +141,34 @@ describe.sequential('PostgresJournal', () => {
     expect(rows.rows.map(row => row.invocation_scope).sort()).toEqual([null, 'public']);
   });
 
-  it('adds the nullable scope column to an existing journal and keeps migration idempotent', async () => {
+  it('reads one bounded, deduplicated run batch in one authority transaction', async () => {
+    const first = await journal.reserve(caller, 'pg-batch-first', capability, version, {});
+    await journal.update(first.runId, 'success');
+    const second = await journal.reserve(caller, 'pg-batch-second', capability, version, {});
+    await journal.update(second.runId, 'failure');
+    const transaction = vi.spyOn(journal as unknown as {
+      transaction<T>(work: (client: unknown) => Promise<T>): Promise<T>;
+    }, 'transaction');
+
+    const records = await journal.getMany([second.runId, first.runId, second.runId, randomUUID()]);
+
+    expect([...records]).toEqual([
+      [second.runId, { ...second, state: 'failure' }],
+      [first.runId, { ...first, state: 'success' }],
+    ]);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    await expect(journal.getMany(Array.from({ length: 101 }, () => first.runId))).rejects.toMatchObject({ status: 400 });
+    await expect(journal.getMany(['AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'])).rejects.toMatchObject({ status: 400 });
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds nullable scope and recovery columns to an existing journal and keeps migration idempotent', async () => {
     await database.pool.query('ALTER TABLE meridian_runs DROP COLUMN invocation_scope CASCADE');
+    await database.pool.query('ALTER TABLE meridian_runs DROP COLUMN recovery_request CASCADE');
     const before = await database.pool.query<{ count: string }>(
       `SELECT count(*) FROM information_schema.columns
        WHERE table_schema = current_schema()
-         AND table_name = 'meridian_runs' AND column_name = 'invocation_scope'`,
+         AND table_name = 'meridian_runs' AND column_name IN ('invocation_scope', 'recovery_request')`,
     );
     expect(before.rows[0]?.count).toBe('0');
     await expect(PostgresJournal.migrate(database.pool)).resolves.toBeUndefined();
@@ -118,9 +176,10 @@ describe.sequential('PostgresJournal', () => {
     const after = await database.pool.query<{ is_nullable: string }>(
       `SELECT is_nullable FROM information_schema.columns
        WHERE table_schema = current_schema()
-         AND table_name = 'meridian_runs' AND column_name = 'invocation_scope'`,
+         AND table_name = 'meridian_runs' AND column_name IN ('invocation_scope', 'recovery_request')
+       ORDER BY column_name`,
     );
-    expect(after.rows).toEqual([{ is_nullable: 'YES' }]);
+    expect(after.rows).toEqual([{ is_nullable: 'YES' }, { is_nullable: 'YES' }]);
   });
 
   it('rejects private scope outside the internal member inquiry capability', async () => {
@@ -279,7 +338,9 @@ describe.sequential('PostgresJournal', () => {
   });
 
   it('imports historical states and preserves the authenticated marker on repeat', async () => {
-    const source = { runId: randomUUID(), caller, capability, version, request: 'a'.repeat(64), identity: 'b'.repeat(64), createdAt: new Date().toISOString(), state: 'dispatching' as const, kind: 'replay' as const };
+    const source = { runId: randomUUID(), caller, capability, version, request: 'a'.repeat(64),
+      recoveryRequest: 'd'.repeat(64), identity: 'b'.repeat(64), createdAt: new Date().toISOString(),
+      state: 'dispatching' as const, kind: 'replay' as const };
     const alias = { caller, identity: 'c'.repeat(64), request: source.request, runId: source.runId };
     const snapshot: JournalSnapshot = { records: [source], aliases: [alias] };
     const importId = randomUUID(), digest = journalDigest(key, snapshot);
@@ -330,8 +391,10 @@ describe.sequential('PostgresJournal', () => {
     try {
       await PostgresJournal.migrate(second.pool);
       await PostgresJournal.importSnapshot(second.pool, key, snapshot, importId, digest);
-      expect((await second.pool.query<{ state: string; dispatch_intent: boolean }>('SELECT state, dispatch_intent FROM meridian_runs')).rows[0]).toEqual({
-        state: 'POST_OUTCOME_UNKNOWN', dispatch_intent: true,
+      expect((await second.pool.query<{ state: string; dispatch_intent: boolean; recovery_request: string }>(
+        'SELECT state, dispatch_intent, recovery_request FROM meridian_runs',
+      )).rows[0]).toEqual({
+        state: 'POST_OUTCOME_UNKNOWN', dispatch_intent: true, recovery_request: source.recoveryRequest,
       });
       expect((await second.pool.query('SELECT identity, caller, request, run_id, is_alias FROM meridian_run_requests ORDER BY is_alias')).rows).toHaveLength(2);
       await second.pool.query("UPDATE meridian_runs SET state = 'success' WHERE run_id = $1", [source.runId]);
@@ -353,6 +416,9 @@ describe.sequential('PostgresJournal', () => {
        VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'reserved')`,
       [first[0], 'f'.repeat(64), first[1]],
     );
+    await expect(database.pool.query(
+      `UPDATE meridian_runs SET recovery_request = 'bad' WHERE run_id = $1`, [first[0]],
+    )).rejects.toThrow();
     await expect(database.pool.query(
       `INSERT INTO meridian_runs (run_id, kind, caller, capability, version, request, identity, state)
        VALUES ($1, 'replay', 'caller', 'capability', '1.0.0', $2, $3, 'running')`,
@@ -377,6 +443,7 @@ describe.sequential('PostgresJournal', () => {
          UNION ALL SELECT capability FROM meridian_runs
          UNION ALL SELECT version FROM meridian_runs
          UNION ALL SELECT request FROM meridian_runs
+         UNION ALL SELECT recovery_request FROM meridian_runs
          UNION ALL SELECT identity FROM meridian_runs
          UNION ALL SELECT state FROM meridian_runs
          UNION ALL SELECT identity FROM meridian_run_requests

@@ -88,6 +88,17 @@ section { min-width: 0; }
 .activity-panel > section + section { border-top: 1px solid var(--line); margin-top: 1.5rem; padding-top: 1rem; }
 .activity-panel h2 { font-size: .95rem; }
 .activity-panel p, .activity-panel li { font-size: .85rem; }
+.authority-summary { border: 1px solid var(--line); border-radius: 8px; padding: .75rem; margin-top: 1rem; background: #fff; }
+.authority-summary h2 { margin-top: 0; }
+.authority-summary p { margin: .25rem 0; }
+.sidebar .authority-summary p { font-size: .75rem; }
+.operator-support, .caller-support { color: var(--muted); }
+.activity-filter { display: flex; gap: .5rem; margin: 1rem 0; }
+.activity-filter button[aria-selected="true"] { background: var(--teal); color: #fff; }
+.activity-filter button[aria-selected="false"] { background: #fff; color: var(--ink); }
+.direct-role-control { margin-top: .75rem; }
+.direct-role-control .muted { margin: .5rem 0; }
+.direct-role-summary { margin: .5rem 0; }
 .actions, .section-title, .run-title { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .section-title, .run-title { justify-content: space-between; }
 .actions button { margin: 0; }

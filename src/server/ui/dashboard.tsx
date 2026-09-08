@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { pending, segment, useRuns, type Run } from './session';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
@@ -10,14 +10,17 @@ const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 
 type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
   const { session } = useRuns();
+  const [role, setRole] = useState<'TELLER' | 'SUPERVISOR'>('TELLER');
   return session.principal === 'operator' ? (
-    <label id="role-label">
-      Execution role
-      <select name="operator" id="operator">
-        <option>TELLER</option>
-        <option>SUPERVISOR</option>
+    <div className="direct-role-control">
+      <label id="role-label" htmlFor="operator">Direct request role</label>
+      <select name="operator" id="operator" value={role} onChange={event => setRole(event.target.value as 'TELLER' | 'SUPERVISOR')} aria-describedby="direct-role-note">
+        <option value="TELLER">TELLER</option>
+        <option value="SUPERVISOR">SUPERVISOR</option>
       </select>
-    </label>
+      <p id="direct-role-note" className="muted">This role applies only to this direct request. Chat execution remains Teller; target session and branch are not verified here.</p>
+      <p className="direct-role-summary" aria-live="polite"><strong>Direct request role:</strong> {role}</p>
+    </div>
   ) : null;
 }
 export function CapabilityCatalog() {
@@ -333,8 +336,9 @@ export function EscalationCard({ run }: { run: Run }) {
   return <ReviewRequestButton run={run} />;
 }
 function ReviewRequestButton({ run }: { run: Run }) {
-  const { openReview } = useRuns();
+  const { openReview, session } = useRuns();
   if (!run.intervention || run.state !== 'awaiting-human') return null;
+  if (session.principal === 'operator' && !hasCurrentPublicIntervention(run)) return null;
   return <button type="button" className="secondary review-request" onClick={() => openReview(run.runId)}>Review request</button>;
 }
 export function RunDetail({ run }: { run: Run }) {
@@ -408,25 +412,88 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
   );
 }
 export function RunHistory() {
-  const { runs, loading, error, refresh } = useRuns();
+  const { session, runs, loading, error, refresh } = useRuns();
+  const operator = session.principal === 'operator';
+  const [filter, setFilter] = useState<'needs-review' | 'all'>(operator ? 'needs-review' : 'all');
+  const needsReview = runs.filter(hasCurrentPublicIntervention);
+  const visibleRuns = operator && filter === 'needs-review' ? needsReview : runs;
+  const tabRefs = useRef<Partial<Record<'needs-review' | 'all', HTMLButtonElement>>>({});
+  useEffect(() => {
+    if (!operator) setFilter('all');
+  }, [operator]);
+  function moveFilter(current: 'needs-review' | 'all') {
+    const next = current === 'needs-review' ? 'all' : 'needs-review';
+    setFilter(next);
+    tabRefs.current[next]?.focus();
+  }
+  function onFilterKeyDown(event: KeyboardEvent<HTMLButtonElement>, current: 'needs-review' | 'all') {
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveFilter(current);
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveFilter(current);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const next = event.key === 'Home' ? 'needs-review' : 'all';
+      setFilter(next);
+      tabRefs.current[next]?.focus();
+    }
+  }
   return (
     <section className="wide" aria-labelledby="history-heading">
       <div className="section-title">
         <div>
-          <h2 id="history-heading">Run history</h2>
-          <p>Authoritative discovery and replay records.</p>
+          <h2 id="history-heading">{operator ? 'Operator Activity' : 'Run history'}</h2>
+          <p>{operator ? 'Review requests first, then browse all authenticated runs.' : 'Authoritative discovery and replay records.'}</p>
         </div>
         <button id="refresh" onClick={() => void refresh()}>
           Refresh
         </button>
       </div>
+      {operator ? (
+        <>
+          <p className="operator-support">Cross-person supervisor assignment or handoff is unavailable without an explicit assignment grant and verified target context.</p>
+          <div className="activity-filter" role="tablist" aria-label="Activity filter">
+            <button
+              type="button"
+              role="tab"
+              id="activity-filter-needs-review"
+              aria-controls="runs"
+              aria-selected={filter === 'needs-review'}
+              ref={element => { if (element) tabRefs.current['needs-review'] = element; }}
+              onClick={() => setFilter('needs-review')}
+              onKeyDown={event => onFilterKeyDown(event, 'needs-review')}
+            >
+              Needs review ({needsReview.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="activity-filter-all"
+              aria-controls="runs"
+              aria-selected={filter === 'all'}
+              ref={element => { if (element) tabRefs.current.all = element; }}
+              onClick={() => setFilter('all')}
+              onKeyDown={event => onFilterKeyDown(event, 'all')}
+            >
+              All runs ({runs.length})
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="caller-support">If this request needs an operator, it will remain waiting here.</p>
+          <p className="caller-support">Operator takeover or cross-person handoff is not available from caller access.</p>
+        </>
+      )}
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">Loading authenticated history…</p>}
-      {!loading && !runs.length && (
-        <p className="empty">No visible runs. Send a request to start an available capability.</p>
+      {!loading && !visibleRuns.length && (
+        <p className="empty">{operator && filter === 'needs-review' ? 'No requests currently need review.' : 'No visible runs. Send a request to start an available capability.'}</p>
       )}
-      <div id="runs">
-        {[...runs].reverse().map((run) => (
+      <div id="runs" role={operator ? 'tabpanel' : undefined} aria-labelledby={operator ? `activity-filter-${filter}` : undefined}>
+        {[...visibleRuns].reverse().map((run) => (
           <CapabilityRunCard key={run.runId} runId={run.runId} detail />
         ))}
       </div>
