@@ -12,6 +12,7 @@ export type Session = {
   token: string;
   principal: ProjectedRole;
   subjectId?: string;
+  conversationText?: boolean;
   capabilities: Capability[];
   availability?: Availability[];
   readinessRequired?: boolean;

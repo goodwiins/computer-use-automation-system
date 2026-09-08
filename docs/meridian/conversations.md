@@ -1,6 +1,6 @@
 # Conversation storage
 
-MERIDIAN can expose an opt-in PostgreSQL conversation API for individually authenticated subjects. Express remains the API authority. The database stores conversation and event identifiers, fixed enums, revisions, sequence numbers, timestamps, archive state, and deletion tombstones. It does not store message text, titles, arguments, member data, live output, approval facts, credentials, or evidence URLs.
+MERIDIAN can expose an opt-in PostgreSQL conversation API for individually authenticated subjects. Express remains the API authority. The database stores conversation and event identifiers, fixed enums, revisions, sequence numbers, timestamps, archive state, and deletion tombstones. By default it does not store message text, titles, arguments, member data, live output, approval facts, credentials, or evidence URLs.
 
 ## Local isolated PostgreSQL
 
@@ -39,6 +39,16 @@ The server runs the idempotent SQL migration before it listens. Invalid subject 
 Subject mode accepts only the configured subject bearer tokens. Legacy caller/operator tokens and local teller demo-session credentials do not work in subject mode. A subject's role controls capability authority; its UUID controls conversation and run ownership. Operators can access only their own subject's conversations and runs.
 
 To rotate a token, replace the token while keeping the same `subjectId`, restart the server, and retire the old token. Tokens must remain unique and are never written to PostgreSQL or the journal.
+
+## Local chat text retention
+
+Local demo login can save text with the existing PostgreSQL API. Set `LOCAL_TELLER_LOGIN=1`, `DATABASE_URL`, and `LOCAL_CONVERSATION_SUBJECTS` to a JSON object with two distinct stable UUIDs under `caller` and `operator`. Keep these IDs across restarts. This mode cannot be combined with `SUBJECT_API_TOKENS`. Only the ephemeral local login credentials get conversation access; legacy API credentials remain excluded. Run authority, operator access, and the existing filesystem journal are unchanged.
+
+For text retention, additionally set `CONVERSATION_TEXT_KEY` to 32 cryptographically random bytes encoded as 64 lowercase hex characters. Keep the key in a private local environment file, separate from PostgreSQL and version control, and retain it when restarting or backing up. Missing or incorrect keys make saved text unavailable; they never return ciphertext or a fabricated empty history.
+
+With this opt-in, `/capabilities` advertises `conversationText: true`. The UI saves user and assistant text as `message_saved` events with `text` (1–4000 characters), excluding tool inputs, tool outputs, reasoning, credentials from the login form, and other message parts. Text typed into chat is retained, including any private details it contains. PostgreSQL stores AES-256-GCM ciphertext bound to the owner, conversation, event ID, and role. The original quotas, idempotent retry behavior, archives, and deletion tombstones also apply to text events. A message over the limit is reported as unsaved, not silently truncated.
+
+After reconnecting, select an entry in Saved conversations to read its messages. Restored messages are rendered as plain text and remain display-only: they are excluded from model requests, do not execute operations, and do not approve transactions. Chats lost before text retention was enabled cannot be recovered.
 
 ## Fixed storage limits and write responses
 
