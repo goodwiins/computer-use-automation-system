@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AssistantRuntimeProvider,
@@ -155,7 +156,7 @@ function Message() {
     </MessagePrimitive.Root>
   );
 }
-export function Chat() {
+export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElement | null }) {
   const {
     session,
     runs,
@@ -337,7 +338,7 @@ export function Chat() {
     <section aria-labelledby="chat-heading" className="chat">
       <h2 id="chat-heading" className="sr-only">Assistant</h2>
       <AssistantRuntimeProvider runtime={runtime} config={config}>
-        {session.subjectId ? <ConversationNavigation controller={controller} /> : null}
+        {session.subjectId && conversationSidebar ? createPortal(<ConversationNavigation controller={controller} />, conversationSidebar) : null}
         <ConversationStatus controller={controller} subject={Boolean(session.subjectId)} />
         <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">

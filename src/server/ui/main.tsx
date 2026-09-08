@@ -12,6 +12,7 @@ const preview = typeof document !== 'undefined' && document.documentElement.data
 
 export default function App() {
   const [session, setSession] = useState<Session>();
+  const [conversationSidebar, setConversationSidebar] = useState<HTMLDivElement | null>(null);
   const [status, setStatus] = useState(preview ? 'UI-only preview. Live execution, chat, approvals, and evidence access are unavailable.' : 'Connect with a caller or operator credential.');
   const [connecting, setConnecting] = useState(false);
   const [localLogin, setLocalLogin] = useState<{ teller: string; supervisor: string }>();
@@ -165,12 +166,13 @@ export default function App() {
           </p>
           {session && <AuthoritySummary session={session} />}
         </section>
+        <div ref={setConversationSidebar} className="conversation-sidebar" />
         <p className="sidebar-footer">Meridian Core<br /><span>Private local workspace</span></p>
       </aside>
       <main className="main-pane">
         {session ? (
           <RunProvider key={loginAttempt.current} session={session} disconnect={disconnect}>
-            <Workspace />
+            <Workspace conversationSidebar={conversationSidebar} />
           </RunProvider>
         ) : <div className="connection-welcome"><span className="welcome-mark" aria-hidden="true">M</span><h2>Welcome to Meridian</h2><p>Connect to your workspace to start a conversation.</p></div>}
       </main>
@@ -178,7 +180,7 @@ export default function App() {
   );
 }
 
-function Workspace() {
+function Workspace({ conversationSidebar }: { conversationSidebar: HTMLDivElement | null }) {
   const [activityOpen, setActivityOpen] = useState(false);
   const [narrowActivity, setNarrowActivity] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches);
@@ -248,7 +250,7 @@ function Workspace() {
         Activity{awaitingReview > 0 && <span className="review-count">{awaitingReview} awaiting review</span>}
       </button>
     </div>
-    <Chat />
+    <Chat conversationSidebar={conversationSidebar} />
     <aside id="activity-panel" className="activity-panel" aria-label="Activity" hidden={!activityOpen}>
       <button
         ref={activityBackRef}

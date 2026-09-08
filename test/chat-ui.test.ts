@@ -3783,7 +3783,20 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
   const savedConversations = page.getByRole('navigation', { name: 'Saved conversations', exact: true });
   await savedConversations.waitFor();
   const newConversation = savedConversations.getByRole('button', { name: 'New conversation', exact: true });
-  await activity.focus();
+  expect(await page.locator('.sidebar').getByRole('navigation', { name: 'Saved conversations', exact: true }).count()).toBe(1);
+  expect(await page.locator('.chat .conversation-navigation').count()).toBe(0);
+  for (const width of [1440, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const navBounds = await savedConversations.boundingBox();
+    const sidebarBounds = await page.locator('.sidebar').boundingBox();
+    const mainBounds = await page.locator('.main-pane').boundingBox();
+    expect(navBounds!.x).toBeGreaterThanOrEqual(sidebarBounds!.x);
+    expect(navBounds!.x + navBounds!.width).toBeLessThanOrEqual(sidebarBounds!.x + sidebarBounds!.width);
+    if (width > 700) expect(navBounds!.x + navBounds!.width).toBeLessThanOrEqual(mainBounds!.x);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).focus();
   await page.keyboard.press('Tab');
   expect(await newConversation.evaluate(element => element === document.activeElement)).toBe(true);
   // Production break caught: removing :focus-visible from saved-thread controls would hide the keyboard position.
@@ -3849,6 +3862,8 @@ it('keeps saved conversation row controls keyboard reachable without a local sho
   await vi.waitFor(async () => expect(await page.getByRole('button', { name: /Open Saved conversation|Restore conversation/ }).count()).toBe(0));
   expect(conversationRequests).toContain(`PATCH /conversations/${regularId}`);
   expect(conversationRequests).toContain(`DELETE /conversations/${regularId}`);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await savedConversations.waitFor({ state: 'detached' });
 }, 15000);
 
 it('keeps dashboard, chat, target, branch, and direct request roles distinct', async () => {
