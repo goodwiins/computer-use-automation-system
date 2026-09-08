@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
+import { completedActionReady, hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
-const MERIDIAN_IDS: ReadonlySet<string> = new Set(MERIDIAN_CAPABILITIES.map(([id]) => id));
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
 type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
@@ -45,8 +44,7 @@ export function CapabilityCatalog() {
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
   const availability = session.availability;
-  const meridianSession = session.capabilities.some(({ id }) => MERIDIAN_IDS.has(id))
-    || availability?.some(({ id }) => MERIDIAN_IDS.has(id)) === true;
+  const meridianSession = session.readinessRequired !== false;
   const availabilityComplete = Array.isArray(availability)
     && MERIDIAN_CAPABILITIES.every(([id]) => availability.some(item => item.id === id && AVAILABILITY_STATES.has(item.state)));
   const metadataUnavailable = meridianSession && !availabilityComplete;
@@ -65,7 +63,7 @@ export function CapabilityCatalog() {
     || recoveryPending || Boolean(actionHold);
   const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
     && acceptedRun.capability === attempt.current.capabilityId
-    && availability?.some(item => item.id === acceptedRun.capability && item.state === 'available'));
+    && completedActionReady(session, acceptedRun));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
     if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;

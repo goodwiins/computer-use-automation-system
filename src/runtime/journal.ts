@@ -28,9 +28,11 @@ export interface RunJournal {
   getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
+  unknownCapabilities(capabilities: readonly string[]): Awaitable<Set<string>>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
   recover(caller: string, key: string, request: unknown): Awaitable<JournalRecoveryLookup>;
   findRequest(caller: string, key: string): Awaitable<JournalRecord | undefined>;
+  findRequests(caller: string, keys: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   reserve(caller: string, key: string, capability: string, version: string, request: unknown,
     kind?: 'discovery' | 'replay', options?: ReservationOptions): Awaitable<JournalRecord>;
   bindReference(caller: string, key: string, runId: string): Awaitable<void>;
@@ -47,6 +49,15 @@ export function validateIdempotencyKey(key: string): void {
   }
 }
 export const MAX_RUN_BATCH = 100;
+export function validateTextBatch(values: readonly string[], requestKeys = false): string[] {
+  if (!Array.isArray(values) || values.length > MAX_RUN_BATCH) throw new RequestError(400, 'Journal batch does not match the contract');
+  for (const value of values) {
+    if (typeof value !== 'string') throw new RequestError(400, 'Journal batch does not match the contract');
+    if (requestKeys) validateIdempotencyKey(value);
+    else if (!/^[A-Za-z0-9][A-Za-z0-9._:@/+,-]{0,199}$/.test(value)) throw new RequestError(400, 'Journal batch does not match the contract');
+  }
+  return [...new Set(values)];
+}
 const BatchRunIds = z.array(z.string().uuid().refine(value => value === value.toLowerCase())).max(MAX_RUN_BATCH);
 export function validateRunBatch(runIds: readonly string[]): string[] {
   const parsed = BatchRunIds.safeParse(runIds);
@@ -223,6 +234,12 @@ export class Journal implements RunJournal {
   }
   list() { this.assertHealthy(); return [...this.records.values()]; }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
+  unknownCapabilities(capabilities: readonly string[]) {
+    this.assertHealthy();
+    const requested = new Set(validateTextBatch(capabilities));
+    return new Set([...this.records.values()].filter(record => requested.has(record.capability)
+      && record.state === 'POST_OUTCOME_UNKNOWN').map(record => record.capability));
+  }
   assertHealthy() { if (this.closed) throw new Error('Journal is closed'); if (this.writeFailure) throw this.writeFailure; }
   bindReference(caller: string, key: string, runId: string) {
     this.assertHealthy();
@@ -250,6 +267,13 @@ export class Journal implements RunJournal {
     const direct = runId === undefined ? undefined : this.records.get(runId);
     const alias = this.aliases.get(identity);
     return direct ?? (alias ? this.records.get(alias.runId) : undefined);
+  }
+  findRequests(caller: string, keys: readonly string[]) {
+    this.assertHealthy();
+    return new Map(validateTextBatch(keys, true).flatMap(key => {
+      const record = this.findRequest(caller, key);
+      return record?.caller === caller ? [[key, record] as const] : [];
+    }));
   }
   lookup(caller: string, key: string, request: unknown) {
     validateIdempotencyKey(key);

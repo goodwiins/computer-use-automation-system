@@ -11,6 +11,7 @@ export type Session = {
   subjectId?: string;
   capabilities: Capability[];
   availability?: Availability[];
+  readinessRequired?: boolean;
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,6 +26,14 @@ export class CapabilityAuthorityError extends Error {
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+export function validateReadinessMetadata(value: unknown): boolean {
+  if (!plainRecord(value) || (value.readinessRequired !== undefined && typeof value.readinessRequired !== 'boolean')) {
+    throw new CapabilityAuthorityError('Invalid capability readiness metadata. Reconnect before continuing.');
+  }
+  // Missing metadata never enables the profile-specific readiness bypass.
+  return value.readinessRequired !== false;
 }
 
 export function validateCapabilityAuthority(value: unknown): { principal: ProjectedRole; subjectId?: string } {
@@ -60,6 +69,11 @@ export type ActionHold = ActionAttempt & {
 export const pending = (run: Run) =>
   ['accepted', 'reserved', 'running', 'dispatching', 'recovering', 'awaiting-human'].includes(run.state)
   || run.memberIdentity?.status === 'pending';
+export function completedActionReady(session: Session, run: Run): boolean {
+  if (pending(run) || !['success', 'business_outcome', 'failure', 'interrupted'].includes(run.state)) return false;
+  if (!Array.isArray(session.availability) || !session.capabilities.some(item => item.id === run.capability)) return false;
+  return session.readinessRequired === false || session.availability.some(item => item.id === run.capability && item.state === 'available');
+}
 export function hasCurrentPublicIntervention(run: Pick<Run, 'state' | 'intervention'>): boolean {
   const intervention: unknown = run.intervention;
   if (run.state !== 'awaiting-human' || !plainRecord(intervention)) return false;
@@ -201,6 +215,9 @@ export function RunProvider({
       const authority = validateCapabilityAuthority(rawMetadata);
       if (!sameCapabilityAuthority(session, authority)) {
         throw new CapabilityAuthorityError('Capability authority changed. Reconnect before continuing.');
+      }
+      if (validateReadinessMetadata(rawMetadata) !== (session.readinessRequired !== false)) {
+        throw new CapabilityAuthorityError('Capability readiness policy changed. Reconnect before continuing.');
       }
       const metadata = rawMetadata as Record<string, unknown>;
       const history: Run[] = await historyResponse.json();

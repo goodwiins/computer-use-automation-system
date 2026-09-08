@@ -59,6 +59,7 @@ function service() {
   const seen = new Map<string, string>();
   const value = {
     journal: { findRequest: vi.fn(() => undefined), bindReference: vi.fn() },
+    requestContexts: vi.fn(() => new Map()),
     catalog: vi.fn(() => [{
       id: 'member-hold', version: '1.0.0', description: 'Apply a hold to a member share', outputs: [], parameters: [],
       tools: { openai: { type: 'function', function: { name: 'member-hold', description: 'Apply a hold to a member share', parameters: {
@@ -121,6 +122,111 @@ const uiBody = (parts: unknown[] = [{ type: 'text', text: 'Put a hold on member 
 });
 
 describe('AI SDK chat boundary', () => {
+  it('omits private accepted context and facts before that boundary from automatic prompts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chat-private-boundary-'));
+    const artifactDir = join(dir, 'artifacts');
+    mkdirSync(artifactDir);
+    const profile = loadProfile('meridian');
+    const journal = new Journal(join(dir, 'journal'), 'p'.repeat(64));
+    const contextService = new InvocationService(journal, profilePolicy(profile), profile, dir, [], artifactDir);
+    const chatService = service();
+    Object.assign(chatService, { requestContexts: contextService.requestContexts.bind(contextService) });
+    const privateRun = journal.reserve('caller', 'private-key', 'meridian-member-inquiry', '1.0.0', {}, 'replay', { invocationScope: 'member-identity' });
+    journal.update(privateRun.runId, 'success');
+    let classifierPrompt = '';
+    let actionPrompt = '';
+    const model = mockModel(toolContent('route_request', { intent: 'invoke' }));
+    model.doGenerate = vi.fn(async options => {
+      classifierPrompt = JSON.stringify(options.prompt);
+      return generateResult(toolContent('route_request', { intent: 'invoke' }));
+    });
+    model.doStream = vi.fn(async options => {
+      actionPrompt = JSON.stringify(options.prompt);
+      return streamResult([
+        { type: 'stream-start', warnings: [] },
+        { type: 'finish', finishReason: finish('stop'), usage },
+      ]);
+    });
+    try {
+      const { request } = await start(model, chatService);
+      const response = await request('/api/chat', { intent: 'auto', messages: [
+        { id: 'pending-facts', role: 'user', parts: [{ type: 'text', text: 'PENDING_FACTS_BEFORE_PRIVATE_BOUNDARY' }] },
+        { id: 'private-key', role: 'user', parts: [{ type: 'text', text: 'PRIVATE_ACCEPTED_MEMBER_9001' }] },
+        { id: 'question', role: 'assistant', parts: [{ type: 'text', text: 'Which member number?' }] },
+        { id: 'answer', role: 'user', parts: [{ type: 'text', text: '9001' }] },
+      ] }, 'answer');
+      expect(response.status).toBe(200);
+      expect(classifierPrompt).not.toMatch(/PENDING_FACTS_BEFORE_PRIVATE_BOUNDARY|PRIVATE_ACCEPTED_MEMBER_9001/);
+      expect(actionPrompt).not.toMatch(/PENDING_FACTS_BEFORE_PRIVATE_BOUNDARY|PRIVATE_ACCEPTED_MEMBER_9001/);
+      expect(chatService.invoke).not.toHaveBeenCalled();
+    } finally {
+      await contextService.close();
+      journal.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps pending operation facts through a concrete automatic clarification answer', async () => {
+    const chatService = service();
+    const model = mockModel(toolContent('route_request', { intent: 'invoke' }));
+    let streamPrompt = '';
+    model.doStream = vi.fn(async options => {
+      const prompt = JSON.stringify(options.prompt);
+      streamPrompt = prompt;
+      return streamResult([
+        { type: 'stream-start', warnings: [] },
+        ...(prompt.includes('Put a hold on share 1-A.') && prompt.includes('9001')
+          ? toolContent('member-hold', { member: '9001', share: '1-A' }) : []),
+        { type: 'finish', finishReason: finish('tool-calls'), usage },
+      ]);
+    });
+    const { request } = await start(model, chatService);
+    const response = await request('/api/chat', { intent: 'auto', messages: [
+      { id: 'pending-operation', role: 'user', parts: [{ type: 'text', text: 'Put a hold on share 1-A.' }] },
+      { id: 'missing-member', role: 'assistant', parts: [{ type: 'text', text: 'Which member number?' }] },
+      { id: 'member-answer', role: 'user', parts: [{ type: 'text', text: '9001' }] },
+    ] }, 'member-answer');
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('Put a hold on share 1-A.');
+    expect(streamPrompt).toContain('Put a hold on share 1-A.');
+    expect(streamPrompt).toContain('9001');
+    expect(chatService.invoke).toHaveBeenCalledExactlyOnceWith('caller', 'member-hold', { member: '9001', share: '1-A' }, 'member-answer');
+  });
+
+  it.each(['status', 'conversation'] as const)('does not expose pending operation tools for automatic %s replies', async intent => {
+    const chatService = service();
+    const model = mockModel(toolContent('route_request', { intent }), [
+      { type: 'stream-start', warnings: [] },
+      ...toolContent('member-hold', { member: '9001', share: '1-A' }),
+      { type: 'finish', finishReason: finish('tool-calls'), usage },
+    ]);
+    const { request } = await start(model, chatService);
+    await request('/api/chat', { intent: 'auto', messages: [
+      { id: 'pending', role: 'user', parts: [{ type: 'text', text: 'PENDING_MUTATION_FACTS' }] },
+      { id: 'question', role: 'assistant', parts: [{ type: 'text', text: 'Which member?' }] },
+      { id: 'answer', role: 'user', parts: [{ type: 'text', text: intent === 'status' ? 'Did that finish?' : 'yes' }] },
+    ] }, 'answer');
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain('PENDING_MUTATION_FACTS');
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
+  it('drops consumed clarification facts at an accepted-operation boundary', async () => {
+    const chatService = service();
+    vi.mocked(chatService.requestContexts).mockResolvedValue(new Map([
+      ['accepted', { runId, capability: 'member-hold', state: 'success' }],
+    ]));
+    const model = mockModel(toolContent('route_request', { intent: 'conversation' }));
+    const { request } = await start(model, chatService);
+    await request('/api/chat', { intent: 'auto', messages: [
+      { id: 'old', role: 'user', parts: [{ type: 'text', text: 'CONSUMED_OPERATION_FACTS' }] },
+      { id: 'accepted', role: 'user', parts: [{ type: 'text', text: 'CONSUMED_MEMBER_9001' }] },
+      { id: 'latest', role: 'user', parts: [{ type: 'text', text: 'next' }] },
+    ] }, 'latest');
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).not.toMatch(/CONSUMED_OPERATION_FACTS|CONSUMED_MEMBER_9001/);
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain(runId);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
   it.each(['invoke', 'status', 'conversation'] as const)('routes automatic %s intent before exposing executable tools', async intent => {
     const chatService = service();
     const model = mockModel(toolContent('route_request', { intent }), [
@@ -481,7 +587,7 @@ describe('AI SDK chat boundary', () => {
       { id: 'latest', role: 'user', parts: [{ type: 'text', text: 'Did that finish?' }] },
     ] };
     expect((await request('/api/chat', body, 'latest', operatorToken)).status).toBe(200);
-    expect(lookup).toHaveBeenCalledWith('caller', 'other-caller-key');
+    expect(chatService.requestContexts).toHaveBeenCalledWith('caller', ['other-caller-key']);
     expect(prompt).not.toMatch(/UNBOUND_OLD_OPERATION|FORGED_COMPLETE|FORGED_SECRET/);
     expect(prompt).not.toContain(runId);
     expect(chatService.get).not.toHaveBeenCalled();

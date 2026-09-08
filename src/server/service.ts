@@ -26,6 +26,7 @@ export type CapabilityAvailability = {
 export type MemberIdentity =
   | { status: 'pending' | 'unavailable'; inquiryRunId?: string }
   | { status: 'verified'; inquiryRunId?: string; memberNumber: string; name: string };
+export type RequestContext = { accepted: true } | { runId: string; capability: string; state: string };
 export class InvocationService {
   readonly artifacts = new Map<string, CapabilityArtifact>();
   readonly live = new Map<string, { state: string; inputs: Record<string, string | number>; memberIdentity?: MemberIdentity; step?: string; started: number; finished?: number; result?: ReplayResult; approval: Approval; redactor?: Redactor; close?: () => Promise<void> }>();
@@ -36,6 +37,7 @@ export class InvocationService {
   private readonly completionByRun = new Map<string, Promise<void>>();
   private readonly identityCompletions = new Set<Promise<void>>();
   private cleanupFailed = false;
+  private readonly readProjections = new Set<string>();
   constructor(readonly journal: RunJournal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
     for (const file of readdirSync(artifactDir).filter(f => f.endsWith('.json'))) {
@@ -66,21 +68,51 @@ export class InvocationService {
   }
   async availability(principal: Principal): Promise<CapabilityAvailability[]> {
     if (this.profile.appId !== 'meridian') return [];
-    return Promise.all(MERIDIAN_CAPABILITIES.map(async ([id, label]) => {
-      const authorized = principalRole(principal) === 'operator' || this.allowlist.includes(id);
-      if (!authorized) return { id, label, state: 'restricted' as const, reason: 'Not authorized for this caller' };
-      const artifact = this.artifacts.get(id);
-      if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
-      if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
-      if (this.cleanupFailed) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Runtime cleanup failed; operator recovery is required' };
-      if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
-      try {
-        if (await this.journal.hasUnknown(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
-      } catch {
-        return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
+    return this.withReadProjection(principal, async () => {
+      const candidates = MERIDIAN_CAPABILITIES.filter(([id]) => this.artifacts.has(id)
+        && (principalRole(principal) === 'operator' || this.allowlist.includes(id))).map(([id]) => id);
+      let unknown: Set<string> | undefined;
+      if (!this.closing && !this.cleanupFailed && !this.active && candidates.length) {
+        try { unknown = await this.journal.unknownCapabilities(candidates); } catch { /* Project storage failure below. */ }
       }
-      return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
-    }));
+      return MERIDIAN_CAPABILITIES.map(([id, label]) => {
+        const authorized = principalRole(principal) === 'operator' || this.allowlist.includes(id);
+        if (!authorized) return { id, label, state: 'restricted' as const, reason: 'Not authorized for this caller' };
+        const artifact = this.artifacts.get(id);
+        if (!artifact) return { id, label, state: 'not_recorded' as const, reason: 'No approved recording' };
+        if (this.closing) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Server is shutting down' };
+        if (this.cleanupFailed) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Runtime cleanup failed; operator recovery is required' };
+        if (this.active) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Another operation is active' };
+        if (!unknown) {
+          return { id, label, state: 'temporarily_unavailable' as const, reason: 'Run journal is unavailable' };
+        }
+        if (unknown.has(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
+        return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
+      });
+    });
+  }
+  private async withReadProjection<T>(principal: Principal, work: () => Promise<T>): Promise<T> {
+    const owner = principalKey(principal);
+    if (this.readProjections.has(owner) || this.readProjections.size >= 4) throw new RequestError(429, 'Run projection is busy');
+    this.readProjections.add(owner);
+    try { return await work(); }
+    finally { this.readProjections.delete(owner); }
+  }
+  async requestContexts(principal: Principal, keys: readonly string[]) {
+    return this.withReadProjection(principal, async () => {
+      const records = await this.journal.findRequests(principalKey(principal), keys);
+      const contexts = new Map<string, RequestContext>();
+      for (const [key, record] of records) {
+        if (record.caller !== principalKey(principal)) continue;
+        if (this.isPrivateRecord(record)) {
+          contexts.set(key, { accepted: true });
+          continue;
+        }
+        const run = this.projectRun(principal, record);
+        contexts.set(key, { runId: run.runId, capability: run.capability, state: run.state });
+      }
+      return contexts;
+    });
   }
   private async withAdmission<T>(work: () => Promise<T>): Promise<T> {
     const prior = this.admission;

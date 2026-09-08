@@ -78,6 +78,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;
     res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+      readinessRequired: service.profile?.appId ? service.profile.appId === 'meridian' : true,
       availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
   }));
   app.get('/runs', asyncRoute(async (_req, res) => { res.json(await service.history(res.locals.principal)); }));

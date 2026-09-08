@@ -17,6 +17,7 @@ import {
   validateReservationScope,
   validateIdempotencyKey,
   validateRunBatch,
+  validateTextBatch,
 } from './journal.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -387,6 +388,40 @@ export class PostgresJournal implements RunJournal {
     return this.transaction(async client => {
       await this.lockAuthority(client);
       return this.findRequestWithIdentity(client, principal, identity);
+    });
+  }
+
+  async findRequests(caller: string, keys: readonly string[]): Promise<Map<string, JournalRecord>> {
+    this.assertHealthy();
+    const principal = validateCaller(caller);
+    const requested = validateTextBatch(keys, true);
+    if (!requested.length) return new Map();
+    const identities = requested.map(key => safeDigest(this.key, { caller: principal, key }));
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const result = await client.query<RunRow & { request_identity: string }>(
+        `SELECT q.identity AS request_identity, r.run_id::text, r.kind, r.caller, r.capability, r.version,
+          r.request, r.recovery_request, r.identity, r.created_at, r.invocation_scope, r.state, r.dispatch_intent
+         FROM meridian_run_requests q JOIN meridian_runs r ON r.run_id = q.run_id
+         WHERE q.identity = ANY($1::text[]) AND q.caller = $2 AND r.caller = $2`, [identities, principal]);
+      const records = new Map(result.rows.map(row => [row.request_identity, recordFromRow(row)]));
+      return new Map(requested.flatMap((key, index) => {
+        const record = records.get(identities[index]!);
+        return record ? [[key, record] as const] : [];
+      }));
+    });
+  }
+
+  async unknownCapabilities(capabilities: readonly string[]): Promise<Set<string>> {
+    this.assertHealthy();
+    const requested = validateTextBatch(capabilities);
+    if (!requested.length) return new Set();
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const result = await client.query<{ capability: string }>(
+        `SELECT DISTINCT capability FROM meridian_runs
+         WHERE capability = ANY($1::text[]) AND state = 'POST_OUTCOME_UNKNOWN'`, [requested]);
+      return new Set(result.rows.map(row => validateCapability(row.capability)));
     });
   }
 

@@ -287,14 +287,16 @@ const initialRun = () => ({
   evidence: ['result.json', 'log.jsonl', 'masked.png'],
 });
 const cleanup: (() => Promise<void>)[] = [];
+const defaultCapability = capability;
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
-  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean } = {},
+  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean; capability?: typeof capability; appId?: string } = {},
 ) {
+  const capability = options.capability ?? defaultCapability;
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -329,7 +331,9 @@ async function fixture(
     offline: false,
   };
   const service = {
+    profile: { appId: options.appId ?? 'meridian' },
     journal: { findRequest: () => undefined, bindReference: () => {} },
+    requestContexts: () => new Map(),
     evidenceDir,
     catalog: () => [capability],
     availability: () => availabilityOverride ? availabilityOverride() : [
@@ -371,7 +375,7 @@ async function fixture(
       if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
-        state.runs.push(initialRun());
+        state.runs.push({ ...initialRun(), capability: capability.id });
       }
       return { runId };
     }),
@@ -1895,7 +1899,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
     page.waitForResponse(response => response.url().endsWith('/capabilities')),
     page.locator('#refresh').click(),
   ]);
-  expect(await invokeButton.isDisabled()).toBe(true);
+  await vi.waitFor(async () => expect(await invokeButton.isDisabled()).toBe(true));
   await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   await page.waitForTimeout(100);
   expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
@@ -2453,6 +2457,39 @@ it('keeps a terminal direct hold until exact capability availability is authorit
   await vi.waitFor(() => expect(state.invocations.size).toBe(2));
 }, 30000);
 
+it.each(['direct', 'chat'] as const)('releases a completed non-Meridian %s action with authoritative empty availability', async kind => {
+  // Capability names do not identify the application profile.
+  const generic = { ...capability, id: 'meridian-funds-transfer' };
+  const { page, state, connect, errors } = await fixture(false, () => [], { capability: generic, appId: 'cu-nexus' });
+  await connect();
+  if (kind === 'direct') {
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  } else {
+    await page.route('**/api/chat/request', route => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ kind: 'run', runId, capability: generic.id, state: 'running' }) }));
+    await page.locator('#message').fill('Read this member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+  }
+  await vi.waitFor(() => expect(state.invocations.size).toBe(1));
+  state.runs[0]!.state = 'success';
+  state.runs[0]!.memberIdentity = { status: 'unavailable' };
+  await page.locator('#refresh').click();
+  if (kind === 'direct') {
+    const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
+    await release.waitFor({ timeout: 5000 });
+    await release.click();
+    expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true);
+  } else {
+    await page.locator('#message').fill('Read another member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.requests.filter(item => item.path === '/api/chat')).toHaveLength(2));
+    expect(state.requests.filter(item => item.path === '/api/chat').at(-1)?.body.intent).toBe('auto');
+  }
+  expect(errors).toEqual([]);
+}, 20000);
+
 const unusableAvailability: Array<[string, () => unknown]> = [
   ['empty', (): unknown[] => []],
   ['partial', (): unknown[] => [{ id: 'meridian-member-record', label: 'Member record', state: 'available', reason: 'Approved recording is ready' }]],
@@ -2724,6 +2761,8 @@ it.each([
   ['missing principal', { capabilities: [], availability: [] }],
   ['mismatched principal', { principal: 'caller', capabilities: [], availability: [] }],
   ['malformed subject identity', { principal: 'operator', subjectId: 'not-a-uuid', capabilities: [], availability: [] }],
+  ['changed readiness policy', { principal: 'operator', capabilities: [], availability: [], readinessRequired: false }],
+  ['malformed readiness policy', { principal: 'operator', capabilities: [], availability: [], readinessRequired: 'false' }],
 ] as const)('disconnects before publishing history or fetching watched extras when refresh authority is %s', async (_label, metadata) => {
   const { page, state, connect } = await fixture();
   state.runs.push({

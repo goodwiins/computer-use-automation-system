@@ -19,7 +19,7 @@ import {
   type ChatLifecycle,
   type ChatLifecycleCallbacks,
 } from './transport';
-import { pending, useRuns } from './session';
+import { completedActionReady, pending, useRuns } from './session';
 import { CapabilityRunCard } from './dashboard';
 
 type ChatRunBinding = { runId: string; capability: string; state: string };
@@ -160,11 +160,8 @@ export function Chat() {
     if (actionHold?.kind !== 'chat' || actionHold.state !== 'bound' || !actionHold.runId) return;
     const run = runs.find((candidate) => candidate.runId === actionHold.runId);
     if (!run || !actionHold.boundCapabilityId || run.capability !== actionHold.boundCapabilityId) return;
-    const availability = run && session.availability;
-    const availabilityReady = availability !== undefined
-      && availability.some(item => item.id === actionHold.boundCapabilityId && item.state === 'available');
-    if (!pending(run) && availabilityReady) clearAction(actionHold.key);
-  }, [actionHold, runs, session.availability, clearAction]);
+    if (completedActionReady(session, run)) clearAction(actionHold.key);
+  }, [actionHold, runs, session, clearAction]);
   const transport = useMemo(
     () =>
       new GuardedAssistantChatTransport({
