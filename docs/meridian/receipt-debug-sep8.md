@@ -83,3 +83,17 @@ lets the model re-observe. Exhausting the retry budget, aborts, detectors and
 every other error keep unknown precedence, and human-repair escalation is refused
 once dispatched. Both live runs remain terminal and must not be retried; their
 capabilities stay blocked until a separate read-only inquiry reconciles them.
+
+## Follow-up: receipt row replaced by balance read-back
+
+The six-field transaction row was the second half of the stall. It demanded two
+extractions that agreed byte for byte, against a receipt whose shape was never
+observed unmasked, and it was the only proof of completion. The transfer contract
+now matches open-share: one scalar `confirmation` extracted from the receipt, and
+completion proven by `validateTransferCompletion`, which re-reads the member
+shares table and requires the source balance to fall and the destination balance
+to rise by exactly the requested amount with every other share unchanged. The
+pre-dispatch baseline is the same fresh eligibility read taken during approval
+revalidation. Replay preflight now refuses a transfer artifact without that
+validator, and the `transaction` output, its column allowlist and the tool
+guidance about grouped receipt rows are removed.

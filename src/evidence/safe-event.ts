@@ -6,7 +6,6 @@ const withheldOutput = z.object({ name: z.string(), type: z.enum(['string', 'num
 const tableFields: Record<string, readonly string[]> = {
   members: ['memberNumber', 'name'],
   shares: meridianTransferMemberTable.columns.map(column => column.name),
-  transaction: ['member', 'sourceShare', 'destinationShare', 'amount', 'memo', 'confirmation'],
 };
 const structure = z.object({
   capability: z.string(),
@@ -87,6 +86,7 @@ const fields = {
   ms: z.number().finite().nonnegative(), isRetry: z.boolean(), approved: z.boolean(), mutation: z.boolean(),
   action: z.enum(['navigate', 'click', 'fill', 'select', 'extract', 'assert']),
   extractionFailure: z.enum(['invalid_selector', 'cell_count', 'invalid_money', 'target_unresolved', 'other']),
+  completionFailure: z.enum(['outputs', 'state', 'frame', 'other']),
   risk, requestedRisk: risk, effectiveRisk: risk,
   verdict: z.enum(['allow', 'deny', 'needs_human']), method: z.enum(['GET', 'POST']),
   status: z.enum(['success', 'failure', 'business_outcome', 'stopped', 'escalated']),

@@ -15,7 +15,7 @@ import { importJournal } from './src/runtime/journal-maintenance.js';
 import { openRunJournal } from './src/runtime/open-journal.js';
 import { PostgresJournal } from './src/runtime/postgres-journal.js';
 import { loadProfile, profilePolicy, FaultScenario } from './src/runtime/profile.js';
-import { applyMeridianContract, assertTransferOutputs, meridianContracts, transferFactsFromParams } from './src/runtime/contracts.js';
+import { applyMeridianContract, meridianContracts, transferFactsFromParams } from './src/runtime/contracts.js';
 import { serve } from './src/server/http.js';
 import { safeEvent } from './src/evidence/safe-event.js';
 import { runDiscovery } from './src/agent/loop.js';
@@ -240,8 +240,7 @@ async function discover(argv: string[]) {
   const serverParams = operator ? ['operator', 'password', 'branch'] : [];
   for (const key of serverParams) params[key] = `{{${key}}}`;
   if (operator) sensitive.push('password');
-  const expectedTransfer = meridian && name === 'meridian-funds-transfer' ? transferFactsFromParams(params) : undefined;
-  if (meridian && name === 'meridian-funds-transfer' && !expectedTransfer) fatal('Parameters do not match the capability contract');
+  if (meridian && name === 'meridian-funds-transfer' && !transferFactsFromParams(params)) fatal('Parameters do not match the capability contract');
   const opened = await openExecutionJournal(meridian);
   const { journal, pool } = opened;
   let record: JournalRecord | undefined;
@@ -293,10 +292,8 @@ async function discover(argv: string[]) {
         escalate: headful
           ? (req) => new OperatorConsole(browser.page, logger, session).intervene(req)
           : undefined,
-        validateCompletion: expectedTransfer ? outputs => {
-          if (!surface.mutationDispatched) throw new Error('Transfer mutation was not dispatched');
-          assertTransferOutputs(expectedTransfer, outputs);
-        } : runtime.validateCompletion,
+        validateCompletion: runtime.validateCompletion,
+        allowedOutputs: meridian ? meridianContracts[name as keyof typeof meridianContracts].outputs : undefined,
       });
 
       const uncertain = await dispatchIntent(journal, record?.runId, surface.mutationDispatched, opened.isPoisoned);

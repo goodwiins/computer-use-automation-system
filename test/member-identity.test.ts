@@ -31,14 +31,6 @@ const failure: ReplayResult = { ...context, status: 'failure', escalated: false,
   failure: { stepId: 'lookup', code: 'RUN_FAILED', intent: 'lookup', expected: 'member', observed: 'unavailable' } };
 const publicShares = { status: 'success', outputs: shares.outputs };
 function transferArtifact() {
-  const columns = [
-    { name: 'member', selector: 'td:nth-of-type(1)', type: 'string', sensitive: true },
-    { name: 'sourceShare', selector: 'td:nth-of-type(2)', type: 'string', sensitive: true },
-    { name: 'destinationShare', selector: 'td:nth-of-type(3)', type: 'string', sensitive: true },
-    { name: 'amount', selector: 'td:nth-of-type(4)', type: 'money', sensitive: true },
-    { name: 'memo', selector: 'td:nth-of-type(5)', type: 'string', sensitive: true },
-    { name: 'confirmation', selector: 'td:nth-of-type(6)', type: 'string', sensitive: true },
-  ];
   return applyMeridianContract(CapabilityArtifact.parse({
     schemaVersion: 2, id: 'meridian-funds-transfer', name: 'meridian-funds-transfer', description: 'Transfer funds',
     version: '1.0.0', status: 'approved',
@@ -46,7 +38,6 @@ function transferArtifact() {
     parameters: meridianContracts['meridian-funds-transfer'].parameters,
     outputs: [
       { name: 'confirmation', type: 'string', description: 'Confirmation', sensitive: true },
-      { name: 'transaction', type: 'table', description: 'Transaction', sensitive: true, minRows: 1, columns },
     ],
     steps: [
       { id: 'operator', intent: 'operator', action: 'fill', value: '{{operator}}', risk: 'reversible_write' },
@@ -62,8 +53,6 @@ function transferArtifact() {
       { id: 'post-checkpoint', intent: 'verify transfer', action: 'assert' as const, assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' as const },
       { id: 'confirmation', intent: 'record confirmation', action: 'extract' as const,
         target: { description: 'confirmation', strategies: [{ kind: 'nameAttr' as const, name: 'confirmation' }] }, extract: { output: 'confirmation', pattern: '(.+)' }, risk: 'read' as const },
-      { id: 'transaction', intent: 'record transaction', action: 'extract' as const,
-        target: { description: 'transaction', strategies: [{ kind: 'nameAttr' as const, name: 'transaction' }] }, extract: { output: 'transaction', columns, rowSelector: 'tr' }, risk: 'read' as const },
     ],
     successCondition: { kind: 'textVisible', text: 'Transfer complete' }, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
