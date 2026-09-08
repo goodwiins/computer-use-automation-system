@@ -432,19 +432,41 @@ describe.sequential('ConversationStore durable quotas', () => {
       const exact = {
         id: testUuid('79000000-0000-4000-9000-', 1), kind: 'message_omitted' as const, role: 'user' as const, expectedRevision: 0,
       };
-      const before = await database.pool.query('SELECT rate_tokens, rate_refilled_at FROM meridian_conversation_subject_quotas WHERE owner_id = $1', [quotaOwner]);
+      const setZeroCheckpoint = async () => database.pool.query(
+        `UPDATE meridian_conversation_subject_quotas
+         SET rate_tokens = 0, rate_refilled_at = clock_timestamp()
+         WHERE owner_id = $1`,
+        [quotaOwner],
+      );
+      const readRate = async () => database.pool.query<{ rate_tokens: number; rate_refilled_at: Date }>(
+        'SELECT rate_tokens, rate_refilled_at FROM meridian_conversation_subject_quotas WHERE owner_id = $1',
+        [quotaOwner],
+      );
+      await setZeroCheckpoint();
+      const before = await readRate();
       await expect(store.append(quotaOwner, conversationId, exact)).resolves.toMatchObject({ sequence: 1 });
-      const afterExact = await database.pool.query('SELECT rate_tokens, rate_refilled_at FROM meridian_conversation_subject_quotas WHERE owner_id = $1', [quotaOwner]);
+      const afterExact = await readRate();
       expect(afterExact.rows[0]).toEqual(before.rows[0]);
+      await setZeroCheckpoint();
+      const beforeReopen429 = await readRate();
       await expect(store.append(quotaOwner, conversationId, {
         id: testUuid('79000000-0000-4000-9000-', 20), kind: 'message_omitted', role: 'user', expectedRevision: 19,
       })).rejects.toMatchObject({ status: 429, message: 'Conversation write rate limit exceeded' });
+      const afterFirst429 = await readRate();
+      expect(afterFirst429.rows[0]).toEqual(beforeReopen429.rows[0]);
       await database.closePool(database.pool);
       database.pool = database.openPool();
       store = new ConversationStore(database.pool);
+      const afterReopen = await readRate();
+      expect(afterReopen.rows[0]).toEqual(afterFirst429.rows[0]);
+      await setZeroCheckpoint();
+      const beforeSecond429 = await readRate();
       await expect(store.append(quotaOwner, conversationId, {
         id: testUuid('79000000-0000-4000-9000-', 20), kind: 'message_omitted', role: 'user', expectedRevision: 19,
       })).rejects.toMatchObject({ status: 429, message: 'Conversation write rate limit exceeded' });
+      const afterSecond429 = await readRate();
+      expect(afterSecond429.rows[0]).toEqual(beforeSecond429.rows[0]);
+      await setZeroCheckpoint();
       await database.pool.query('SELECT pg_sleep(1.1)');
       await expect(store.append(quotaOwner, conversationId, {
         id: testUuid('79000000-0000-4000-9000-', 20), kind: 'message_omitted', role: 'user', expectedRevision: 19,
