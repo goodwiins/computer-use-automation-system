@@ -529,6 +529,9 @@ describe.sequential('conversation HTTP API', () => {
       expect(response.status).toBe(201);
       events.push(body);
     }
+    // Keep the real HTTP mutation count, but make the next request deterministic
+    // without overriding production PostgreSQL refill behavior.
+    await setRate(ownerId, 0);
     const blocked = await request(origin, '/conversations', {
       method: 'POST', body: { id: '63000000-0000-4000-8000-000000000002' },
     });
