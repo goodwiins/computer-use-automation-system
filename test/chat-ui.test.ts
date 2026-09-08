@@ -354,9 +354,84 @@ const initialRun = () => ({
   evidence: ['result.json', 'log.jsonl', 'masked.png'],
 });
 const cleanup: (() => Promise<void>)[] = [];
+
+type FixtureResources = {
+  evidenceDir?: string;
+  nativeProfileDir?: string;
+  nativeDisplay?: Awaited<ReturnType<typeof startNativeDisplay>>;
+  server?: ReturnType<typeof createServer>;
+  browser?: Browser | BrowserContext;
+};
+
+async function closeFixtureResources(resources: FixtureResources) {
+  const failures: unknown[] = [];
+  const attempt = async (close: () => Promise<void> | void) => {
+    try {
+      await close();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  await attempt(async () => resources.browser?.close());
+  await attempt(async () => {
+    if (!resources.server?.listening) return;
+    resources.server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => resources.server!.close(error => {
+      if (error) reject(error);
+      else resolve();
+    }));
+  });
+  await attempt(() => {
+    if (resources.evidenceDir) rmSync(resources.evidenceDir, { recursive: true, force: true });
+  });
+  await attempt(() => {
+    if (resources.nativeProfileDir) rmSync(resources.nativeProfileDir, { recursive: true, force: true });
+  });
+  await attempt(async () => {
+    if (resources.nativeDisplay) await stopNativeDisplay(resources.nativeDisplay.server);
+  });
+  if (failures.length) throw new AggregateError(failures, 'fixture cleanup failed');
+}
+
+function registerFixtureCleanup(resources: FixtureResources) {
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await closeFixtureResources(resources);
+  };
+  cleanup.push(close);
+  return close;
+}
+
+async function withFixtureCleanup<T>(setup: (resources: FixtureResources) => Promise<T>) {
+  const resources: FixtureResources = {};
+  const close = registerFixtureCleanup(resources);
+  try {
+    return await setup(resources);
+  } catch (error) {
+    await close().catch(() => {});
+    throw error;
+  }
+}
+
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
+
+it.each([
+  ['ordinary browser setup', { failSetupAfter: 'browser' }],
+  ['native browser setup', { nativeZoom200: true, failSetupAfter: 'browser' }],
+] as const)('registers idempotent teardown before %s can fail', async (_label, options) => {
+  expect(cleanup).toHaveLength(0);
+  await expect(fixture(false, undefined, options)).rejects.toThrow('injected fixture setup failure');
+  expect(cleanup).toHaveLength(1);
+  const [close] = cleanup.splice(0);
+  if (!close) throw new Error('fixture teardown was not registered');
+  await close();
+  await close();
+});
+
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
@@ -364,9 +439,12 @@ async function fixture(
     subjectTokens?: typeof subjectCaller[];
     holdRefreshCapabilities?: boolean;
     nativeZoom200?: boolean;
+    failSetupAfter?: 'browser';
   } = {},
 ) {
+  return withFixtureCleanup(async resources => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
+  resources.evidenceDir = evidenceDir;
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
   writeFileSync(join(evidenceDir, runId, 'result.json'), JSON.stringify({ text: hostile }));
@@ -570,6 +648,7 @@ async function fixture(
     },
   });
   const server = createServer();
+  resources.server = server;
   server.listen(0, '127.0.0.1');
   await new Promise<void>((r) => server.once('listening', r));
   const port = (server.address() as { port: number }).port;
@@ -624,6 +703,7 @@ async function fixture(
   let nativeDisplay: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
   if (options.nativeZoom200) {
     nativeProfileDir = mkdtempSync(join(tmpdir(), 'assistant-ui-native-zoom-'));
+    resources.nativeProfileDir = nativeProfileDir;
     mkdirSync(join(nativeProfileDir, 'Default'), { recursive: true });
     const zoomLevel200 = Math.log(2) / Math.log(1.2);
     const preferences = {
@@ -632,34 +712,32 @@ async function fixture(
       profile: { password_manager_enabled: false },
     };
     writeFileSync(join(nativeProfileDir, 'Default', 'Preferences'), JSON.stringify(preferences));
+    nativeDisplay = await startNativeDisplay();
+    resources.nativeDisplay = nativeDisplay;
+    const inheritedDisplay = process.env.DISPLAY;
+    process.env.DISPLAY = nativeDisplay.display;
     try {
-      nativeDisplay = await startNativeDisplay();
-      const inheritedDisplay = process.env.DISPLAY;
-      process.env.DISPLAY = nativeDisplay.display;
-      try {
-        browser = await chromium.launchPersistentContext(nativeProfileDir, {
-          headless: false,
-          viewport: null,
-          args: [
-            '--window-size=1440,900',
-            '--window-position=0,0',
-            '--kiosk',
-            '--disable-save-password-bubble',
-            '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
-          ],
-        });
-      } finally {
-        if (inheritedDisplay === undefined) delete process.env.DISPLAY;
-        else process.env.DISPLAY = inheritedDisplay;
-      }
-    } catch (error) {
-      if (nativeDisplay) await stopNativeDisplay(nativeDisplay.server);
-      rmSync(nativeProfileDir, { recursive: true, force: true });
-      throw error;
+      browser = await chromium.launchPersistentContext(nativeProfileDir, {
+        headless: false,
+        viewport: null,
+        args: [
+          '--window-size=1440,900',
+          '--window-position=0,0',
+          '--kiosk',
+          '--disable-save-password-bubble',
+          '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
+        ],
+      });
+    } finally {
+      if (inheritedDisplay === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = inheritedDisplay;
     }
+    resources.browser = browser;
   } else {
     browser = await chromium.launch();
+    resources.browser = browser;
   }
+  if (options.failSetupAfter === 'browser') throw new Error('injected fixture setup failure');
   const page = 'pages' in browser
     ? (browser.pages()[0] ?? await browser.newPage())
     : await browser.newPage();
@@ -684,13 +762,6 @@ async function fixture(
   await page.route('**/*', (route) =>
     new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort(),
   );
-  cleanup.push(async () => {
-    await browser.close();
-    await new Promise<void>((r) => server.close(() => r()));
-    rmSync(evidenceDir, { recursive: true, force: true });
-    if (nativeProfileDir) rmSync(nativeProfileDir, { recursive: true, force: true });
-    if (nativeDisplay) await stopNativeDisplay(nativeDisplay.server);
-  });
   const url = `http://127.0.0.1:${port}`;
   const documentResponse = await page.goto(url);
   expect(documentResponse?.headers()['content-security-policy']).toContain("script-src 'self'");
@@ -702,12 +773,20 @@ async function fixture(
     await page.getByRole('button', { name: /^Activity/ }).click();
   }
   return { state, service, model, browser, page, connect, errors, url, evidenceDir, nativeDisplay };
+  });
 }
 async function visible(page: Page, selector: string, text: string) {
   await page.waitForFunction(
     ({ selector, text }) => document.querySelector(selector)?.textContent?.includes(text),
     { selector, text },
   );
+}
+async function expectNoHorizontalOverflow(page: Page, selector: string) {
+  const dimensions = await page.locator(selector).evaluate((node) => ({
+    clientWidth: (node as HTMLElement).clientWidth,
+    scrollWidth: (node as HTMLElement).scrollWidth,
+  }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 }
 async function expectKeyboardVisibleFocus(target: Locator) {
   const focusStyle = await target.evaluate((node) => {
@@ -995,6 +1074,7 @@ it('preserves the conversation across responsive Activity navigation', async () 
     )).toBe(true);
     expect(await message.inputValue()).toBe('Draft survives Activity');
     expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+    await expectNoHorizontalOverflow(page, '.messages');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const requestsBeforeNavigation = state.requests.length;
 
@@ -1010,13 +1090,6 @@ it('preserves the conversation across responsive Activity navigation', async () 
       await page.keyboard.press('Enter');
       expect(await activity.getAttribute('aria-expanded')).toBe('false');
       expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
-      expect(await message.inputValue()).toBe('Draft survives Activity');
-      expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
-      expect(await threadRoot.evaluate((node) =>
-        (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
-      )).toBe(true);
-      await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 320);
-      expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
     } else {
       expect(await back.isVisible()).toBe(false);
       expect(await page.locator('.chat').isVisible()).toBe(true);
@@ -1025,6 +1098,14 @@ it('preserves the conversation across responsive Activity navigation', async () 
       await page.keyboard.press('Enter');
       expect(await activity.getAttribute('aria-expanded')).toBe('false');
     }
+    await expectNoHorizontalOverflow(page, '.activity-panel');
+    await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 320);
+    expect(await message.inputValue()).toBe('Draft survives Activity');
+    expect(await status.innerText()).toMatch(/executing|review|complete|progress/i);
+    expect(await threadRoot.evaluate((node) =>
+      (node as HTMLElement & { __unit7Mounted?: boolean }).__unit7Mounted,
+    )).toBe(true);
+    expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(320);
     const navigationPosts = state.requests.slice(requestsBeforeNavigation).filter(request =>
       request.method === 'POST' && navigationTargets.test(request.path),
     );
