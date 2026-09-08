@@ -145,6 +145,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
     const principal = res.locals.principal;
     const conversationPrincipal = res.locals.conversationPrincipal ?? (typeof principal === 'string' ? undefined : principal);
     res.json({ principal: principalRole(principal), ...(conversationPrincipal ? { subjectId: conversationPrincipal.subjectId } : {}), capabilities: service.catalog(principal),
+      operationContracts: typeof service.operationContracts === 'function' ? service.operationContracts() : [],
       ...(config.conversations?.textEnabled ? { conversationText: true } : {}),
       readinessRequired: service.profile?.appId ? service.profile.appId === 'meridian' : true,
       availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
@@ -154,6 +155,10 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.post('/capabilities/:id/invoke', asyncRoute(async (req, res) => {
     const body = Invoke.parse(req.body);
     res.status(202).json(await service.invoke(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator, body.lookupOnly ?? false));
+  }));
+  app.post('/capabilities/:id/discover', asyncRoute(async (req, res) => {
+    const body = Invoke.parse(req.body);
+    res.status(202).json(await service.discover(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator, body.lookupOnly ?? false));
   }));
   app.post('/runs/:id/decision', asyncRoute(async (req, res) => {
     const body = z.object({ approvalId: z.string().uuid(), decision: z.enum(['approve', 'retry', 'abort']) }).strict().parse(req.body);
