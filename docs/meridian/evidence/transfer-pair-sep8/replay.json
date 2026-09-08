@@ -1,0 +1,22 @@
+{
+  "kind": "replay",
+  "runId": "abdcbf79-e431-40fe-83b3-c129ab1fd4e2",
+  "producerSha": "65ccffed22fdd378dad129e320b1008617b5bbe0",
+  "artifactSha256": "984362654c2bb9e4136f543db016f2f1c79edcf78c10c48ee821325d09e763eb",
+  "resultStatus": "success",
+  "personalApprovalReceived": true,
+  "mutationIntents": 1,
+  "completion": "Deterministic replay of the approved artifact with --attended: 19 steps, no step retries, one personal approval, one dispatch. Runtime read-back verified the source balance fell and the destination balance rose by exactly the requested amount with every other share unchanged; a separate read-only inquiry afterwards agreed.",
+  "logSha256": "6ffe195a5ead8f97ea4babfbe7fc49b91eb5e6307da817d2573b498f0012fde3",
+  "resultSha256": "87be03f9f5f3557a77311700c42ce6d64cfd63c14a6e23030853c1a14dca5a72",
+  "journalSha256": "83d1bc0f88c7b6e0e4b6694b964e889acb4435fdb4ffba92ea0f1cfde807b578",
+  "evaluation": {
+    "status": "pass",
+    "taskStatus": "success",
+    "attempts": 19,
+    "mutationIntents": 1,
+    "riskDisagreements": 0,
+    "violations": [],
+    "incomplete": []
+  }
+}
