@@ -261,8 +261,17 @@ export async function runDiscovery(
         if (afterAction) return afterAction;
         consecutiveFailures = 0;
       } catch (err) {
-        const terminal = await handleError(err, false);
-        if (terminal) return terminal;
+        // After dispatch, a failed read-only observation (extract/assert/done validation)
+        // does not make the posting outcome unknown: the result page is still on screen
+        // and repeat dispatch is refused by the surface. Let the model re-observe and
+        // retry; every other error, and exhausting the retry budget, keeps unknown precedence.
+        const observational = surface.mutationDispatched
+          && !(err instanceof RunAbortedError || err instanceof InsufficientFundsError)
+          && ['extract', 'assert', 'done'].includes(call.function.name);
+        if (!observational) {
+          const terminal = await handleError(err, false);
+          if (terminal) return terminal;
+        }
         consecutiveFailures++;
         const message = err instanceof Error ? err.message : String(err);
         logger.log('discovery.action_error', { turn, error: message, consecutiveFailures });
@@ -271,7 +280,8 @@ export async function runDiscovery(
             `nameAttr for form fields, exact visible text for links/buttons, css as last resort.`,
         );
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          if (deps.escalate) {
+          // No human repair on a live posted page; finish() maps this to POST_OUTCOME_UNKNOWN.
+          if (deps.escalate && !surface.mutationDispatched) {
             logger.log('discovery.escalate', { reason: message, trigger: 'consecutive_failures' });
             const decision = await deps.escalate({
               kind: 'discovery_stuck',
