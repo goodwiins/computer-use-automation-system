@@ -375,7 +375,7 @@ async function fixture(
       if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
-        state.runs.push({ ...initialRun(), capability: capability.id });
+        state.runs.push({ ...initialRun(), capability: id });
       }
       return { runId };
     }),
