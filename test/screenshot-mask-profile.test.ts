@@ -43,16 +43,13 @@ describe('profile screenshot value masking', () => {
 
   /** Decode the PNG in a browser page and sample one pixel — no image dependency needed. */
   async function pixelAt(png: string, x: number, y: number): Promise<number[]> {
-    const page = await (surface as unknown as { page: import('playwright').Page }).page.context().newPage();
-    try {
-      const data = `data:image/png;base64,${readFileSync(png).toString('base64')}`;
-      return await page.evaluate(async ({ src, x, y }) => {
-        const img = new Image(); img.src = src; await img.decode();
-        const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
-        const ctx = canvas.getContext('2d')!; ctx.drawImage(img, 0, 0);
-        return Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3));
-      }, { src: data, x, y });
-    } finally { await page.close(); }
+    const data = `data:image/png;base64,${readFileSync(png).toString('base64')}`;
+    return surface.page.evaluate(async ({ src, x, y }) => {
+      const img = new Image(); img.src = src; await img.decode();
+      const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!; ctx.drawImage(img, 0, 0);
+      return Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3));
+    }, { src: data, x, y });
   }
 
   it('covers the value text and only the value text', async () => {
