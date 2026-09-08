@@ -21,7 +21,7 @@ import {
   type ChatLifecycleCallbacks,
 } from './transport';
 import { completedActionReady, pending, useRuns } from './session';
-import { CapabilityRunCard } from './dashboard';
+import { CapabilityRunCard, GuidedOperations } from './dashboard';
 import {
   ConversationNavigation,
   ConversationStatus,
@@ -342,6 +342,7 @@ export function Chat() {
         <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">
             <div className="conversation">
+              {session.readinessRequired !== false && <GuidedOperations />}
               <ThreadPrimitive.Empty>
                 <div className="chat-welcome">
                   <span className="welcome-mark" aria-hidden="true">M</span>

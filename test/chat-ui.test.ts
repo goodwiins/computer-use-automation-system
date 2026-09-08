@@ -44,6 +44,32 @@ const readinessLabels = [
   ['meridian-update-member', 'Update contact'],
   ['meridian-place-hold', 'Supervisor hold'],
 ] as const;
+const operationContracts = [
+  { id: 'meridian-funds-transfer', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'sourceShare', type: 'string', description: 'Stable source share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'destinationShare', type: 'string', description: 'Stable destination share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'amount', type: 'string', description: 'Decimal amount', required: true, sensitive: true, format: 'positiveMoney' },
+    { name: 'memo', type: 'string', description: 'Transfer memo', required: true, sensitive: true },
+  ] },
+  { id: 'meridian-open-share', discovery: false, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'shareType', type: 'string', description: 'New share type', required: true, sensitive: false, enum: ['S0001', 'S0070', 'MMKT', 'CERT'] },
+    { name: 'deposit', type: 'string', description: 'Decimal initial deposit', required: true, sensitive: true, format: 'positiveMoney' },
+  ] },
+  { id: 'meridian-update-member', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'email', type: 'string', description: 'Email address', required: true, sensitive: true },
+    { name: 'phone', type: 'string', description: 'Phone', required: true, sensitive: true },
+    { name: 'address', type: 'string', description: 'Mailing address', required: true, sensitive: true },
+  ] },
+  { id: 'meridian-place-hold', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'share', type: 'string', description: 'Stable share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'reason', type: 'string', description: 'Hold reason', required: true, sensitive: false, enum: ['FRAUD', 'LEGAL', 'DECEASED'] },
+    { name: 'notes', type: 'string', description: 'Notes', required: true, sensitive: true },
+  ] },
+] as const;
 
 function walkthroughScreenshotPath(name: string) {
   const outputDir = process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR
@@ -647,6 +673,7 @@ async function fixture(
     requestContexts: () => new Map(),
     evidenceDir,
     catalog: () => [capability],
+    operationContracts: () => operationContracts,
     availability: () => availabilityOverride ? availabilityOverride() : [
       ['meridian-sign-on', 'Sign on'],
       ['meridian-member-inquiry', 'Member inquiry'],
@@ -687,6 +714,17 @@ async function fixture(
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
         state.runs.push({ ...initialRun(), capability: id });
+      }
+      return { runId };
+    }),
+    discover: vi.fn((_principal: string, id: string, args: unknown, key: string, role = 'TELLER', lookupOnly = false) => {
+      const fingerprint = JSON.stringify(['discovery', id, args, role]);
+      if (state.invocations.has(key) && state.invocations.get(key) !== fingerprint)
+        throw new RequestError(409, 'Conflicting idempotency key');
+      if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
+      if (!state.invocations.has(key)) {
+        state.invocations.set(key, fingerprint);
+        state.runs.push({ ...initialRun(), kind: 'discovery', capability: id });
       }
       return { runId };
     }),
@@ -2835,6 +2873,146 @@ it('neutral replacement focus resets when an open review receives a replacement 
     decision: 'approve',
   });
 }, 15000);
+
+it('collects and reviews all four guided operations without starting a request', async () => {
+  const { page, state, connect } = await fixture();
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  const cases = [
+    ['meridian-funds-transfer', [
+      ['Member number', '9001'], ['From share', '9001-S001'], ['To share', '9001-S002'],
+      ['Amount', '25.00'], ['Memo', 'Rent'],
+    ]],
+    ['meridian-open-share', [
+      ['Member number', '9002'], ['Share type', 'MMKT'], ['Initial deposit', '100.00'],
+    ]],
+    ['meridian-update-member', [
+      ['Member number', '9003'], ['Email', 'member@example.test'], ['Phone', '555-0103'],
+      ['Mailing address', '3 Main Street'],
+    ]],
+    ['meridian-place-hold', [
+      ['Member number', '9004'], ['Share', '9004-S001'], ['Reason code', 'FRAUD'], ['Notes', 'Review required'],
+    ]],
+  ] as const;
+  for (const [operation, fields] of cases) {
+    await guided.getByLabel('Operation').selectOption(operation);
+    for (const [label, value] of fields) {
+      const control = guided.getByLabel(label, { exact: true });
+      if (await control.evaluate(element => element instanceof HTMLSelectElement)) await control.selectOption(value);
+      else await control.fill(value);
+    }
+    await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+    const preview = guided.locator('.operation-preview');
+    await preview.getByText('Preparation only', { exact: false }).waitFor();
+    for (const [label, value] of fields) {
+      const presented = ['Amount', 'Initial deposit'].includes(label) ? `$${value}` : value;
+      await preview.getByText(presented, { exact: true }).waitFor();
+    }
+    await guided.getByRole('button', { name: 'Edit request', exact: true }).click();
+  }
+  expect(state.requests.filter(request => request.path.endsWith('/invoke') || request.path.endsWith('/discover'))).toEqual([]);
+}, 30000);
+
+it('requires an operator for hold discovery and recovers the exact supervisor request after response loss', async () => {
+  const { page, state, connect } = await fixture();
+  const guided = page.locator('.guided-operations');
+  const fillHold = async () => {
+    await guided.getByLabel('Operation').selectOption('meridian-place-hold');
+    await guided.getByLabel('Member number', { exact: true }).fill('9004');
+    await guided.getByLabel('Share', { exact: true }).fill('9004-S001');
+    await guided.getByLabel('Reason code', { exact: true }).selectOption('FRAUD');
+    await guided.getByLabel('Notes', { exact: true }).fill('Review required');
+    await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+  };
+  await connect(callerToken);
+  await fillHold();
+  await guided.getByText('Only an authenticated operator can start supervised discovery.', { exact: true }).waitFor();
+  expect(await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).count()).toBe(0);
+
+  await connect(operatorToken);
+  await fillHold();
+  await guided.getByText('Requested target role: SUPERVISOR', { exact: false }).waitFor();
+  let first = true;
+  await page.route('**/capabilities/meridian-place-hold/discover', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).click();
+  await guided.getByRole('alert').waitFor();
+  expect(await guided.getByRole('alert').textContent()).toContain('Acceptance is unconfirmed.');
+  await guided.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const requests = state.requests.filter(request => request.path === '/capabilities/meridian-place-hold/discover');
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.body).toEqual({
+    args: { member: '9004', share: '9004-S001', reason: 'FRAUD', notes: 'Review required' },
+    operator: 'SUPERVISOR',
+  });
+  expect(requests[1]?.body).toEqual({ ...requests[0]?.body, lookupOnly: true });
+  expect(requests[1]?.key).toBe(requests[0]?.key);
+}, 30000);
+
+it('starts an available guided transfer and restores pending inline approval from authenticated history after reconnect', async () => {
+  const { page, state, service, connect } = await fixture();
+  const transfer = {
+    ...capability,
+    id: 'meridian-funds-transfer',
+    parameters: operationContracts[0].parameters.map(parameter => ({ ...parameter })),
+    tools: { ...capability.tools, openai: { ...capability.tools.openai, function: { ...capability.tools.openai.function, name: 'meridian-funds-transfer' } } },
+  };
+  service.catalog = () => [transfer];
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  await guided.getByLabel('Operation').selectOption(transfer.id);
+  await guided.getByLabel('Member number', { exact: true }).fill('9001');
+  await guided.getByLabel('From share', { exact: true }).fill('9001-S001');
+  await guided.getByLabel('To share', { exact: true }).fill('9001-S002');
+  await guided.getByLabel('Amount', { exact: true }).fill('25.00');
+  await guided.getByLabel('Memo', { exact: true }).fill('Rent');
+  await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+  await guided.getByRole('button', { name: 'Start operation', exact: true }).click();
+  await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const invoked = state.requests.filter(request => request.path === `/capabilities/${transfer.id}/invoke`);
+  expect(invoked).toHaveLength(1);
+  expect(invoked[0]?.body).toEqual({
+    args: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+    operator: 'TELLER',
+  });
+
+  state.runs[0] = {
+    ...state.runs[0], state: 'awaiting-human',
+    intervention: publicIntervention({
+      id: approvalId, expiresAt: Date.now() + 60000,
+      request: { kind: 'risk_approval', reason: 'Review transfer', capability: transfer.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+      action: {
+        runId, artifact: transfer.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post', method: 'POST',
+        operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', tokenPresent: true, control: 'Post',
+        facts: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+        visibleFacts: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+      },
+    }),
+  };
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await connect(operatorToken);
+  const current = page.locator('.guided-operations').locator(`[data-run-id="${runId}"]`);
+  await current.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  await current.getByText('$25.00', { exact: true }).waitFor();
+  await current.getByRole('button', { name: 'Accept', exact: true }).click();
+  await vi.waitFor(() => expect(state.decisions).toEqual(['approve']));
+
+  state.runs[0] = { ...state.runs[0], state: 'POST_OUTCOME_UNKNOWN', intervention: undefined };
+  await page.locator('#refresh').click();
+  await current.getByText('Posting outcome is unknown.', { exact: false }).waitFor();
+  expect(await current.getByRole('button', { name: /Start|Accept|Retry/ }).count()).toBe(0);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible()).toBe(true);
+}, 20000);
 
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {
   const { page, state, service, connect, errors, url } = await fixture();

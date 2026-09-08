@@ -62,7 +62,7 @@ section { min-width: 0; }
 .thread-root { height: 100%; min-height: 0; }
 .messages { display: flex; flex-direction: column; height: 100%; overflow-y: auto; overflow-x: hidden; padding: 0 1.5rem; scroll-padding-bottom: 1rem; }
 .conversation { width: 100%; max-width: 760px; margin: 0 auto; flex: 1; padding: 1.5rem 0; }
-.conversation:has(.chat-welcome) { display: flex; flex-direction: column; justify-content: center; }
+.conversation:has(.chat-welcome) { display: block; }
 .chat-welcome { text-align: center; padding: 3rem 1rem; }
 .welcome-mark { width: 48px; height: 48px; margin: 0 auto 1.5rem; font-size: 1.75rem; border-radius: 14px; }
 .chat-welcome h3 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 550; letter-spacing: -.035em; }
@@ -74,6 +74,14 @@ section { min-width: 0; }
 .message:has(.message-user-label) .message-body { max-width: 85%; background: #f0f3f0; border-radius: 20px; padding: .6rem 1rem; }
 .message-text { white-space: pre-wrap; margin: .25rem 0; font-size: .95rem; line-height: 1.75; }
 .thinking { color: var(--muted); font-size: .85rem; }
+.guided-operations { margin: 0 0 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: #fafbf9; }
+.guided-operations h3, .guided-operations h4 { margin: 0; }
+.guided-operations form { margin-top: .75rem; }
+.guided-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin: .75rem 0; }
+.guided-field label { margin: 0; }
+.guided-fields input, .guided-fields select { margin-top: .3rem; }
+.operation-preview { margin-top: .75rem; padding-top: .75rem; border-top: 1px solid var(--line); }
+.operation-preview .eyebrow { color: #835b20; }
 .composer-footer { position: sticky; bottom: 0; width: 100%; max-width: 760px; margin: auto auto 0; background: #fff; padding: 1rem 0 .75rem; }
 .composer { border: 1px solid #d7ded8; border-radius: 20px; padding: .75rem; box-shadow: 0 2px 8px #20332808; }
 .composer:focus-within { border-color: #769386; }
@@ -185,4 +193,5 @@ th { background: #eef2ed; }
   .chat-welcome .welcome-mark { display: none; }
   .composer-footer { padding-top: .5rem; }
   .activity-panel { padding: 1rem; }
+  .guided-fields { grid-template-columns: minmax(0, 1fr); }
 }
