@@ -168,3 +168,44 @@ local PostgreSQL, isolated schemas, and local fixtures. Passing local tests,
 builds, validation, or smoke checks does not establish deployed behavior,
 hosted CI status, production database state, live MERIDIAN acceptance, or
 protected-demo behavior. No such claim is made.
+
+## Gate reopening and approval-CLI diagnosis
+
+The controller authorized one mechanical change: remove the extra trailing
+newline at EOF from
+`docs/superpowers/specs/2026-09-08-conversation-storage-limits-design.md`.
+No wording or semantic content changed. No production or test source changed.
+
+The approval-CLI failure was diagnosed using the exact PostgreSQL URL and the
+focused suite alone, serially:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm test -- test/approval-cli.test.ts
+Run 1: exit 0; Test Files 1 passed (1); Tests 56 passed (56)
+Run 2: exit 0; Test Files 1 passed (1); Tests 56 passed (56)
+```
+
+After both isolated reruns passed, the host was checked and had no competing
+heavy Vitest/npm process. One final full CI was then run uncontended:
+
+```text
+TEST_DATABASE_URL=postgresql:///meridian_test?host=%2Fvar%2Frun%2Fpostgresql npm run ci
+exit 1
+Test Files 1 failed | 38 passed (39)
+Tests 1 failed | 993 passed (994)
+Failure: test/approval-cli.test.ts > standalone approval CLI transport > shows facts and records exact approve/refuse commands from a second process
+  Test timed out in 60000ms.
+Duration 204.08s
+```
+
+The timeout therefore reproduces only in the full-suite context in this
+environment; it does not reproduce in two isolated focused runs. This remains
+an honest release-gate blocker. No out-of-scope code or test change was made.
+
+With the authorized EOF edit present in the working tree, the baseline
+whitespace check passed:
+
+```text
+git diff --check 7fb01a7f82ea8db1a18ca256a4ab411b38a176a2
+exit 0
+```

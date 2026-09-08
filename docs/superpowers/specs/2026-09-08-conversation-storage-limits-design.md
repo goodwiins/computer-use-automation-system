@@ -87,4 +87,3 @@ Required tests use a real isolated PostgreSQL schema on explicit `TEST_DATABASE_
 - raw-data canaries and metadata-only schema inspection.
 
 Run focused database suites during TDD. Before handoff run the full repository gate, validation, smoke suite, UI typecheck where applicable, and `git diff --check`. Obtain task-scoped independent review and a broad final review. Hosted checks must be reported only for the exact pushed PR head.
-
