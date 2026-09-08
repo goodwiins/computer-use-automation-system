@@ -39,6 +39,12 @@ export class RunWatch<Run extends WatchedRun = WatchedRun> {
     return this.entries.has(id);
   }
 
+  forget(id: string): void {
+    this.entries.delete(id);
+    this.watched.delete(id);
+    this.pinned.delete(id);
+  }
+
   clear(): void {
     this.entries.clear();
     this.watched.clear();

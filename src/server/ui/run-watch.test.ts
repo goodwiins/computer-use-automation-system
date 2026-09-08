@@ -98,6 +98,15 @@ it('reads missing runs in stable order with bounded concurrency and no retries',
   expect(maximumActive).toBe(3);
 });
 
+it('forgets a closed review watch without removing a separately followed run', () => {
+  const watch = new RunWatch<TestRun>({ maxEntries: 4 });
+  watch.watch('followed');
+  watch.watch('review-only', new Set(['review-only']));
+  watch.forget('review-only');
+  expect([...watch.ids]).toEqual(['followed']);
+  expect(watch.missing([], new Set())).toEqual(['followed']);
+});
+
 it('stops scheduling after a fallback read fails and waits for started reads to settle', async () => {
   const started: string[] = [];
   let releaseSecond!: () => void;

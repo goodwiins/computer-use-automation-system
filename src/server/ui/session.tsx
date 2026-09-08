@@ -152,6 +152,7 @@ export function RunProvider({
   const watched = useRef(new RunWatch<Run>({ maxEntries: 32 }));
   const [reviewRunId, setReviewRunId] = useState<string>();
   const reviewRunIdRef = useRef<string | undefined>(undefined);
+  const reviewOnlyWatchRef = useRef<string | undefined>(undefined);
   const reviewAttempts = useRef(new Map<string, ReviewAttempt>());
   const [, rerenderReview] = useState(0);
   const updateAction = useCallback((key: string, update: (current: ActionHold) => ActionHold | undefined) => {
@@ -276,6 +277,7 @@ export function RunProvider({
   }, [disconnect, request, session]);
   const watch = useCallback(
     (id: string) => {
+      if (reviewOnlyWatchRef.current === id) reviewOnlyWatchRef.current = undefined;
       const pinned = new Set<string>();
       const held = actionHoldRef.current;
       if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
@@ -286,6 +288,9 @@ export function RunProvider({
     [refresh],
   );
   const openReview = useCallback((runId: string) => {
+    const previous = reviewOnlyWatchRef.current;
+    if (previous && previous !== runId) watched.current.forget(previous);
+    if (previous !== runId) reviewOnlyWatchRef.current = watched.current.has(runId) ? undefined : runId;
     reviewRunIdRef.current = runId;
     setReviewRunId(runId);
     const pinned = new Set<string>([runId]);
@@ -297,6 +302,8 @@ export function RunProvider({
     }
   }, [refresh, runs]);
   const closeReview = useCallback(() => {
+    if (reviewOnlyWatchRef.current) watched.current.forget(reviewOnlyWatchRef.current);
+    reviewOnlyWatchRef.current = undefined;
     reviewRunIdRef.current = undefined;
     setReviewRunId(undefined);
   }, []);
@@ -316,6 +323,7 @@ export function RunProvider({
     reviewRunIdRef.current = undefined;
     setReviewRunId(undefined);
     watched.current.clear();
+    reviewOnlyWatchRef.current = undefined;
     actionHoldRef.current = undefined;
     setActionHold(undefined);
     setRuns([]);
