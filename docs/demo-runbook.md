@@ -1,4 +1,7 @@
-# Leadership demo runbook
+# Historical local mock demo runbook
+
+For the assignment target, use the [MERIDIAN demo-day guide](meridian/demo-day.md).
+The scenarios below use the bundled mock and are not hosted-target acceptance.
 
 Dry-run verified 2026-09-02 at commit 349c432: every command below produced the
 output shown. Total live time ≈ 8 minutes if you skip live discovery.
@@ -7,7 +10,7 @@ output shown. Total live time ≈ 8 minutes if you skip live discovery.
 
 ```bash
 cd ~/development/interface.ai
-npm run ci             # typecheck + 99/99 suite — proves the build is healthy, ~22s
+npm run ci             # current typechecks + full suite; offline verification
 ```
 
 Open three terminals, big font. Close other browser windows (the escalation
@@ -125,15 +128,17 @@ REPORT §6), evidence trimming.
 - **"What if the vendor changes the page?"** Beat 5 (escalate + handoff) and
   beat 6 (overlay). Not built: drift telemetry across replays.
 - **"What if the app pops a dialog / denies permission?"** Beat 3 optional command; `?sim=denied` is the fatal-detector case.
-- **"Can a script approve a risky action?"** No — risk approval requires a TTY
-  (`operator.ts`); the scripted demo only answers a stuck-step handback.
+- **"Can a script approve a risky action?"** The scripted demo answers only a
+  stuck-step handback. A TTY check is not proof of human presence; standalone
+  approval trusts other processes running under the same OS account.
 - **"Desktop / terminal-style cores?"** `Surface` seam; REPORT.md §4.
 - **"Is the artifact tamper-proof?"** Not yet — plaintext `status: approved`.
   Signing is the next design item; `validate` already re-checks risk labels.
 
 ## If something breaks
 
-- Port 4173 busy: `lsof -ti:4173 | xargs kill`.
+- Port 4173 busy: inspect with `lsof -nP -iTCP:4173 -sTCP:LISTEN`; stop only a
+  process you started for this demo, using its own terminal.
 - Chromium missing: `npx playwright install chromium`.
 - Escalation demo hangs at `operator>`: the app in T3 wasn't started with
   `BREAK_MARKUP=1`, or T1's app is still on 4173.

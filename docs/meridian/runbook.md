@@ -1,5 +1,8 @@
 # MERIDIAN demonstration runbook
 
+For the concise presentation path, API examples and backup evidence, use the
+[demo-day guide](demo-day.md). This document covers detailed operation and recovery.
+
 Status: partial Task 9 checkpoint. Live acceptance is **4/7**: sign-on, member inquiry, member record and open share are accepted. Funds transfer, member update and supervisor hold still need complete recordings, promotion review and separately approved replays. See [open-share evidence](live-evidence.md#accepted-open-share-recording-and-replay) for its distinct approved pair and catalog checks. The earlier service checkpoint was `dev` merge `27767cfacd8ea6076969ce714d2f74438a39fb70`, including approval safety, auxiliary-page cleanup, transfer eligibility, assistant-ui, discovery outcome classification and historical field structure. Reviewed head `e9ab9d5` and this merge share tree `ab3fe003`; 710 tests, both typechecks/build and head/merge CI passed. These source gates do not create write acceptance. Preserve the historical successful transfer discovery/draft and the open-share `POST_OUTCOME_UNKNOWN` record; neither authorizes another post.
 
 The user-selected Vercel AI SDK and assistant-ui stack merged through PR #84. Genuine final-head chat/API/dashboard balance and missing-member demos passed, including explicit status lookup and reconnect without duplicate runs; see [live evidence](live-evidence.md#merged-ui-exception-and-status-rehearsal). Express, shared `InvocationService`, server approval, authentication and operator boundaries remain authoritative. Final write acceptance remains open.
@@ -285,4 +288,4 @@ The existing **offline fixture** command is:
 npx vitest run test/e2e.test.ts
 ```
 
-It exercises the scripted-model/local-target discovery-to-replay path. It is not hosted evidence and does not increase `3/7`. These commands are documented for an operator; none was run during this prose-only repair.
+It exercises the scripted-model/local-target discovery-to-replay path. It is not hosted evidence and does not increase the accepted capability count.
