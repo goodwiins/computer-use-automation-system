@@ -59,5 +59,7 @@ jobs:
       - name: Install Chromium system dependencies (cached browser)
         if: steps.browser-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
+      - name: Validate artifacts
+        run: npm run validate
       - name: Typecheck and tests
         run: npm run ci
