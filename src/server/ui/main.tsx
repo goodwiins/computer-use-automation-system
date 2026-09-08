@@ -2,7 +2,7 @@
 
 import './csp';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, type Session } from './session';
+import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, validateReadinessMetadata, type Session } from './session';
 import { Chat } from './chat';
 import { signOn } from './sign-on';
 import { CapabilityCatalog, RunHistory } from './dashboard';
@@ -109,6 +109,7 @@ export default function App() {
       setSession({
         token,
         ...authority,
+        readinessRequired: validateReadinessMetadata(data),
         capabilities: metadata.capabilities as Session['capabilities'],
         availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
       });

@@ -8,7 +8,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createApp } from '../src/server/http.js';
-import { RequestError } from '../src/runtime/journal.js';
+import { Journal, RequestError } from '../src/runtime/journal.js';
 import { journalDigest, type JournalSnapshot } from '../src/runtime/journal.js';
 import { PostgresJournal } from '../src/runtime/postgres-journal.js';
 import type { InvocationService } from '../src/server/service.js';
@@ -287,15 +287,16 @@ const initialRun = () => ({
   evidence: ['result.json', 'log.jsonl', 'masked.png'],
 });
 const cleanup: (() => Promise<void>)[] = [];
+const defaultCapability = capability;
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 async function fixture(
   localTeller = false,
   availabilityOverride?: () => unknown,
-  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean; capabilityId?: string } = {},
+  options: { subjectTokens?: typeof subjectCaller[]; holdRefreshCapabilities?: boolean; capability?: typeof capability; appId?: string } = {},
 ) {
-  const fixtureCapability = { ...capability, id: options.capabilityId ?? capability.id };
+  const capability = options.capability ?? defaultCapability;
   const evidenceDir = mkdtempSync(join(tmpdir(), 'assistant-ui-'));
   mkdirSync(join(evidenceDir, runId));
   mkdirSync(evidencePath, { recursive: true });
@@ -330,10 +331,11 @@ async function fixture(
     offline: false,
   };
   const service = {
-    getRequestHistory: vi.fn(() => new Map()),
+    profile: { appId: options.appId ?? 'meridian' },
     journal: { findRequest: () => undefined, bindReference: () => {} },
+    requestContexts: () => new Map(),
     evidenceDir,
-    catalog: () => [fixtureCapability],
+    catalog: () => [capability],
     availability: () => availabilityOverride ? availabilityOverride() : [
       ['meridian-sign-on', 'Sign on'],
       ['meridian-member-inquiry', 'Member inquiry'],
@@ -373,7 +375,7 @@ async function fixture(
       if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
-        state.runs.push({ ...initialRun(), capability: id });
+        state.runs.push({ ...initialRun(), capability: capability.id });
       }
       return { runId };
     }),
@@ -402,7 +404,7 @@ async function fixture(
     doStream: async options => {
       const serializedTools = JSON.stringify(options.tools ?? {});
       state.toolSchemas.push(serializedTools);
-      const statusOnly = !serializedTools.includes(fixtureCapability.id);
+      const statusOnly = !serializedTools.includes(capability.id);
       const statusNeedsNoTool = statusOnly && state.runs.length === 0;
       const finishReason = statusNeedsNoTool && state.finishReason === 'tool-calls'
         ? 'stop'
@@ -415,7 +417,7 @@ async function fixture(
               controller.enqueue({
                 type: 'tool-call',
                 toolCallId: 'partial-tool',
-                toolName: fixtureCapability.id,
+                toolName: capability.id,
                 input: JSON.stringify({ member: 'offline-member' }),
               });
               controller.error(new Error('fixture stream truncated after tool input'));
@@ -432,7 +434,7 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : fixtureCapability.id,
+            toolName: statusOnly ? 'run_status' : capability.id,
             input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
           }]),
           {
@@ -484,7 +486,7 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : fixtureCapability.id,
+            toolName: statusOnly ? 'run_status' : capability.id,
             input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
           }]),
           {
@@ -822,7 +824,8 @@ it('recovers a real PostgreSQL chat action after the browser loses its response 
       body: JSON.stringify({ args: { searchMode: 'number', searchValue: '9011' } }),
     });
     expect(blocked.status).toBe(409);
-    expect(await blocked.json()).toEqual({ error: 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.' });
+    expect(await blocked.json()).toEqual({ error: 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.', acceptance: 'rejected' });
+    expect(await journal.findRequest('caller', 'local-inquiry-fresh')).toBeUndefined();
     expect(invoke).toHaveBeenCalledTimes(beforeUnknown.invokes + 1);
     expect(create).toHaveBeenCalledTimes(beforeUnknown.creates);
     expect(replay).toHaveBeenCalledTimes(beforeUnknown.replays);
@@ -1956,7 +1959,7 @@ it('offline direct invocation keeps an uncertain request key, query/auth boundar
     page.waitForResponse(response => response.url().endsWith('/capabilities')),
     page.locator('#refresh').click(),
   ]);
-  expect(await invokeButton.isDisabled()).toBe(true);
+  await vi.waitFor(async () => expect(await invokeButton.isDisabled()).toBe(true));
   await page.locator('#invoke').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   await page.waitForTimeout(100);
   expect(state.requests.filter((r) => r.path.endsWith('/invoke'))).toHaveLength(1);
@@ -2482,7 +2485,61 @@ it('allows a separate direct inquiry after unknown posting without replaying the
   ]);
 }, 15000);
 
-it('keeps a terminal direct hold until exact capability availability is authoritative', async () => {
+it.each(['direct', 'chat'] as const)('releases a confirmed pre-admission %s rejection without original-key recovery', async kind => {
+  const { page, state, service, connect } = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), 'rejected-browser-'));
+  const journal = new Journal(join(dir, 'journal'), 'r'.repeat(64));
+  const profile = loadProfile('meridian');
+  const actual = new RealInvocationService(journal, profilePolicy(profile), profile, dir, []);
+  cleanup.push(async () => { journal.close(); rmSync(dir, { recursive: true, force: true }); });
+  // Use the real admission boundary; the displayed capability is no longer authorized.
+  service.invoke.mockImplementation((principal, id, args, key, role, lookupOnly) =>
+    actual.invoke(principal as 'caller', id, args as Record<string, string | number>, key, role as 'TELLER', lookupOnly) as never);
+  await connect();
+  if (kind === 'direct') {
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: 'not authorized' }).waitFor();
+    await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true));
+  } else {
+    await page.locator('#message').fill('Read this member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledOnce());
+    await page.locator('#message').fill('Read another member');
+    await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Send', exact: true }).isEnabled()).toBe(true));
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.requests.filter(item => item.path === '/api/chat')).toHaveLength(2));
+    expect(state.requests.filter(item => item.path === '/api/chat').at(-1)?.body.intent).toBe('auto');
+  }
+  expect(state.requests.filter(item => item.path === '/api/chat/request')).toHaveLength(0);
+  expect(state.requests.filter(item => item.body?.lookupOnly)).toHaveLength(0);
+  expect(journal.list()).toEqual([]);
+}, 20000);
+
+it('keeps polling after a terminal run waits on another operation to release readiness', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  state.runs[0]!.state = 'success';
+  state.runs[0]!.memberIdentity = { status: 'unavailable' };
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await visible(page, '#runs', 'success');
+  // Allow the prior running-state interval and in-flight refresh to settle.
+  await page.waitForTimeout(1800);
+  const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
+  expect(await release.count()).toBe(0);
+  service.availability = () => fixtureAvailability('available');
+  await release.waitFor({ timeout: 5000 });
+  expect(state.invocations.size).toBe(1);
+  expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
+}, 15000);
+
+it('polls a terminal direct hold until exact capability availability recovers without resubmitting', async () => {
   const { page, state, service, connect } = await fixture();
   await connect();
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
@@ -2505,14 +2562,48 @@ it('keeps a terminal direct hold until exact capability availability is authorit
   expect(state.invocations.size).toBe(1);
 
   service.availability = () => fixtureAvailability('available');
-  await page.locator('#refresh').click();
   const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
-  await release.waitFor();
+  await release.waitFor({ timeout: 5000 });
+  expect(state.invocations.size).toBe(1);
+  expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(1);
   await release.click();
   await page.locator('#fields input').fill('new-member');
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
   await vi.waitFor(() => expect(state.invocations.size).toBe(2));
 }, 30000);
+
+it.each(['direct', 'chat'] as const)('releases a completed non-Meridian %s action with authoritative empty availability', async kind => {
+  // Capability names do not identify the application profile.
+  const generic = { ...capability, id: 'meridian-funds-transfer' };
+  const { page, state, connect, errors } = await fixture(false, () => [], { capability: generic, appId: 'cu-nexus' });
+  await connect();
+  if (kind === 'direct') {
+    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+    await page.locator('#fields input').fill('offline-member');
+    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  } else {
+    await page.route('**/api/chat/request', route => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ kind: 'run', runId, capability: generic.id, state: 'running' }) }));
+    await page.locator('#message').fill('Read this member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+  }
+  await vi.waitFor(() => expect(state.invocations.size).toBe(1));
+  state.runs[0]!.state = 'success';
+  state.runs[0]!.memberIdentity = { status: 'unavailable' };
+  await page.locator('#refresh').click();
+  if (kind === 'direct') {
+    const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
+    await release.waitFor({ timeout: 5000 });
+    await release.click();
+    expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true);
+  } else {
+    await page.locator('#message').fill('Read another member');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await vi.waitFor(() => expect(state.requests.filter(item => item.path === '/api/chat')).toHaveLength(2));
+    expect(state.requests.filter(item => item.path === '/api/chat').at(-1)?.body.intent).toBe('auto');
+  }
+  expect(errors).toEqual([]);
+}, 20000);
 
 const unusableAvailability: Array<[string, () => unknown]> = [
   ['empty', (): unknown[] => []],
@@ -2549,7 +2640,7 @@ it('keeps the latest capability catalog when refresh metadata omits capabilities
     page.locator('#refresh').click(),
   ]);
   expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
-  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  await vi.waitFor(async () => expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7));
   await page.unroute('**/capabilities');
 });
 
@@ -2786,6 +2877,8 @@ it.each([
   ['missing principal', { capabilities: [], availability: [] }],
   ['mismatched principal', { principal: 'caller', capabilities: [], availability: [] }],
   ['malformed subject identity', { principal: 'operator', subjectId: 'not-a-uuid', capabilities: [], availability: [] }],
+  ['changed readiness policy', { principal: 'operator', capabilities: [], availability: [], readinessRequired: false }],
+  ['malformed readiness policy', { principal: 'operator', capabilities: [], availability: [], readinessRequired: 'false' }],
 ] as const)('disconnects before publishing history or fetching watched extras when refresh authority is %s', async (_label, metadata) => {
   const { page, state, connect } = await fixture();
   state.runs.push({
@@ -2938,40 +3031,3 @@ it('gives callers history and operator-support guidance without takeover control
   await page.getByRole('dialog').waitFor();
   expect(await page.getByRole('dialog').getByRole('button', { name: /Confirm|Refuse|Retry|Stop/ }).count()).toBe(0);
 }, 15000);
-
-
-it.each([['direct', 'success'], ['chat', 'success'], ['direct', 'POST_OUTCOME_UNKNOWN'], ['chat', 'POST_OUTCOME_UNKNOWN']] as const)('handles a non-Meridian %s request ending in %s', async (mode, outcome) => {
-  const { page, state, connect } = await fixture(false, () => [], { capabilityId: 'lookup-member-balance' });
-  await page.route('**/api/chat/request', route => route.fulfill({
-    status: 200, contentType: 'application/json',
-    body: JSON.stringify({ kind: 'run', runId, capability: 'lookup-member-balance', state: state.runs[0]?.state ?? 'running' }),
-  }));
-  await connect();
-  if (mode === 'direct') {
-    await page.getByText('Invoke an approved capability directly', { exact: true }).click();
-    await page.locator('#fields input').fill('offline-member');
-    await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
-  } else {
-    await page.locator('#message').fill('Look up the member balance.');
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
-  }
-  await visible(page, '#runs', runId);
-  state.runs[0]!.state = outcome;
-  await page.locator('#refresh').click();
-  await visible(page, '#runs', outcome);
-  if (outcome === 'POST_OUTCOME_UNKNOWN') {
-    expect(await page.getByRole('button', { name: 'Start another invocation', exact: true }).count()).toBe(0);
-    await visible(page, 'body', 'Chat messages are status-only');
-    expect(state.invocations.size).toBe(1);
-    return;
-  }
-  if (mode === 'direct') {
-    await page.getByRole('button', { name: 'Start another invocation', exact: true }).click({ timeout: 2000 });
-    expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isEnabled()).toBe(true);
-  } else {
-    await page.waitForFunction(() => !document.body.textContent?.includes('Chat messages are status-only while'), undefined, { timeout: 2000 });
-    await page.locator('#message').fill('Look up the member balance again.');
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
-    await vi.waitFor(() => expect(state.invocations.size).toBe(2));
-  }
-});

@@ -62,16 +62,16 @@ it('batches readiness and request history reads and fails closed when their jour
     journal.bindReference('caller', 'status-key', run.runId);
     const batch = vi.spyOn(journal, 'findRequests');
     const get = vi.spyOn(journal, 'get');
-    const history = await service.getRequestHistory('caller', ['status-key', 'history-key', 'status-key']);
+    const history = await service.requestContexts('caller', ['status-key', 'history-key', 'status-key']);
     expect([...history.keys()]).toEqual(['status-key', 'history-key']);
     expect(history.get('status-key')).toMatchObject({ runId: run.runId, state: 'success' });
     expect(batch).toHaveBeenCalledTimes(1);
     expect(get).not.toHaveBeenCalled();
-    expect(await service.getRequestHistory({ role: 'caller', subjectId: '11111111-1111-4111-8111-111111111111' }, ['history-key'])).toEqual(new Map());
+    expect(await service.requestContexts({ role: 'caller', subjectId: '11111111-1111-4111-8111-111111111111' }, ['history-key'])).toEqual(new Map());
     journal.close();
     expect((await service.availability('caller')).filter(item => item.state === 'temporarily_unavailable'))
       .toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'Run journal is unavailable' })]));
-    await expect(service.getRequestHistory('caller', ['history-key'])).rejects.toThrow('Journal is closed');
+    await expect(service.requestContexts('caller', ['history-key'])).rejects.toThrow('Journal is closed');
   } finally { journal.close(); }
 });
 

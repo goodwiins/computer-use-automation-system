@@ -72,3 +72,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS meridian_runs_one_active
 
 CREATE INDEX IF NOT EXISTS meridian_runs_capability_state
   ON meridian_runs (capability, state);
+
+CREATE INDEX IF NOT EXISTS meridian_runs_owner_recent
+  ON meridian_runs (caller, created_at DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS meridian_runs_legacy_recent
+  ON meridian_runs (created_at DESC, run_id DESC) WHERE caller NOT LIKE 'subject:%';

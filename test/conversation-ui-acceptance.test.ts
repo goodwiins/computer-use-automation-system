@@ -632,9 +632,10 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     await expect(current.store.create(ownerId, deletedId!)).rejects.toMatchObject({ status: 409 });
     expect(successfulDelete?.body).toEqual({ expectedRevision: 0 });
     expect(current.journal.list()).toEqual(journalBefore);
+    // The error class name is minified by the production build; match the message, not the constructor.
     expect(current.errors.map(error => error.split('\n')[0])).toEqual([
-      '[assistant-ui] thread list archive failed: Error: Conversation revision conflict',
-      '[assistant-ui] thread list delete failed: Error: Conversation revision conflict',
+      expect.stringMatching(/^\[assistant-ui\] thread list archive failed: \w+: Conversation revision conflict$/),
+      expect.stringMatching(/^\[assistant-ui\] thread list delete failed: \w+: Conversation revision conflict$/),
     ]);
   }, 45_000);
 

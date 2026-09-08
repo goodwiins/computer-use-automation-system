@@ -12,7 +12,7 @@ import { RequestError, type RunJournal } from '../runtime/journal.js';
 import { openRunJournal } from '../runtime/open-journal.js';
 import { loadProfile, profilePolicy } from '../runtime/profile.js';
 import { createChatHandlers } from './chat.js';
-import { InvocationService } from './service.js';
+import { InvocationRejected, InvocationService } from './service.js';
 import { createAuthenticator, parseSubjectCredentials, principalRole, type SubjectCredential } from './auth.js';
 import { conversationRouter } from './conversation-http.js';
 import { ConversationStore } from './conversations.js';
@@ -120,6 +120,7 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.get('/capabilities', asyncRoute(async (_req, res) => {
     const principal = res.locals.principal;
     res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+      readinessRequired: service.profile?.appId ? service.profile.appId === 'meridian' : true,
       availability: typeof service.availability === 'function' ? await service.availability(principal) : null });
   }));
   app.get('/runs', asyncRoute(async (_req, res) => { res.json(await service.history(res.locals.principal)); }));
@@ -145,7 +146,8 @@ export function createApp(service: InvocationService, config: { callerToken: str
   app.post('/api/chat', chat.stream);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const status = error instanceof RequestError ? error.status : error instanceof z.ZodError || error instanceof SyntaxError ? 400 : 500;
-    res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration' });
+    res.status(status).json({ error: error instanceof RequestError ? error.message : status === 400 ? 'Request does not match the contract' : 'Request failed; inspect safe run evidence or server configuration',
+      ...(error instanceof InvocationRejected ? { acceptance: error.acceptance } : {}) });
   });
   return app;
 }
