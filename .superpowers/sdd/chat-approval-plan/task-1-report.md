@@ -22,4 +22,11 @@ Root subsequently ran full `npm run ci` at `758a48d` with disposable PostgreSQL 
 
 Independent review found a duplicate-panel recovery race. The follow-up fix claims the probe from a fresh shared-attempt snapshot and gives each probe an identity; callbacks update the attempt only while that identity remains current. A held-response browser regression verifies one recovery probe across inline and dialog mounts and keeps a newer decision locked on both surfaces.
 
+Follow-up verification:
+
+- `npx vitest run test/chat-ui.test.ts -t 'claims one shared recovery probe|shows exact inline approval|keeps exact-run locks'` — 5 passed, 95 skipped
+- `npm run typecheck` — passed
+- `npm run typecheck:ui` — passed
+- `git diff --check` — passed
+
 No live mutation or capability acceptance is claimed by these offline UI fixtures.
