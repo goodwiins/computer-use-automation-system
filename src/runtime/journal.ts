@@ -23,10 +23,19 @@ export type JournalSnapshot = { records: JournalRecord[]; aliases: RequestAlias[
 export type Awaitable<T> = T | Promise<T>;
 export type JournalLookup = { existing?: JournalRecord; identity: string; digest: string };
 export type JournalRecoveryLookup = { existing?: JournalRecord; matches: boolean; direct: boolean };
+export type RecentHistoryOptions = { legacyOperator?: boolean; legacyPrivateCapability?: string; actionableRunIds?: readonly string[] };
+export const MAX_RECENT_HISTORY = 100;
+export function validateRecentHistory(caller: string, options: RecentHistoryOptions) {
+  validateTextBatch([caller]);
+  if (options.legacyOperator && caller !== 'operator') throw new RequestError(400, 'Invalid history owner scope');
+  if (options.legacyPrivateCapability !== undefined) validateTextBatch([options.legacyPrivateCapability]);
+  return validateRunBatch(options.actionableRunIds ?? []);
+}
 export interface RunJournal {
   get(runId: string): Awaitable<JournalRecord | undefined>;
   getMany(runIds: readonly string[]): Awaitable<Map<string, JournalRecord>>;
   list(): Awaitable<JournalRecord[]>;
+  recent(caller: string, options?: RecentHistoryOptions): Awaitable<JournalRecord[]>;
   hasUnknown(capability: string): Awaitable<boolean>;
   unknownCapabilities(capabilities: readonly string[]): Awaitable<Set<string>>;
   lookup(caller: string, key: string, request: unknown): Awaitable<JournalLookup>;
@@ -233,6 +242,22 @@ export class Journal implements RunJournal {
     }));
   }
   list() { this.assertHealthy(); return [...this.records.values()]; }
+  recent(caller: string, options: RecentHistoryOptions = {}) {
+    this.assertHealthy();
+    const actionable = new Set(validateRecentHistory(caller, options));
+    const selected: JournalRecord[] = [];
+    const newest = (a: JournalRecord, b: JournalRecord) => b.createdAt.localeCompare(a.createdAt) || b.runId.localeCompare(a.runId);
+    for (const record of this.records.values()) {
+      if (options.legacyOperator ? record.caller.startsWith('subject:') : record.caller !== caller) continue;
+      const privateRun = record.invocationScope === 'member-identity'
+        || (record.invocationScope === undefined && record.capability === options.legacyPrivateCapability);
+      if (privateRun && !actionable.has(record.runId)) continue;
+      selected.push(record);
+      selected.sort((a, b) => Number(actionable.has(b.runId)) - Number(actionable.has(a.runId)) || newest(a, b));
+      if (selected.length > MAX_RECENT_HISTORY) selected.pop();
+    }
+    return selected.sort((a, b) => -newest(a, b));
+  }
   hasUnknown(capability: string) { this.assertHealthy(); return [...this.records.values()].some(record => record.capability === capability && record.state === 'POST_OUTCOME_UNKNOWN'); }
   unknownCapabilities(capabilities: readonly string[]) {
     this.assertHealthy();

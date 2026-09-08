@@ -443,7 +443,8 @@ export function RunHistory() {
       <div className="section-title">
         <div>
           <h2 id="history-heading">{operator ? 'Operator Activity' : 'Run history'}</h2>
-          <p>{operator ? 'Review requests first, then browse all authenticated runs.' : 'Authoritative discovery and replay records.'}</p>
+          <p>{operator ? 'Review requests first, then browse recent authenticated runs.' : 'Recent authoritative discovery and replay records.'}</p>
+          <p>History returns up to 100 recent records, prioritizing pending reviews. Runs already followed in this session remain visible; older records are retained.</p>
         </div>
         <button id="refresh" onClick={() => void refresh()}>
           Refresh

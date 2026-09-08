@@ -312,12 +312,12 @@ export function RunProvider({
     };
   }, [refresh]);
   useEffect(() => {
-    if (!error && !runs.some(pending) && !loading) return;
+    if (!error && !runs.some(pending) && !loading && actionHold?.state !== 'bound') return;
     const timer = setInterval(() => {
       void refresh();
     }, 1500);
     return () => clearInterval(timer);
-  }, [runs, error, loading, refresh]);
+  }, [runs, error, loading, refresh, actionHold?.state]);
   const currentSession = { ...session, capabilities, availability };
   return (
     <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, actionHold,

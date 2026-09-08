@@ -65,6 +65,23 @@ describe.each(['filesystem', 'postgres'] as const)('%s bounded journal reads', b
       await expect(async () => journal!.findRequests('caller', ['bad key'])).rejects.toMatchObject({ status: 400 });
       await expect(async () => journal!.unknownCapabilities(Array(101).fill('write'))).rejects.toMatchObject({ status: 400 });
       transaction?.mockRestore();
+      let releaseReadiness!: () => void;
+      const readinessHeld = new Promise<void>(resolve => { releaseReadiness = resolve; });
+      const originalUnknown = journal.unknownCapabilities.bind(journal);
+      const readinessRead = vi.spyOn(journal, 'unknownCapabilities').mockImplementation(async ids => {
+        await readinessHeld;
+        return originalUnknown(ids);
+      });
+      const background = service.availability('caller');
+      try {
+        await expect(service.availability('caller')).rejects.toMatchObject({ status: 429 });
+        expect((await service.requestContexts('caller', ['first'])).size).toBe(1);
+        expect((await service.history('caller')).some(run => run.runId === first.runId)).toBe(true);
+      } finally {
+        releaseReadiness();
+        await background;
+        readinessRead.mockRestore();
+      }
       const original = journal.findRequests.bind(journal);
       let release!: () => void;
       const held = new Promise<void>(resolve => { release = resolve; });

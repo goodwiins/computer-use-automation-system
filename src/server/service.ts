@@ -37,7 +37,9 @@ export class InvocationService {
   private readonly completionByRun = new Map<string, Promise<void>>();
   private readonly identityCompletions = new Set<Promise<void>>();
   private cleanupFailed = false;
-  private readonly readProjections = new Set<string>();
+  private readonly readProjections = {
+    chat: new Set<string>(), availability: new Set<string>(), history: new Set<string>(),
+  };
   constructor(readonly journal: RunJournal, readonly policy: Policy, readonly profile: AppProfile,
     readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
     for (const file of readdirSync(artifactDir).filter(f => f.endsWith('.json'))) {
@@ -89,14 +91,15 @@ export class InvocationService {
         if (unknown.has(id)) return { id, label, state: 'temporarily_unavailable' as const, reason: 'Outcome requires read-only investigation' };
         return { id, label, state: 'available' as const, reason: 'Approved recording is ready' };
       });
-    });
+    }, 'availability');
   }
-  private async withReadProjection<T>(principal: Principal, work: () => Promise<T>): Promise<T> {
+  private async withReadProjection<T>(principal: Principal, work: () => Promise<T>, kind: 'chat' | 'availability' | 'history' = 'chat'): Promise<T> {
     const owner = principalKey(principal);
-    if (this.readProjections.has(owner) || this.readProjections.size >= 4) throw new RequestError(429, 'Run projection is busy');
-    this.readProjections.add(owner);
+    const pending = this.readProjections[kind];
+    if (pending.has(owner) || pending.size >= 4) throw new RequestError(429, 'Run projection is busy');
+    pending.add(owner);
     try { return await work(); }
-    finally { this.readProjections.delete(owner); }
+    finally { pending.delete(owner); }
   }
   async requestContexts(principal: Principal, keys: readonly string[]) {
     return this.withReadProjection(principal, async () => {
@@ -366,12 +369,18 @@ export class InvocationService {
       memberIdentity: record.capability === 'meridian-member-record' ? this.projectMemberIdentity(principal, live?.memberIdentity) : undefined };
   }
   async history(principal: Principal) {
-    const records = await this.journal.list();
-    const operator = principalRole(principal) === 'operator';
-    const visible = records.filter(record => canAccessRun(principal, record.caller)
-      && (!this.isPrivateRecord(record) || operator));
-    const projected = visible.map(record => this.projectRun(principal, record));
-    return projected.filter((run, index) => !this.isPrivateRecord(visible[index]!) || Boolean(run.intervention));
+    return this.withReadProjection(principal, async () => {
+      const operator = principalRole(principal) === 'operator';
+      const actionableRunIds: string[] = [];
+      if (operator) for (const [id, live] of this.live) if (live.approval.pending) actionableRunIds.push(id);
+      const records = await this.journal.recent(principalKey(principal), {
+        legacyOperator: principal === 'operator',
+        legacyPrivateCapability: this.profile.appId === 'meridian' ? 'meridian-member-inquiry' : undefined,
+        actionableRunIds,
+      });
+      const projected = records.map(record => this.projectRun(principal, record));
+      return projected.filter((run, index) => !this.isPrivateRecord(records[index]!) || Boolean(run.intervention));
+    }, 'history');
   }
   async decide(principal: Principal, runId: string, id: string, decision: 'approve' | 'retry' | 'abort') {
     if (principalRole(principal) !== 'operator') throw new RequestError(403, 'Only operators can decide interventions');

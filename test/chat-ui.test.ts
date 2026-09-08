@@ -2425,7 +2425,29 @@ it('allows a separate direct inquiry after unknown posting without replaying the
   ]);
 }, 15000);
 
-it('keeps a terminal direct hold until exact capability availability is authoritative', async () => {
+it('keeps polling after a terminal run waits on another operation to release readiness', async () => {
+  const { page, state, service, connect } = await fixture();
+  await connect();
+  await page.getByText('Invoke an approved capability directly', { exact: true }).click();
+  await page.locator('#fields input').fill('offline-member');
+  await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
+  await page.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  state.runs[0]!.state = 'success';
+  state.runs[0]!.memberIdentity = { status: 'unavailable' };
+  service.availability = () => fixtureAvailability('temporarily_unavailable');
+  await page.locator('#refresh').click();
+  await visible(page, '#runs', 'success');
+  // Allow the prior running-state interval and in-flight refresh to settle.
+  await page.waitForTimeout(1800);
+  const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
+  expect(await release.count()).toBe(0);
+  service.availability = () => fixtureAvailability('available');
+  await release.waitFor({ timeout: 5000 });
+  expect(state.invocations.size).toBe(1);
+  expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
+}, 15000);
+
+it('polls a terminal direct hold until exact capability availability recovers without resubmitting', async () => {
   const { page, state, service, connect } = await fixture();
   await connect();
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
@@ -2448,9 +2470,10 @@ it('keeps a terminal direct hold until exact capability availability is authorit
   expect(state.invocations.size).toBe(1);
 
   service.availability = () => fixtureAvailability('available');
-  await page.locator('#refresh').click();
   const release = page.getByRole('button', { name: 'Start another invocation', exact: true });
-  await release.waitFor();
+  await release.waitFor({ timeout: 5000 });
+  expect(state.invocations.size).toBe(1);
+  expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(1);
   await release.click();
   await page.locator('#fields input').fill('new-member');
   await page.getByRole('button', { name: 'Invoke capability', exact: true }).click();
@@ -2525,7 +2548,7 @@ it('keeps the latest capability catalog when refresh metadata omits capabilities
     page.locator('#refresh').click(),
   ]);
   expect(await page.locator('#capability option[value="meridian-member-inquiry"]').count()).toBe(1);
-  expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7);
+  await vi.waitFor(async () => expect(await page.getByText('Availability unavailable', { exact: true }).count()).toBe(7));
   await page.unroute('**/capabilities');
 });
 

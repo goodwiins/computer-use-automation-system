@@ -18,6 +18,9 @@ import {
   validateIdempotencyKey,
   validateRunBatch,
   validateTextBatch,
+  validateRecentHistory,
+  MAX_RECENT_HISTORY,
+  type RecentHistoryOptions,
 } from './journal.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -362,6 +365,29 @@ export class PostgresJournal implements RunJournal {
       const result = await client.query<RunRow>(
         `SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity, created_at, invocation_scope, state, dispatch_intent
          FROM meridian_runs ORDER BY created_at, run_id`,
+      );
+      return result.rows.map(recordFromRow);
+    });
+  }
+
+  async recent(caller: string, options: RecentHistoryOptions = {}): Promise<JournalRecord[]> {
+    this.assertHealthy();
+    const actionable = validateRecentHistory(caller, options);
+    return this.transaction(async client => {
+      await this.lockAuthority(client);
+      const owner = options.legacyOperator ? "caller NOT LIKE 'subject:%' AND $1::text = 'operator'" : 'caller = $1';
+      const result = await client.query<RunRow>(
+        `SELECT * FROM (
+          SELECT run_id::text, kind, caller, capability, version, request, recovery_request, identity,
+            created_at, invocation_scope, state, dispatch_intent
+          FROM meridian_runs WHERE ${owner}
+            AND ((invocation_scope IS DISTINCT FROM 'member-identity'
+              AND NOT (invocation_scope IS NULL AND capability IS NOT DISTINCT FROM $2::text))
+              OR run_id = ANY($3::uuid[]))
+          ORDER BY ${actionable.length ? '(run_id = ANY($3::uuid[])) DESC,' : ''} meridian_runs.created_at DESC, meridian_runs.run_id DESC
+          LIMIT $4
+        ) recent ORDER BY created_at, run_id`,
+        [caller, options.legacyPrivateCapability ?? null, actionable, MAX_RECENT_HISTORY],
       );
       return result.rows.map(recordFromRow);
     });
