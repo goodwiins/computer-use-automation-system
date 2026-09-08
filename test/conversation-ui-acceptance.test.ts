@@ -753,9 +753,9 @@ describe.sequential('safe conversation real persistence acceptance', () => {
       request.method === 'POST' && request.path === `/conversations/${conversationId}/events`,
     )).toHaveLength(2));
     const events = await vi.waitFor(async () => {
-      const persisted = await current.store.events(ownerId, conversationId!);
-      expect(persisted.events.map(event => event.role)).toEqual(['user', 'assistant']);
-      return persisted;
+      const saved = await current.store.events(ownerId, conversationId!);
+      expect(saved.events.map(event => event.role)).toEqual(['user', 'assistant']);
+      return saved;
     });
     expect(JSON.stringify(events)).not.toContain('FRESH_THREAD_RAW_CANARY');
     expect(await page.getByText('Saved conversation', { exact: true }).count()).toBeGreaterThanOrEqual(1);

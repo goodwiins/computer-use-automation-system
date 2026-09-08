@@ -55,11 +55,11 @@ section { min-width: 0; }
 .workspace-header > span { font-size: .9rem; font-weight: 550; }
 .workspace-header button { font-size: .8rem; }
 .review-count { margin-left: .5rem; color: #835b20; }
-.chat { grid-area: 2 / 1; min-height: 0; padding: 0; }
+.chat { grid-area: 2 / 1; display: flex; flex-direction: column; min-height: 0; padding: 0; }
 /* Keep the scroll viewport measurable while Activity covers it. Zero-sized hidden
    viewports re-arm assistant-ui's follow-bottom behavior during resize events. */
 #workspace[data-chat-hidden="true"] .chat { visibility: hidden; pointer-events: none; }
-.thread-root { height: 100%; min-height: 0; }
+.thread-root { flex: 1; min-height: 0; }
 .messages { display: flex; flex-direction: column; height: 100%; overflow-y: auto; overflow-x: hidden; padding: 0 1.5rem; scroll-padding-bottom: 1rem; }
 .conversation { width: 100%; max-width: 760px; margin: 0 auto; flex: 1; padding: 1.5rem 0; }
 .conversation:has(.chat-welcome) { display: block; }
@@ -96,10 +96,12 @@ section { min-width: 0; }
 .composer-note { text-align: center; color: var(--muted); font-size: .7rem; margin: .6rem 0 0; }
 .scroll-bottom { position: absolute; bottom: calc(100% + .25rem); left: calc(50% - 22px); width: 44px; border-radius: 50%; box-shadow: 0 2px 8px #20332810; }
 .scroll-bottom:disabled { display: none; }
-.conversation-navigation { border-bottom: 1px solid var(--line); padding: .75rem 1.5rem; background: #fafbf9; }
-.conversation-navigation > [data-scope="threadList"] { width: 100%; max-width: 760px; margin: 0 auto; }
+.conversation-sidebar { min-width: 0; }
+.conversation-navigation { border-top: 1px solid var(--line); margin-top: 1.25rem; padding-top: 1rem; }
+.conversation-new { width: 100%; }
 .conversation-new, .conversation-load-more { min-height: 36px; font-size: .78rem; padding: .4rem .65rem; }
-.conversation-row { display: flex; align-items: center; gap: .35rem; min-width: 0; padding: .35rem 0; }
+.conversation-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: .35rem; min-width: 0; padding: .5rem 0; }
+.conversation-row-trigger, .conversation-row-title { grid-column: 1 / -1; }
 .conversation-row + .conversation-row { border-top: 1px solid var(--line); }
 .conversation-row-trigger { flex: 1; min-width: 0; min-height: 36px; overflow: hidden; text-overflow: ellipsis; text-align: left; white-space: nowrap; }
 .conversation-row-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .82rem; }
