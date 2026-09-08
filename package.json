@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:regression": "npm run build && vitest run test/chat.test.ts test/chat-ui.test.ts test/ui-readiness.test.ts test/meridian-cli.test.ts test/postgres-journal.test.ts test/journal-alias.test.ts test/journal-read-batch.test.ts test/journal-recent-history.test.ts test/cli-pool.test.ts test/cli-pool-postgres.test.ts test/browser-startup-cleanup.test.ts src/server/ui/session-readiness.test.tsx",
     "test:smoke": "vitest run test/browser-inspection-tsx.test.ts test/evidence-eval.test.ts",
+    "benchmark:workers": "tsx scripts/benchmark-workers.ts",
     "ci": "npm run typecheck && npm run typecheck:ui && npm test",
     "typecheck": "tsc --noEmit",
     "build": "next build",
