@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
@@ -53,51 +53,103 @@ function walkthroughScreenshotPath(name: string) {
   return join(outputDir, name);
 }
 
+function parseNativeDisplayNumber(output: string): string | undefined {
+  if (!/^\d{0,5}\n?$/.test(output) || (output && Number(output) > 65535)) {
+    throw new Error('Invalid Xvfb display allocation');
+  }
+  if (!output.endsWith('\n')) return undefined;
+  if (output === '\n') throw new Error('Invalid Xvfb display allocation');
+  return `:${Number(output)}`;
+}
+
+function readNativeDisplayAllocation(server: ReturnType<typeof spawn>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const pipe = server.stdio[3];
+    if (!pipe || !('readable' in pipe)) return reject(new Error('Missing Xvfb display allocation pipe'));
+    let output = '';
+    const finish = (error?: Error, display?: string) => {
+      clearTimeout(timer);
+      pipe.removeListener('data', onData);
+      pipe.removeListener('end', onEnd);
+      server.removeListener('error', onError);
+      server.removeListener('exit', onExit);
+      if (error) reject(error);
+      else resolve(display!);
+    };
+    const onError = (error: Error) => finish(error);
+    const onExit = () => finish(new Error('Xvfb exited before allocating its display'));
+    const onEnd = () => finish(new Error('Xvfb display allocation pipe closed without a display'));
+    const onData = (chunk: Buffer) => {
+      try {
+        output += chunk.toString('ascii');
+        const display = parseNativeDisplayNumber(output);
+        if (server.exitCode !== null || server.signalCode !== null) return onExit();
+        if (display) finish(undefined, display);
+      } catch (error) {
+        finish(error as Error);
+      }
+    };
+    const timer = setTimeout(() => finish(new Error('Timed out waiting for Xvfb display allocation')), 5000);
+    pipe.on('data', onData);
+    pipe.once('end', onEnd);
+    server.once('error', onError);
+    server.once('exit', onExit);
+    if (server.exitCode !== null || server.signalCode !== null) onExit();
+  });
+}
+
+function assertOwnedNativeDisplay(native: {
+  server: ReturnType<typeof spawn>;
+  display: string;
+  socket: { dev: number; ino: number };
+}) {
+  if (!native.server.pid || native.server.exitCode !== null || native.server.signalCode !== null) {
+    throw new Error('Owned Xvfb process is not running');
+  }
+  const socket = statSync(`/tmp/.X11-unix/X${native.display.slice(1)}`);
+  if (!socket.isSocket() || socket.dev !== native.socket.dev || socket.ino !== native.socket.ino) {
+    throw new Error('Owned Xvfb display socket was replaced');
+  }
+}
+
 async function startNativeDisplay() {
-  const display = `:${3000 + (process.pid % 1000)}`;
+  if (process.env.MERIDIAN_NATIVE_ZOOM !== '1') throw new Error('Native display requires MERIDIAN_NATIVE_ZOOM=1');
+  // -displayfd atomically selects an unused display; only this child can write FD 3.
   const server = spawn('/usr/bin/Xvfb', [
-    display,
+    '-displayfd', '3',
     '-screen', '0', '1441x901x24',
     '-nolisten', 'tcp',
     '-ac',
-  ], { stdio: 'ignore' });
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
   try {
-    await new Promise<void>((resolve, reject) => {
-      const deadline = Date.now() + 5000;
-      const check = () => {
-        if (server.exitCode !== null || server.signalCode !== null) {
-          reject(new Error(`Xvfb exited after startup: display=${display}`));
-          return;
-        }
-        execFile('/usr/bin/xdpyinfo', [], { env: { ...process.env, DISPLAY: display } }, error => {
-          if (!error) {
-            resolve();
-            return;
-          }
-          if (Date.now() >= deadline) {
-            reject(new Error(`Timed out waiting for Xvfb display ${display}: ${error.message}`));
-            return;
-          }
-          setTimeout(check, 50);
-        });
-      };
-      check();
-    });
+    const display = await readNativeDisplayAllocation(server);
+    // Xvfb's ready message comes from this child after it binds the free socket.
+    // Remember that socket identity so a reused display number is never accepted.
+    const socket = statSync(`/tmp/.X11-unix/X${display.slice(1)}`);
+    const native = { server, display, socket };
+    assertOwnedNativeDisplay(native);
+    return native;
   } catch (error) {
-    await stopNativeDisplay(server);
+    try {
+      await stopNativeDisplay(server);
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Native display setup and cleanup failed');
+    }
     throw error;
   }
-  return { server, display };
 }
 
 async function stopNativeDisplay(server: ReturnType<typeof spawn>) {
+  if (!server.pid) return;
   if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
   if (server.exitCode === null && server.signalCode === null) {
     await new Promise<void>(resolve => server.once('exit', () => resolve()));
   }
 }
 
-async function captureNativeDisplay(display: string, outputPath: string) {
+async function captureNativeDisplay(native: Awaited<ReturnType<typeof startNativeDisplay>>, outputPath: string) {
+  assertOwnedNativeDisplay(native);
+  const { display } = native;
   await new Promise<void>((resolve, reject) => {
     execFile('/usr/bin/ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
@@ -398,8 +450,8 @@ function registerFixtureCleanup(resources: FixtureResources) {
   let closed = false;
   const close = async () => {
     if (closed) return;
-    closed = true;
     await closeFixtureResources(resources);
+    closed = true;
   };
   cleanup.push(close);
   return close;
@@ -411,18 +463,28 @@ async function withFixtureCleanup<T>(setup: (resources: FixtureResources) => Pro
   try {
     return await setup(resources);
   } catch (error) {
-    await close().catch(() => {});
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'fixture setup and cleanup failed');
+    }
     throw error;
   }
 }
 
 afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) await close();
+  const failures: unknown[] = [];
+  for (const close of cleanup.splice(0).reverse()) {
+    try { await close(); } catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'fixture teardown failed');
 });
 
 it.each([
   ['ordinary browser setup', { failSetupAfter: 'browser' }],
-  ['native browser setup', { nativeZoom200: true, failSetupAfter: 'browser' }],
+  ...(process.env.MERIDIAN_NATIVE_ZOOM === '1'
+    ? [['native browser setup', { nativeZoom200: true, failSetupAfter: 'browser' }]] as const
+    : []),
 ] as const)('registers idempotent teardown before %s can fail', async (_label, options) => {
   expect(cleanup).toHaveLength(0);
   await expect(fixture(false, undefined, options)).rejects.toThrow('injected fixture setup failure');
@@ -431,6 +493,100 @@ it.each([
   if (!close) throw new Error('fixture teardown was not registered');
   await close();
   await close();
+});
+
+it('surfaces setup and cleanup errors and retries the registered teardown', async () => {
+  const browser = await chromium.launch();
+  const closeBrowser = browser.close.bind(browser);
+  const setupError = new Error('setup failed after allocation');
+  const cleanupError = new Error('browser close failed once');
+  const directory = mkdtempSync(join(tmpdir(), 'assistant-ui-cleanup-failure-'));
+  vi.spyOn(browser, 'close').mockRejectedValueOnce(cleanupError);
+  try {
+    const result = await withFixtureCleanup(async resources => {
+      resources.browser = browser;
+      resources.evidenceDir = directory;
+      throw setupError;
+    }).catch(error => error);
+    expect(result).toBeInstanceOf(AggregateError);
+    expect(result.errors[0]).toBe(setupError);
+    expect(result.errors[1]).toBeInstanceOf(AggregateError);
+    expect(result.errors[1].errors).toEqual([cleanupError]);
+    expect(existsSync(directory)).toBe(false);
+    expect(browser.isConnected()).toBe(true);
+    const close = cleanup[0];
+    expect(close).toBeTypeOf('function');
+    await close!();
+    expect(browser.isConnected()).toBe(false);
+    await close!();
+  } finally {
+    await closeBrowser();
+  }
+});
+
+it('refuses native display setup unless explicitly opted in', async () => {
+  const previous = process.env.MERIDIAN_NATIVE_ZOOM;
+  delete process.env.MERIDIAN_NATIVE_ZOOM;
+  let display: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
+  try {
+    const result = await startNativeDisplay().then(value => { display = value; return value; }, error => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toContain('MERIDIAN_NATIVE_ZOOM=1');
+  } finally {
+    if (display) await stopNativeDisplay(display.server);
+    if (previous === undefined) delete process.env.MERIDIAN_NATIVE_ZOOM;
+    else process.env.MERIDIAN_NATIVE_ZOOM = previous;
+  }
+});
+
+it('reads only a complete valid display allocation from the spawned child pipe', async () => {
+  expect(parseNativeDisplayNumber('')).toBeUndefined();
+  expect(parseNativeDisplayNumber('12')).toBeUndefined();
+  expect(parseNativeDisplayNumber('127\n')).toBe(':127');
+  expect(parseNativeDisplayNumber('0\n')).toBe(':0');
+  for (const invalid of ['-1\n', ':7\n', '7\n8\n', '7junk\n', '65536\n']) {
+    expect(() => parseNativeDisplayNumber(invalid)).toThrow('Invalid Xvfb display allocation');
+  }
+  // A real Node child exercises the private FD protocol without any native X binaries.
+  const child = spawn(process.execPath, ['-e', "require('node:fs').writeSync(3, '12'); setTimeout(() => require('node:fs').writeSync(3, '7\\n'), 20); setInterval(() => {}, 1000)"], {
+    stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+  });
+  try {
+    expect(await readNativeDisplayAllocation(child)).toBe(':127');
+  } finally {
+    await stopNativeDisplay(child);
+  }
+});
+
+it('rejects native allocation when its child exits or emits malformed output', async () => {
+  for (const script of ["process.exit(1)", "require('node:fs').writeSync(3, 'other display\\n'); setInterval(() => {}, 1000)"]) {
+    const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] });
+    try {
+      await expect(readNativeDisplayAllocation(child)).rejects.toThrow(/Xvfb exited|pipe closed|Invalid Xvfb display allocation/);
+    } finally {
+      await stopNativeDisplay(child);
+    }
+  }
+});
+
+it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('allocates distinct owned native displays and refuses capture after ownership ends', async () => {
+  const first = await startNativeDisplay();
+  let second: Awaited<ReturnType<typeof startNativeDisplay>> | undefined;
+  const output = join(mkdtempSync(join(tmpdir(), 'assistant-ui-display-ownership-')), 'forbidden.png');
+  try {
+    second = await startNativeDisplay();
+    expect(second.display).not.toBe(first.display);
+    expect(() => assertOwnedNativeDisplay(first)).not.toThrow();
+    expect(() => assertOwnedNativeDisplay(second!)).not.toThrow();
+    expect(() => assertOwnedNativeDisplay({ ...first, socket: second!.socket })).toThrow('socket was replaced');
+    await stopNativeDisplay(first.server);
+    await expect(captureNativeDisplay(first, output)).rejects.toThrow('Owned Xvfb process is not running');
+    expect(existsSync(output)).toBe(false);
+  } finally {
+    await stopNativeDisplay(first.server);
+    if (second) await stopNativeDisplay(second.server);
+    rmSync(resolve(output, '..'), { recursive: true, force: true });
+  }
 });
 
 async function fixture(
@@ -724,24 +880,19 @@ async function fixture(
     writeFileSync(join(nativeProfileDir, 'Default', 'Preferences'), JSON.stringify(preferences));
     nativeDisplay = await startNativeDisplay();
     resources.nativeDisplay = nativeDisplay;
-    const inheritedDisplay = process.env.DISPLAY;
-    process.env.DISPLAY = nativeDisplay.display;
-    try {
-      browser = await chromium.launchPersistentContext(nativeProfileDir, {
-        headless: false,
-        viewport: null,
-        args: [
-          '--window-size=1440,900',
-          '--window-position=0,0',
-          '--kiosk',
-          '--disable-save-password-bubble',
-          '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
-        ],
-      });
-    } finally {
-      if (inheritedDisplay === undefined) delete process.env.DISPLAY;
-      else process.env.DISPLAY = inheritedDisplay;
-    }
+    assertOwnedNativeDisplay(nativeDisplay);
+    browser = await chromium.launchPersistentContext(nativeProfileDir, {
+      headless: false,
+      viewport: null,
+      env: { ...process.env, DISPLAY: nativeDisplay.display },
+      args: [
+        '--window-size=1440,900',
+        '--window-position=0,0',
+        '--kiosk',
+        '--disable-save-password-bubble',
+        '--disable-features=PasswordManagerOnboarding,PasswordManagerSavePrompt',
+      ],
+    });
     resources.browser = browser;
   } else {
     browser = await chromium.launch();
@@ -798,7 +949,14 @@ async function expectNoHorizontalOverflow(page: Page, selector: string) {
     clientWidth: (node as HTMLElement).clientWidth,
     scrollWidth: (node as HTMLElement).scrollWidth,
   }));
+  expect(dimensions.clientWidth).toBeGreaterThan(0);
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+}
+async function settleConversationLayout(page: Page) {
+  await page.locator('.chat').waitFor({ state: 'visible' });
+  // Let the viewport ResizeObserver and queued scroll restoration finish before simulating a new user scroll.
+  await page.evaluate(() => new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
 }
 async function expectKeyboardVisibleFocus(target: Locator) {
   const focusStyle = await target.evaluate((node) => {
@@ -1136,17 +1294,20 @@ it('moves Activity focus with the responsive breakpoint while the panel stays op
   const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
 
   await page.setViewportSize({ width: 768, height: 900 });
+  await back.waitFor({ state: 'visible' });
   expect(await page.getByRole('heading', { name: 'Capability catalog', exact: true }).isVisible()).toBe(true);
   expect(await back.isVisible()).toBe(true);
   await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
   expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await back.waitFor({ state: 'hidden' });
   expect(await back.isVisible()).toBe(false);
-  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Activity'));
+  await page.waitForFunction(() => document.activeElement === document.querySelector('.workspace-header button'));
   expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
 
   await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
   expect(await back.isVisible()).toBe(true);
   await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
   expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
@@ -1189,7 +1350,9 @@ it('restores narrow conversation scroll after crossing the breakpoint while Acti
   });
 
   await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
   await activity.click();
+  await settleConversationLayout(page);
   await messages.evaluate((node) => {
     (node as HTMLElement).scrollTop = 180;
   });
@@ -1198,12 +1361,79 @@ it('restores narrow conversation scroll after crossing the breakpoint while Acti
   expect(await back.isVisible()).toBe(true);
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await settleConversationLayout(page);
   expect(await page.locator('.chat').isVisible()).toBe(true);
   await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
   expect(await back.isVisible()).toBe(true);
   await back.click();
   await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 180);
   expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(180);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('retains focus on visible Activity controls across breakpoint changes', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+  const catalogDisclosure = page.locator('summary').filter({ hasText: 'Invoke an approved capability directly' });
+  for (const control of [refresh, catalogDisclosure]) {
+    await control.focus();
+    await page.setViewportSize({ width: 320, height: 900 });
+    await back.waitFor({ state: 'visible' });
+    expect(await control.isVisible()).toBe(true);
+    expect(await control.evaluate((node) => node === document.activeElement)).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await back.waitFor({ state: 'hidden' });
+    expect(await control.isVisible()).toBe(true);
+    expect(await control.evaluate((node) => node === document.activeElement)).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  await back.focus();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => document.activeElement === document.querySelector('.workspace-header button'));
+  expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
+
+  await activity.focus();
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.waitForFunction(() => document.activeElement?.textContent?.includes('Back to conversation'));
+  expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+  expect(errors).toEqual([]);
+}, 15000);
+
+it('restores the latest scroll after wide Activity becomes narrow before closing', async () => {
+  const { page, connect, errors } = await fixture();
+  await connect();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  const back = page.getByRole('button', { name: 'Back to conversation', exact: true });
+  const messages = page.locator('.messages');
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1200px';
+  });
+
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  await activity.click();
+  await settleConversationLayout(page);
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 180;
+  });
+  await activity.click();
+  expect(await back.isVisible()).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await settleConversationLayout(page);
+  await messages.evaluate((node) => {
+    (node as HTMLElement).scrollTop = 520;
+  });
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await back.click();
+  await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 520);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
   expect(errors).toEqual([]);
 }, 15000);
 
@@ -1223,7 +1453,7 @@ it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoo
   console.info(`[native-zoom] ${JSON.stringify(metrics)}`);
   expect(metrics.devicePixelRatio).toBe(2);
   expect(metrics.visualViewportScale).toBe(1);
-  expect(metrics.innerWidth).toBeLessThanOrEqual(720);
+  expect(metrics.innerWidth).toBe(720);
   expect(metrics.documentWidth).toBeLessThanOrEqual(metrics.innerWidth);
   expect(metrics.outerWidth).toBe(1440);
   expect(metrics.outerHeight).toBe(900);
@@ -1256,7 +1486,7 @@ it.skipIf(process.env.MERIDIAN_NATIVE_ZOOM !== '1')('actual Chromium browser zoo
   await expectKeyboardVisibleFocus(back);
   const nativeScreenshotPath = walkthroughScreenshotPath('native-zoom-200.png');
   await page.waitForTimeout(250);
-  await captureNativeDisplay(nativeDisplay!.display, nativeScreenshotPath);
+  await captureNativeDisplay(nativeDisplay!, nativeScreenshotPath);
   const nativeScreenshot = readFileSync(nativeScreenshotPath);
   expect({
     width: nativeScreenshot.readUInt32BE(16),
