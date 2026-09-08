@@ -1,4 +1,103 @@
-import type { UIMessage } from 'ai';
+import type { UIMessage, UIMessageChunk } from 'ai';
+
+export type ChatLifecycle = {
+  key: string;
+  guardKey?: string;
+  intent: 'action' | 'status';
+  sawTool: boolean;
+  sawStatusTool: boolean;
+  sawOtherTool: boolean;
+  finishReason?: string;
+  finishSeen: boolean;
+  postFinishFailure: boolean;
+  failed: boolean;
+  settled: boolean;
+  toolNames: Map<string, string>;
+};
+export type ChatLifecycleCallbacks = {
+  complete: (lifecycle: ChatLifecycle) => void;
+  uncertain: (key: string) => void;
+};
+
+function parsedFinishReason(chunk: Extract<UIMessageChunk, { type: 'finish' }>): string | undefined {
+  const raw: unknown = chunk.finishReason;
+  if (typeof raw === 'string') return raw;
+  if (raw !== null && typeof raw === 'object' && 'unified' in raw && typeof raw.unified === 'string') return raw.unified;
+  return undefined;
+}
+
+export function observeGuardedChatStream(
+  stream: ReadableStream<UIMessageChunk>,
+  lifecycle: ChatLifecycle,
+  lifecycles: Map<string, ChatLifecycle>,
+  callbacks: ChatLifecycleCallbacks,
+): ReadableStream<UIMessageChunk> {
+  const reader = stream.getReader();
+  const settle = () => {
+    if (lifecycle.settled) return;
+    lifecycle.settled = true;
+    lifecycles.delete(lifecycle.key);
+    if (lifecycle.intent !== 'action') return;
+    if (lifecycle.finishSeen && !lifecycle.failed && !lifecycle.postFinishFailure) callbacks.complete(lifecycle);
+    else callbacks.uncertain(lifecycle.key);
+  };
+  return new ReadableStream<UIMessageChunk>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          settle();
+          controller.close();
+          return;
+        }
+        const chunk = next.value;
+        if (lifecycle.finishSeen) lifecycle.postFinishFailure = true;
+        if (chunk.type === 'tool-input-start' || chunk.type === 'tool-input-available') {
+          lifecycle.sawTool = true;
+          lifecycle.toolNames.set(chunk.toolCallId, chunk.toolName);
+          if (chunk.toolName === 'run_status') lifecycle.sawStatusTool = true;
+          else lifecycle.sawOtherTool = true;
+        } else if (chunk.type === 'tool-output-available') {
+          lifecycle.sawTool = true;
+          if (lifecycle.toolNames.get(chunk.toolCallId) === 'run_status') lifecycle.sawStatusTool = true;
+          else lifecycle.sawOtherTool = true;
+        } else if (chunk.type === 'tool-input-error' || chunk.type === 'tool-output-error'
+          || chunk.type === 'tool-output-denied' || chunk.type === 'error' || chunk.type === 'abort') {
+          lifecycle.sawTool = true;
+          lifecycle.failed = true;
+        } else if (chunk.type === 'finish') {
+          if (lifecycle.finishSeen) lifecycle.failed = true;
+          else {
+            lifecycle.finishSeen = true;
+            lifecycle.finishReason = parsedFinishReason(chunk);
+          }
+        }
+        controller.enqueue(chunk);
+      } catch (error) {
+        if (lifecycle.intent === 'action' && !lifecycle.settled) {
+          lifecycle.settled = true;
+          lifecycles.delete(lifecycle.key);
+          callbacks.uncertain(lifecycle.key);
+        } else if (!lifecycle.settled) {
+          lifecycle.settled = true;
+          lifecycles.delete(lifecycle.key);
+        }
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      if (lifecycle.intent === 'action' && !lifecycle.settled) {
+        lifecycle.settled = true;
+        lifecycles.delete(lifecycle.key);
+        callbacks.uncertain(lifecycle.key);
+      } else if (!lifecycle.settled) {
+        lifecycle.settled = true;
+        lifecycles.delete(lifecycle.key);
+      }
+      return reader.cancel(reason);
+    },
+  });
+}
 
 export class ChatRequestError extends Error {}
 

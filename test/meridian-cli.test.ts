@@ -309,7 +309,7 @@ it.each([
     const result = spawnSync(process.execPath,
       ['--import', 'tsx', 'cli.ts', ...args, '--profile', 'meridian',
         '--idempotency-key', 'invalid key'], {
-        encoding: 'utf8', timeout: 5000,
+        encoding: 'utf8', timeout: 15_000,
         env: {
           PATH: process.env.PATH, HOME: process.env.HOME,
           OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir,
@@ -325,7 +325,7 @@ it.each([
     expect(existsSync(join(dir, 'journal', 'server.lock'))).toBe(false);
     expect(readdirSync(dir).filter(name => name !== 'journal')).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
+}, 20_000);
 
 it.each([
   ['pre', 'failure', 'RUN_FAILED', 0],

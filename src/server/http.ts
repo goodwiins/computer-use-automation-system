@@ -15,7 +15,7 @@ import { conversationRouter } from './conversation-http.js';
 import { ConversationStore } from './conversations.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
-const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional() }).strict();
+const Invoke = z.object({ args: Arguments, operator: z.enum(['TELLER', 'SUPERVISOR']).optional(), lookupOnly: z.literal(true).optional() }).strict();
 const hash = (value: string) => createHash('sha256').update(value).digest();
 export function createApp(service: InvocationService, config: { callerToken: string; operatorToken: string; subjectTokens?: SubjectCredential[]; conversations?: ConversationStore; port: number; chatModel?: LanguageModel; uiDir?: string; localTellerLogin?: { teller: string; supervisor: string } }) {
   const authenticate = createAuthenticator(config);
@@ -56,13 +56,14 @@ export function createApp(service: InvocationService, config: { callerToken: str
   });
   app.get('/capabilities', (_req, res) => {
     const principal = res.locals.principal;
-    res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal) });
+    res.json({ principal: principalRole(principal), ...(typeof principal === 'string' ? {} : { subjectId: principal.subjectId }), capabilities: service.catalog(principal),
+      availability: typeof service.availability === 'function' ? service.availability(principal) : null });
   });
   app.get('/runs', (_req, res) => res.json(service.history(res.locals.principal)));
   app.get('/runs/:id', (req, res) => res.json(service.get(res.locals.principal, req.params.id!)));
   app.post('/capabilities/:id/invoke', (req, res) => {
     const body = Invoke.parse(req.body);
-    res.status(202).json(service.invoke(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator));
+    res.status(202).json(service.invoke(res.locals.principal, req.params.id!, body.args, req.get('Idempotency-Key') ?? '', body.operator, body.lookupOnly ?? false));
   });
   app.post('/runs/:id/decision', (req, res) => {
     const body = z.object({ approvalId: z.string().uuid(), decision: z.enum(['approve', 'retry', 'abort']) }).strict().parse(req.body);

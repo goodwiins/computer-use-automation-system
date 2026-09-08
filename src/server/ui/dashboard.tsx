@@ -3,16 +3,11 @@ import { pending, segment, useRuns, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
-
-const requested = [
-  ['meridian-sign-on', 'Sign on'],
-  ['meridian-member-inquiry', 'Member inquiry'],
-  ['meridian-member-record', 'Member record'],
-  ['meridian-funds-transfer', 'Funds transfer'],
-  ['meridian-open-share', 'Open share'],
-  ['meridian-update-member', 'Update contact'],
-  ['meridian-place-hold', 'Supervisor hold'],
-];
+import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
+import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
+const MERIDIAN_IDS: ReadonlySet<string> = new Set(MERIDIAN_CAPABILITIES.map(([id]) => id));
+const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
+type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
 export function OperatorSessionControls() {
   const { session } = useRuns();
   return session.principal === 'operator' ? (
@@ -26,19 +21,88 @@ export function OperatorSessionControls() {
   ) : null;
 }
 export function CapabilityCatalog() {
-  const { session, request, runs, watch, loading, error: historyError } = useRuns();
+  const {
+    session,
+    request,
+    runs,
+    watch,
+    loading,
+    error: historyError,
+    actionHold,
+    beginAction,
+    markActionUncertain,
+    bindAction,
+    clearAction,
+    abandonAction,
+  } = useRuns();
   const [selected, setSelected] = useState(session.capabilities[0]?.id ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [acceptedId, setAcceptedId] = useState('');
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const unknownCapabilities = new Set(runs.filter(run => run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.capability));
+  const availability = session.availability;
+  const meridianSession = session.capabilities.some(({ id }) => MERIDIAN_IDS.has(id))
+    || availability?.some(({ id }) => MERIDIAN_IDS.has(id)) === true;
+  const availabilityComplete = Array.isArray(availability)
+    && MERIDIAN_CAPABILITIES.every(([id]) => availability.some(item => item.id === id && AVAILABILITY_STATES.has(item.state)));
+  const metadataUnavailable = meridianSession && !availabilityComplete;
+  const meridianAvailability = meridianSession
+    ? MERIDIAN_CAPABILITIES.map(([id, label]) => availability?.find(item => item.id === id) ?? ({ id, label, state: undefined, reason: '' }))
+    : [];
   const acceptedRun = runs.find((run) => run.runId === acceptedId);
   const active = useRef(false);
-  const attempt = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
-  const capability = session.capabilities.find((c) => c.id === selected);
+  const attempt = useRef<InvocationAttempt | undefined>(undefined);
+  const visibleCapabilities = session.capabilities.filter(c => !availabilityComplete || availability.some(item => item.id === c.id));
+  const capability = visibleCapabilities.find((c) => c.id === selected) ?? visibleCapabilities[0];
+  const selectedStatus = capability ? availability?.find(item => item.id === capability.id) : undefined;
+  const selectedUnavailable = metadataUnavailable || (meridianSession && selectedStatus?.state !== 'available');
+  const recoveryPending = recoveryAvailable && Boolean(attempt.current);
+  const ordinarySubmitBlocked = active.current || Boolean(acceptedId) || loading || Boolean(historyError)
+    || recoveryPending || Boolean(actionHold);
+  const acceptedCapabilityReady = Boolean(acceptedRun && attempt.current
+    && acceptedRun.capability === attempt.current.capabilityId
+    && availability?.some(item => item.id === acceptedRun.capability && item.state === 'available'));
+  async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
+    if (active.current || acceptedId || loading || historyError) return;
+    if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;
+    active.current = true;
+    setBusy(true);
+    setRecoveryAvailable(false);
+    setError('');
+    try {
+      const response = await request(`/capabilities/${segment(retained.capabilityId)}/invoke`, {
+        method: 'POST',
+        body: lookupOnly ? JSON.stringify({ ...JSON.parse(retained.body), lookupOnly: true }) : retained.body,
+        headers: { 'Idempotency-Key': retained.key },
+      });
+      const accepted: { runId: string } = await response.json();
+      segment(accepted.runId);
+      setAcceptedId(accepted.runId);
+      bindAction(retained.key, accepted.runId, retained.capabilityId);
+      watch(accepted.runId);
+    } catch (e) {
+      markActionUncertain(retained.key);
+      setRecoveryAvailable(true);
+      const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
+      setError(lookupOnly
+        ? message.includes('No accepted request found')
+          ? 'No accepted request was found by this lookup. Acceptance of the original request remains unconfirmed. This lookup did not start an operation; refresh history before making a new request.'
+          : `${message} Acceptance remains unconfirmed. Refresh history before taking further action.`
+        : `${message} Acceptance is unconfirmed. Refresh history before taking further action.`);
+    } finally {
+      active.current = false;
+      setBusy(false);
+    }
+  }
   async function invoke(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!capability || active.current || acceptedId || loading || historyError) return;
+    if (!capability || ordinarySubmitBlocked || selectedUnavailable) return;
+    const status = availability?.find(item => item.id === capability.id);
+    if (meridianSession && (!status || status.state !== 'available')) {
+      setError(status?.reason || 'Availability unavailable');
+      return;
+    }
     if (unknownCapabilities.has(capability.id)) {
       setError('This capability has an unknown posting outcome. Choose a separate read-only inquiry; do not retry it.');
       return;
@@ -58,41 +122,42 @@ export function CapabilityCatalog() {
       ...(session.principal === 'operator' ? { operator: data.get('operator') } : {}),
     });
     const fingerprint = capability.id + body;
-    if (attempt.current?.fingerprint !== fingerprint)
-      attempt.current = { fingerprint, key: crypto.randomUUID() };
-    active.current = true;
-    setBusy(true);
-    setError('');
-    try {
-      const response = await request(`/capabilities/${segment(capability.id)}/invoke`, {
-        method: 'POST',
+    if (attempt.current?.fingerprint !== fingerprint) {
+      attempt.current = {
+        capabilityId: capability.id,
         body,
-        headers: { 'Idempotency-Key': attempt.current.key },
-      });
-      const accepted: { runId: string } = await response.json();
-      segment(accepted.runId);
-      setAcceptedId(accepted.runId);
-      watch(accepted.runId);
-    } catch (e) {
-      setError(
-        `${e instanceof Error ? e.message : 'Request interrupted.'} If the outcome is uncertain, refresh history. Resubmitting unchanged inputs uses the same request key.`,
-      );
-    } finally {
-      active.current = false;
-      setBusy(false);
+        role: session.principal === 'operator' ? String(data.get('operator') ?? '') : undefined,
+        fingerprint,
+        key: crypto.randomUUID(),
+      };
     }
+    const nextAttempt = attempt.current;
+    if (!nextAttempt) return;
+    await submitAttempt(nextAttempt);
+  }
+  async function recover() {
+    const retained = attempt.current;
+    if (!recoveryAvailable || !retained) return;
+    await submitAttempt(retained, true);
+  }
+  function startSeparateRequest() {
+    if (busy || loading || historyError) return;
+    setRecoveryAvailable(false);
+    if (attempt.current) abandonAction(attempt.current.key);
+    attempt.current = undefined;
+    setError('');
   }
   return (
     <section aria-labelledby="catalog-heading">
       <h2 id="catalog-heading">Capability catalog</h2>
       <ul className="catalog">
-        {requested.map(([id, label]) => (
+        {meridianAvailability.map(({ id, label, state, reason }) => (
           <li key={id}>
             <span>{label}</span>
             <small>
-              {session.capabilities.some((c) => c.id === id)
-                ? `Approved · available · ${session.capabilities.find((c) => c.id === id)!.version}`
-                : 'Missing or not authorized'}
+              {metadataUnavailable ? 'Availability unavailable' : state === 'available'
+                ? `Approved · available · ${session.capabilities.find((c) => c.id === id)?.version ?? 'recorded'}`
+                : `${state === undefined ? 'Availability unavailable' : state} · ${reason}`}
             </small>
           </li>
         ))}
@@ -103,7 +168,7 @@ export function CapabilityCatalog() {
           <p className="empty">No approved capabilities are available to this principal.</p>
         ) : (
           <form id="invoke" onSubmit={invoke} autoComplete="off">
-            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}>
+            <fieldset disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError) || metadataUnavailable}>
               <label htmlFor="capability">Capability</label>
               <select
                 id="capability"
@@ -113,7 +178,7 @@ export function CapabilityCatalog() {
                   setError('');
                 }}
               >
-                {session.capabilities.map((c) => (
+                {visibleCapabilities.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.id} · {c.version}
                   </option>
@@ -125,7 +190,7 @@ export function CapabilityCatalog() {
                   <label key={p.name}>
                     {p.name} — {p.description}
                     {p.enum ? (
-                      <select name={p.name} required={p.required}>
+                      <select name={p.name} required={p.required} disabled={selectedUnavailable}>
                         {p.enum.map((value) => (
                           <option key={value}>{value}</option>
                         ))}
@@ -138,20 +203,42 @@ export function CapabilityCatalog() {
                         step={p.type === 'number' ? 'any' : undefined}
                         inputMode={p.format ? 'decimal' : undefined}
                         autoComplete="off"
+                        disabled={selectedUnavailable}
                       />
                     )}
                   </label>
                 ))}
               </div>
               <OperatorSessionControls />
-              <button>{busy ? 'Submitting…' : 'Invoke capability'}</button>
+              <button disabled={selectedUnavailable || ordinarySubmitBlocked}>{busy ? 'Submitting…' : 'Invoke capability'}</button>
             </fieldset>
           </form>
         )}
         {error && <p role="alert">{error}</p>}
+        {recoveryAvailable && attempt.current && (
+          <p>
+            Acceptance is unconfirmed. The original request may still run or may have completed. Looking it up does not cancel it.
+            <button
+              type="button"
+              disabled={busy || Boolean(acceptedId) || loading || Boolean(historyError)}
+              onClick={() => void recover()}
+            >
+              Look up original request
+            </button>
+            <button
+              type="button"
+              disabled={busy || loading || Boolean(historyError)}
+              onClick={startSeparateRequest}
+            >
+              Start a separate request
+            </button>
+          </p>
+        )}
         {acceptedId && <p role="status">Accepted run: {acceptedId}. {acceptedRun ? 'Follow its authoritative state in run history.' : 'Waiting for authenticated run history; do not resubmit.'}</p>}
-        {acceptedRun && !pending(acceptedRun) && (
+        {acceptedRun && !pending(acceptedRun) && (acceptedRun.state === 'POST_OUTCOME_UNKNOWN' || acceptedCapabilityReady) && (
           <button onClick={() => {
+            if (acceptedRun.state !== 'POST_OUTCOME_UNKNOWN' && !acceptedCapabilityReady) return;
+            if (attempt.current) clearAction(attempt.current.key);
             setAcceptedId('');
             attempt.current = undefined;
           }}>{acceptedRun.state === 'POST_OUTCOME_UNKNOWN' ? 'Choose a separate inquiry' : 'Start another invocation'}</button>
@@ -170,34 +257,29 @@ function WithheldFields({ fields }: { fields: NonNullable<RecordedStructure['out
 export function ResultCard({ run }: { run: Run }) {
   const { watched, error } = useRuns();
   const identity = !error && watched.has(run.runId) && !run.sensitiveValuesUnavailable ? run.memberIdentity : undefined;
+  const presentation = runPresentation(run);
   if (run.state === 'POST_OUTCOME_UNKNOWN')
     return (
       <div className="warning">
-        <strong>POST_OUTCOME_UNKNOWN</strong>
-        <p>Posting may have occurred. Investigate with a separate read-only inquiry; do not retry.</p>
+        <strong>{presentation.label}</strong>
+        <p>Posting outcome is unknown. Investigate with a separate read-only inquiry; do not retry.</p>
       </div>
     );
   const result = run.result;
   if (!result)
-    return (
-      <p>
-        {pending(run)
-          ? 'Run is still in progress. Tool completion is not run completion.'
-          : 'No result was recorded.'}
-      </p>
-    );
+    return <p>{pending(run) || run.state === 'interrupted' ? presentation.description : 'No result was recorded.'}</p>;
   if (result.status === 'business_outcome')
     return (
       <div>
-        <strong>Business outcome: {result.outcomeCode}</strong>
-        <p>{result.detail}</p>
+        <strong>{presentation.label}</strong>
+        <p>{presentation.description}</p>
       </div>
     );
   if (result.status === 'failure')
     return (
       <div role="status">
-        <strong>{result.failure?.code ?? 'RUN_FAILED'}</strong>
-        <p>{result.failure?.detail ?? 'Run stopped. Inspect recorded evidence.'}</p>
+        <strong>{presentation.label}</strong>
+        <p>{presentation.description}</p>
       </div>
     );
   if (run.sensitiveValuesUnavailable && !result.outputs) return <div>
@@ -214,7 +296,7 @@ export function ResultCard({ run }: { run: Run }) {
       </p>}
       {Object.entries(result.outputs ?? {}).map(([name, value]) => (
         <div key={name}>
-          <h4>{name}</h4>
+          <h4>{fieldLabel(name)}</h4>
           {Array.isArray(value) ? (
             <div className="table-scroll" role="region" aria-label={`${name} result table`} tabIndex={0}>
               <table>
@@ -222,7 +304,7 @@ export function ResultCard({ run }: { run: Run }) {
                   <tr>
                     {Object.keys(value[0] ?? {}).map((column) => (
                       <th scope="col" key={column}>
-                        {column}
+                        {fieldLabel(column)}
                       </th>
                     ))}
                   </tr>
@@ -231,7 +313,7 @@ export function ResultCard({ run }: { run: Run }) {
                   {value.map((row, index) => (
                     <tr key={index}>
                       {Object.keys(value[0] ?? {}).map((column) => (
-                        <td key={column}>{String(row[column] ?? '')}</td>
+                        <td key={column}>{displayValue(column, row[column])}</td>
                       ))}
                     </tr>
                   ))}
@@ -240,7 +322,7 @@ export function ResultCard({ run }: { run: Run }) {
               {!value.length && <p>No rows.</p>}
             </div>
           ) : (
-            <p className="output">{String(value)}</p>
+            <p className="output">{displayValue(name, value)}</p>
           )}
         </div>
       ))}
@@ -354,6 +436,7 @@ export function RunDetail({ run }: { run: Run }) {
             <p>Recorded input structure; values withheld.</p>
             {run.structure?.inputs ? run.structure.inputs.length ? <WithheldFields fields={run.structure.inputs} /> : <p>No public inputs were recorded for this run.</p> : <p>Input structure was not recorded or is unavailable.</p>}
           </div>}
+          <pre aria-label="Raw run details">{JSON.stringify({ runId: run.runId, capability: run.capability, version: run.version, state: run.state, step: run.step, finishedAt: run.finishedAt, result: run.result }, null, 2)}</pre>
           <RecordedTimeline key={run.runId} run={run} />
           <EvidenceViewer run={run} />
         </>
@@ -377,11 +460,10 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
   return (
     <article data-run-id={run.runId}>
       <div className="run-title">
-        <h3>{run.capability}</h3>
+        <h3>{capabilityLabel(run.capability)}</h3>
         <span className="badge" role="status" aria-live="polite" aria-atomic="true">
-          <span className="sr-only">{run.capability}, run {run.runId}: </span>
-          {run.state}
-          {run.result?.status === 'business_outcome' && <span className="sr-only">: {run.result.outcomeCode}</span>}
+          <span className="sr-only">{run.capability}, run {run.runId}, state {run.state}: </span>
+          {runPresentation(run).label}
         </span>
       </div>
       <p className="muted">
@@ -389,6 +471,9 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
         {run.version ? ` · v${run.version}` : ''} · {run.runId}
       </p>
       {run.step && <p>Current step: {run.step}</p>}
+      {run.state === 'success' && run.finishedAt && isReadCapability(run.capability) && !run.sensitiveValuesUnavailable && (
+        <p>Read completed at {new Date(run.finishedAt).toLocaleString()}</p>
+      )}
       {Number.isFinite(run.elapsedMs) && run.elapsedMs! >= 0 && (
         <p>
           Elapsed: {run.elapsedMs! < 1000 ? `${run.elapsedMs} ms` : `${(run.elapsedMs! / 1000).toFixed(1)} s`}
