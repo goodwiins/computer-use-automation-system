@@ -64,3 +64,22 @@ build, and all 53 test files: 1,209 tests passed and two skipped. `git diff --ch
 passed. This isolated branch starts at `dev` commit `6e84ef3` and does not include
 the unrelated uncommitted work in the running service checkout. The failed
 transfer must not be retried.
+
+## Follow-up: post-dispatch observation errors were terminal
+
+Two further service runs at `2b5d61f` reproduced the stall live. Transfer
+`e7312555-d874-4864-b4b6-c8c5e64b15f1` dispatched once at attempt 21, then one
+extract succeeded and the next failed; the run finished `POST_OUTCOME_UNKNOWN`
+immediately. Update-member `71109685-c468-4bd1-92a2-b422814c93cd` dispatched once
+at attempt 14, extracted, and failed completion validation at `done`; same result.
+Before dispatch the same loop tolerated four action errors in the transfer run.
+
+Root cause is in `src/agent/loop.ts`, not in any selector: after
+`mutationDispatched`, every thrown error was routed to `POST_OUTCOME_UNKNOWN`,
+including read-only `extract`/`assert` failures and `done` validation
+rejections. The result page is still open in those cases and the surface already
+refuses repeat dispatch, so the loop now counts them as consecutive failures and
+lets the model re-observe. Exhausting the retry budget, aborts, detectors and
+every other error keep unknown precedence, and human-repair escalation is refused
+once dispatched. Both live runs remain terminal and must not be retried; their
+capabilities stay blocked until a separate read-only inquiry reconciles them.

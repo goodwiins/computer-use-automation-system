@@ -2662,12 +2662,13 @@ describe('MERIDIAN guarded supervisor-hold path', () => {
   });
 });
 
-it('awaits delayed discovery completion rejection and keeps the dispatched outcome unknown', async () => {
+it('retries after a delayed discovery completion rejection and finishes once the read-back passes', async () => {
   const request = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' };
+  const extract = { name: 'extract', args: { nameAttr: 'result', outputName: 'confirmation', reason: 'record confirmation' } };
+  const done = { name: 'done', args: { summary: 'complete' } };
   const calls = [
     { name: 'click', args: { nameAttr: 'submit', reason: 'post transfer', risk: 'irreversible' } },
-    { name: 'extract', args: { nameAttr: 'result', outputName: 'confirmation', reason: 'record confirmation' } },
-    { name: 'done', args: { summary: 'complete' } },
+    extract, done, extract, done,
   ];
   const stub = guarded({ readText: async () => ({ text: 'ok', report: { strategyUsed: 0, kind: 'nameAttr', matches: 1 } }) });
   const client = { chat: { completions: { create: async () => {
@@ -2675,34 +2676,36 @@ it('awaits delayed discovery completion rejection and keeps the dispatched outco
     return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
   } } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'];
   const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  let validations = 0;
   const result = await runDiscovery('transfer', `${origin}/menu`, request, [origin], {
     surface: stub.surface,
     logger,
     openai: client,
     model: 'fixture',
-    maxSteps: calls.length,
-    validateCompletion: async () => { await Promise.resolve(); throw new Error('stale member state'); },
+    maxSteps: 5,
+    validateCompletion: async () => { await Promise.resolve(); if (validations++ === 0) throw new Error('stale member state'); },
   });
-  expect(result.status).toBe('stopped');
-  expect(result.stopReason).toBe('POST_OUTCOME_UNKNOWN');
+  expect(result.status).toBe('success');
+  expect(result.outputs).toEqual({ confirmation: 'ok' });
+  expect(validations).toBe(2);
   expect(stub.dispatch).toHaveBeenCalledOnce();
-  const log = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8');
-  expect(log).toContain('"event":"discovery.finish"');
-  expect(log).toContain('"status":"stopped"');
-  expect(log.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).some(event => event.event === 'discovery.finish' && event.status === 'success')).toBe(false);
+  const events = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+  expect(events).toContainEqual(expect.objectContaining({ event: 'discovery.completion', status: 'failure' }));
+  expect(events.filter(event => event.event === 'discovery.finish')).toEqual([expect.objectContaining({ status: 'success' })]);
 });
 
 it.each([
   [new TableExtractionError('cell_count'), 'cell_count'],
   [new TargetResolutionError({ description: 'PRIVATE RECEIPT', strategies: [{ kind: 'css', selector: '#private' }] }, []), 'target_unresolved'],
   [Object.assign(new Error('PRIVATE RECEIPT'), { failure: 'invalid_money' }), 'other'],
-] as const)('retains a safe extraction category after dispatch without retrying: %s', async (error, extractionFailure) => {
+] as const)('retries a safe extraction failure after dispatch without repeat dispatch: %s', async (error, extractionFailure) => {
+  const extract = { name: 'extract', args: { nameAttr: 'receipt', outputName: 'transaction', reason: 'read receipt', columns: [{ name: 'amount', selector: 'td', type: 'money' }], rowSelector: 'tbody' } };
   const calls = [
     { name: 'click', args: { nameAttr: 'submit', reason: 'post transfer', risk: 'irreversible' } },
-    { name: 'extract', args: { nameAttr: 'receipt', outputName: 'transaction', reason: 'read receipt', columns: [{ name: 'amount', selector: 'td', type: 'money' }], rowSelector: 'tbody' } },
+    extract, extract, { name: 'done', args: { summary: 'complete' } },
   ];
   const logger = new RunLogger('discovery', new Redactor(), temp(), true);
-  const readTable = vi.fn(async () => { throw error; });
+  const readTable = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce([{ amount: '1.00' }]);
   const stub = guarded({ readTable }, async () => true, {}, (event, data) => logger.log(event, data));
   const create = vi.fn(async () => {
     const call = calls.shift()!;
@@ -2711,15 +2714,35 @@ it.each([
   const result = await runDiscovery('transfer', `${origin}/menu`, {}, [origin], {
     surface: stub.surface, logger, openai: { chat: { completions: { create } } } as never, model: 'fixture', maxSteps: 4,
   });
-  expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN', outputs: {} });
+  expect(result).toMatchObject({ status: 'success', outputs: { transaction: [{ amount: '1.00' }] } });
   expect(stub.dispatch).toHaveBeenCalledOnce();
-  expect(readTable).toHaveBeenCalledOnce();
-  expect(create).toHaveBeenCalledTimes(2);
+  expect(readTable).toHaveBeenCalledTimes(2);
+  expect(create).toHaveBeenCalledTimes(4);
   const raw = readFileSync(join(logger.dir, 'log.jsonl'), 'utf8');
   const events = raw.trim().split('\n').map(line => JSON.parse(line));
   expect(events).toContainEqual(expect.objectContaining({ event: 'action.end', action: 'extract', attempt: 3, status: 'failure', extractionFailure }));
-  expect(events.at(-1)).toMatchObject({ event: 'discovery.finish', code: 'POST_OUTCOME_UNKNOWN' });
-  expect(raw).not.toMatch(/PRIVATE RECEIPT|#private/);
+  expect(events).toContainEqual(expect.objectContaining({ event: 'discovery.action_error' }));
+  expect(raw).not.toContain('PRIVATE RECEIPT');
+});
+
+it('keeps the dispatched outcome unknown after repeated extraction failures and never escalates to human repair', async () => {
+  const extract = { name: 'extract', args: { nameAttr: 'receipt', outputName: 'transaction', reason: 'read receipt', columns: [{ name: 'amount', selector: 'td', type: 'money' }], rowSelector: 'tbody' } };
+  const calls = [{ name: 'click', args: { nameAttr: 'submit', reason: 'post transfer', risk: 'irreversible' } }, extract, extract, extract];
+  const logger = new RunLogger('discovery', new Redactor(), temp(), true);
+  const readTable = vi.fn(async () => { throw new TableExtractionError('cell_count'); });
+  const stub = guarded({ readTable }, async () => true, {}, (event, data) => logger.log(event, data));
+  const create = vi.fn(async () => {
+    const call = calls.shift()!;
+    return { choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: randomUUID(), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } }] };
+  });
+  const escalate = vi.fn(async () => 'retry' as const);
+  const result = await runDiscovery('transfer', `${origin}/menu`, {}, [origin], {
+    surface: stub.surface, logger, openai: { chat: { completions: { create } } } as never, model: 'fixture', maxSteps: 6, escalate,
+  });
+  expect(result).toMatchObject({ status: 'stopped', stopReason: 'POST_OUTCOME_UNKNOWN', outputs: {} });
+  expect(stub.dispatch).toHaveBeenCalledOnce();
+  expect(readTable).toHaveBeenCalledTimes(3);
+  expect(escalate).not.toHaveBeenCalled();
 });
 
 it('runs discovery completion validation before emitting success', async () => {
