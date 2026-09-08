@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { MERIDIAN_CAPABILITY_LABELS } from '../capability-labels.js';
 import type { InvocationService } from '../service.js';
 import { ApiRequestError } from './transport';
 import { fetchMissingRuns, RunWatch } from './run-watch';
