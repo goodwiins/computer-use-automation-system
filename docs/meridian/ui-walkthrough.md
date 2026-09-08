@@ -3,7 +3,7 @@
 ## Provenance
 
 The application, test, and four-image evidence source for this walkthrough is
-`8d5a227a161b7c8f156e07fdcff5607b3fbe5015`. It is checked out on
+`1e77b965b4db5936206fe4a24e06337e791719d5`. It is checked out on
 `codex/meridian-ui-accessibility`. This is the source/evidence SHA, not the
 documentation commit: the final documentation commit and PR head necessarily
 include a later SHA because this file is committed afterward.
@@ -20,7 +20,7 @@ and package output was:
 
 ```text
 git rev-parse HEAD
-8d5a227a161b7c8f156e07fdcff5607b3fbe5015
+1e77b965b4db5936206fe4a24e06337e791719d5
 node --version
 v22.22.0
 npm --version
@@ -46,15 +46,15 @@ output above.
 > next build
 
 ▲ Next.js 16.3.4 (Turbopack)
-✓ Running next.config.mjs took 23ms
+✓ Running next.config.mjs took 24ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 4.0s
+✓ Compiled successfully in 7.9s
   Running TypeScript ...
-  Finished TypeScript in 10.7s ...
+  Finished TypeScript in 6.9s ...
   Collecting page data using 4 workers ...
   Generating static pages using 4 workers (0/3) ...
-✓ Generating static pages using 4 workers (3/3) in 1113ms
+✓ Generating static pages using 4 workers (3/3) in 1045ms
   Finalizing page optimization ...
 Route (app)
 ┌ ○ /
@@ -132,6 +132,11 @@ to `/api/chat`, `/invoke`, `/decision`, `/cancel`, or `/transaction` during navi
 Additional regressions preserve a newer visible scroll when wide Activity closes,
 and preserve scrollTop 520 through narrow → wide → scroll → narrow → close. The
 latest visible position is captured immediately before chat becomes hidden.
+Chat stays measurable beneath Activity using `visibility: hidden`, preserving
+its scroll position and keeping its controls out of keyboard navigation. This
+prevents a zero-size viewport from restarting automatic scrolling to the bottom;
+closing Activity no longer schedules delayed scroll overrides. The regression
+also verifies that later content growth preserves the restored reading position.
 
 The connected screenshots below show the current authenticated layout: the
 login form is hidden and the sidebar contains only the large `Disconnect`
@@ -235,43 +240,39 @@ These focused checks passed on the application/test/evidence tree:
 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'surfaces setup and cleanup errors|refuses native display|reads only a complete valid display|rejects native allocation|registers idempotent teardown|Activity focus|visible Activity controls|scroll position|restores narrow conversation scroll|restores the latest scroll|preserves the conversation across responsive Activity navigation|offline operator review controls require live authority|neutral replacement focus resets|Connect signs on directly|Connect does not open chat after sign-on|connects a local supervisor using operator and password|reconciles a clean tool-bearing chat stream|offline direct invocation keeps an uncertain request key|status text shows the authoritative step|operator Activity filters start in a review-first queue|offline stopping the response|can stop the response before|keeps saved conversation row controls'
 Test Files  1 passed (1)
 Tests       25 passed | 84 skipped (109)
-Duration    44.08s
+Duration    43.32s
 
 MERIDIAN_NATIVE_ZOOM=1 MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR=docs/meridian/evidence/ui-walkthrough npx vitest run test/chat-ui.test.ts -t 'registers idempotent teardown|allocates distinct owned native displays|actual Chromium browser zoom at 200%'
 Test Files  1 passed (1)
 Tests       4 passed | 106 skipped (110)
-Duration    10.09s
-
-npx vitest run test/chat-ui.test.ts -t 'retains focus on visible Activity controls'
-Test Files  1 passed (1)
-Tests       1 passed | 108 skipped (109)
-Duration    4.74s
+Duration    10.03s
 ```
 
 The full local gate used disposable PostgreSQL 16 at `127.0.0.1:55437` and the
-same source SHA. Exact parallel `npm run ci` passed both typechecks and build,
-then failed with 1113 passed / 2 failed / 2 native skips (1117), 49/51 files,
-in 258.71s. The unchanged approval-cli second-process case hit its 60s timeout;
-the history-structure browser case hit its 5s timeout. Both passed individually
-at the same SHA (15.42s and 1.62s test time), supporting shared-host contention
-as the cause. The failed parallel result is not treated as a pass.
-
-The requested serial equivalent passed both typechecks, the production build,
-and every executed test, including the real PostgreSQL browser recovery case:
+source SHA above. Exact parallel `npm run ci` passed both typechecks, the
+production build, and every executed test, including the real PostgreSQL
+browser recovery case:
 
 ```text
-npm run typecheck
-npm run typecheck:ui
-TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55437/meridian_unit7 npm test -- --maxWorkers=1
+TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55437/meridian_unit7 npm run ci
 Test Files  51 passed (51)
 Tests       1115 passed | 2 skipped (1117)
-Duration    403.76s
+Duration    237.63s
 ```
+
+For provenance, an earlier application revision (`8d5a227`) had two parallel
+subprocess/browser timeouts; both cases passed alone and its serial equivalent
+passed 1115 tests. Its documentation head (`9c75374`) then failed hosted CI on
+a late scroll overwrite. The current source removes zero-size chat hiding and
+delayed restoration, adds the hidden-position/content-growth regression, and
+passes the full local gate above. Those earlier failed results remain recorded
+in the PR verification history; they are not relabeled as successful runs.
 
 Final documentation-head smoke/build/native checks and exact-head hosted CI
 are recorded on PR #104. All four screenshots were recaptured and visually
-inspected from the source/evidence tree; three recaptured byte-identically and
-the review image changed with its synthetic expiry time.
+inspected from the source/evidence tree. The narrow Activity and native images
+recaptured byte-identically; desktop Activity reflects the explicit grid layout,
+and the review image reflects its current synthetic expiry time.
 
 The required evidence/link/hygiene checks also passed: all four evidence
 files exist, the required provenance/boundary phrases match this document,
