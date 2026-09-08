@@ -18,6 +18,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { RequestError, validateIdempotencyKey } from '../runtime/journal.js';
 import type { InvocationService } from './service.js';
+import { callerPrincipal, principalKey, type Principal } from './auth.js';
 
 const Arguments = z.record(z.union([z.string(), z.number().finite()]));
 const Intent = z.enum(['invoke', 'status', 'auto']).default('invoke');
@@ -76,8 +77,8 @@ function safeError(error: unknown): ToolOutput & { kind: 'error' } {
   return { kind: 'error', status: 500, error: 'Request failed; inspect safe run evidence or server configuration' };
 }
 
-function projectRun(service: InvocationService, runId: string): ToolOutput {
-  const run = service.get('caller', runId);
+function projectRun(service: InvocationService, principal: Principal, runId: string): ToolOutput {
+  const run = service.get(principal, runId);
   return {
     kind: 'run',
     runId: run.runId,
@@ -94,9 +95,9 @@ function canonicalCall(name: string, args: Record<string, string | number>) {
   return JSON.stringify([name, Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)))]);
 }
 
-function buildTools(service: InvocationService, key: string, intent: 'invoke' | 'status' = 'invoke'): ToolSet {
+function buildTools(service: InvocationService, principal: Principal, key: string, intent: 'invoke' | 'status' = 'invoke'): ToolSet {
   let invocation: { identity: string; output: ToolOutput } | undefined;
-  const catalog = service.catalog('caller');
+  const catalog = service.catalog(principal);
   const tools: ToolSet = Object.fromEntries((intent === 'invoke' ? catalog : []).map(capability => [capability.id, tool({
     description: capability.description,
     inputSchema: jsonSchema<Record<string, string | number>>(capability.tools.openai.function.parameters),
@@ -107,11 +108,11 @@ function buildTools(service: InvocationService, key: string, intent: 'invoke' | 
         ? invocation.output
         : { kind: 'error', status: 409, error: 'This request already attempted another capability invocation' } satisfies ToolOutput;
       try {
-        const acceptedRun = service.invoke('caller', capability.id, args, key);
+        const acceptedRun = service.invoke(principal, capability.id, args, key);
         const { runId } = acceptedRun;
         const reused = acceptedRun.reused ? { reused: true as const } : {};
         invocation = { identity, output: { kind: 'run', runId, capability: capability.id, state: 'accepted', ...reused } };
-        try { invocation.output = { ...projectRun(service, runId), ...reused }; } catch { /* Preserve accepted run identity; the status route remains authoritative. */ }
+        try { invocation.output = { ...projectRun(service, principal, runId), ...reused }; } catch { /* Preserve accepted run identity; the status route remains authoritative. */ }
       } catch (error) {
         invocation = { identity, output: safeError(error) };
       }
@@ -123,8 +124,8 @@ function buildTools(service: InvocationService, key: string, intent: 'invoke' | 
     inputSchema: z.object({ runId: z.string().uuid() }).strict(),
     execute: async ({ runId }) => {
       try {
-        const output = projectRun(service, runId);
-        service.journal.bindReference('caller', key, runId);
+        const output = projectRun(service, principal, runId);
+        service.journal.bindReference(principalKey(principal), key, runId);
         return { ...output, reused: true as const };
       }
       catch (error) { return safeError(error); }
@@ -164,7 +165,7 @@ async function resolveIntent(model: LanguageModel, messages: ModelMessage[], int
   return schema.parse(call.input).intent;
 }
 
-function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationService, currentKey: string): ModelMessage[] {
+function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationService, principal: Principal, currentKey: string): ModelMessage[] {
   const current = [...messages].reverse().find(message => message.role === 'user');
   const history: ModelMessage[] = messages.map(message => {
     const content = message.parts
@@ -174,9 +175,9 @@ function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationS
     if (message.role === 'user' && content.length > 4000)
       throw new RequestError(400, 'User message text must not exceed 4000 characters');
     if (message.role === 'user' && message !== current && message.id !== currentKey) {
-      const previous = service.journal.findRequest('caller', message.id);
+      const previous = service.journal.findRequest(principalKey(principal), message.id);
       if (previous) {
-        const run = service.get('caller', previous.runId);
+        const run = service.get(principal, previous.runId);
         return { role: 'assistant' as const, content: `Previously accepted operation. Authoritative run context: ${JSON.stringify({ runId: run.runId, capability: run.capability, state: run.state })}. Use run_status for status questions. A new explicit operation may repeat the same facts.` };
       }
       return { role: 'assistant' as const, content: 'Earlier request context is unavailable. Ask the user to restate any new operation and its required facts.' };
@@ -197,14 +198,15 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const body = LegacyBody.parse(req.body);
         const key = req.get('Idempotency-Key') ?? '';
         validateIdempotencyKey(key);
+        const principal = callerPrincipal(res.locals.principal);
         // Legacy messages have no request identities; do not replay older user requests as fresh intent.
         const latest = [...body.messages].reverse().find(message => message.role === 'user');
         if (!latest) throw new RequestError(400, 'A user text message is required');
         const chatModel = model ?? makeChatModel();
         const intent = await resolveIntent(chatModel, [latest], body.intent);
-        const tools = intent === 'conversation' ? {} : buildTools(service, key, intent);
+        const tools = intent === 'conversation' ? {} : buildTools(service, principal, key, intent);
         if (intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
-        const result = await generateText(modelOptions(chatModel, [latest], tools, service.catalog('caller')));
+        const result = await generateText(modelOptions(chatModel, [latest], tools, service.catalog(principal)));
         const localResults = result.toolResults.filter(toolResult => toolResult.providerExecuted !== true
           && result.toolCalls.some(toolCall => toolCall.dynamic !== true && toolCall.providerExecuted !== true
             && toolCall.toolCallId === toolResult.toolCallId && toolCall.toolName === toolResult.toolName));
@@ -239,13 +241,14 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const body = StreamBody.parse(req.body);
         const key = req.get('Idempotency-Key') ?? '';
         validateIdempotencyKey(key);
-        const messages = textHistory(body.messages, service, key);
+        const principal = callerPrincipal(res.locals.principal);
+        const messages = textHistory(body.messages, service, principal, key);
         requireConversation(messages);
         const chatModel = model ?? makeChatModel();
         const intent = await resolveIntent(chatModel, messages, body.intent);
-        const tools = intent === 'conversation' ? {} : buildTools(service, key, intent);
+        const tools = intent === 'conversation' ? {} : buildTools(service, principal, key, intent);
         if (intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
-        const result = streamText({ ...modelOptions(chatModel, messages, tools, service.catalog('caller')), streamRetries: 0, onError: () => {} });
+        const result = streamText({ ...modelOptions(chatModel, messages, tools, service.catalog(principal)), streamRetries: 0, onError: () => {} });
         await pipeUIMessageStreamToResponse({
           response: res,
           stream: toUIMessageStream({

@@ -18,6 +18,22 @@ jobs:
     name: Typecheck and tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TEST_DATABASE_URL: postgresql://meridian_ci:synthetic_ci_password@127.0.0.1:5432/meridian_ci
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_DB: meridian_ci
+          POSTGRES_USER: meridian_ci
+          POSTGRES_PASSWORD: synthetic_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U meridian_ci -d meridian_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

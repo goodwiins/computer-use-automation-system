@@ -1,0 +1,83 @@
+# Conversation storage
+
+MERIDIAN can expose an opt-in PostgreSQL conversation API for individually authenticated subjects. Express remains the API authority. The database stores conversation and event identifiers, fixed enums, revisions, sequence numbers, timestamps, archive state, and deletion tombstones. It does not store message text, titles, arguments, member data, live output, approval facts, credentials, or evidence URLs.
+
+## Local isolated PostgreSQL
+
+Use PostgreSQL 14 or newer and a disposable cluster. These commands bind only to localhost and use synthetic local credentials:
+
+```sh
+export MERIDIAN_PG_ROOT="$(mktemp -d)"
+initdb -D "$MERIDIAN_PG_ROOT/data" --auth=trust --username=meridian_local
+pg_ctl -D "$MERIDIAN_PG_ROOT/data" -l "$MERIDIAN_PG_ROOT/postgres.log" -o "-h 127.0.0.1 -p 55432" start
+createdb -h 127.0.0.1 -p 55432 -U meridian_local meridian_local
+export DATABASE_URL='postgresql://meridian_local@127.0.0.1:55432/meridian_local'
+export TEST_DATABASE_URL="$DATABASE_URL"
+```
+
+`npm test -- test/conversation-store.test.ts test/conversation-http.test.ts test/server-startup.test.ts` creates a random schema inside `TEST_DATABASE_URL` and removes only that schema. It never drops the database.
+
+Stop the disposable cluster when finished:
+
+```sh
+pg_ctl -D "$MERIDIAN_PG_ROOT/data" stop
+```
+
+## Server configuration
+
+Conversation storage requires both `DATABASE_URL` and `SUBJECT_API_TOKENS`. `SUBJECT_API_TOKENS` is a JSON array whose entries contain a canonical UUID subject, a `caller` or `operator` role, and a unique printable ASCII bearer token of 32–200 characters:
+
+```sh
+export JOURNAL_HMAC_KEY='synthetic-local-hmac-key-at-least-32-characters'
+export SUBJECT_API_TOKENS='[{"subjectId":"11111111-1111-4111-8111-111111111111","role":"caller","token":"synthetic-local-subject-token-000001"}]'
+export DATABASE_URL='postgresql://meridian_local@127.0.0.1:55432/meridian_local'
+npm run serve
+```
+
+The server runs the idempotent SQL migration before it listens. Invalid subject configuration, a failed connection, or a failed migration aborts startup and closes the pool, journal, and generated UI assets. There is no in-memory fallback.
+
+Subject mode accepts only the configured subject bearer tokens. Legacy caller/operator tokens and local teller demo-session credentials do not work in subject mode. A subject's role controls capability authority; its UUID controls conversation and run ownership. Operators can access only their own subject's conversations and runs.
+
+To rotate a token, replace the token while keeping the same `subjectId`, restart the server, and retire the old token. Tokens must remain unique and are never written to PostgreSQL or the journal.
+
+## HTTP contract
+
+All routes require `Authorization: Bearer <subject token>`. IDs are client-generated lowercase UUIDs. Request bodies and query strings reject unknown fields.
+
+| Method and path | Input | Response |
+| --- | --- | --- |
+| `POST /conversations` | `{"id":"10000000-0000-4000-8000-000000000001"}` | `201` conversation metadata; an identical owner/ID retry returns the same record |
+| `GET /conversations` | `archived=false\|true`, `limit=1..100`, optional exclusive UUID `after` | `{conversations,nextCursor}` ordered by UUID; defaults are `archived=false`, `limit=50` |
+| `GET /conversations/:id` | Lowercase UUID path | Conversation metadata |
+| `PATCH /conversations/:id` | `{"archived":true,"expectedRevision":0}` | Updated metadata with an incremented revision; stale revision is `409` |
+| `DELETE /conversations/:id` | `{"expectedRevision":0}` | `204`; events are removed and the ID becomes a tombstone |
+| `POST /conversations/:id/events` | `{"id":"20000000-0000-4000-8000-000000000001","kind":"message_omitted","role":"user","expectedRevision":0}` | `201` event with allocated sequence |
+| `GET /conversations/:id/events` | Nonnegative sequence `after`, `limit=1..100` | `{events,nextCursor}` ordered by sequence; defaults are `after=0`, `limit=50` |
+
+`message_omitted` accepts no `runId` and returns the fixed `content` value `Message text was not saved.`. `run_linked` requires a subject-owned run UUID and returns fixed `content` `Linked run.` with a safe projection:
+
+```json
+{
+  "id": "20000000-0000-4000-8000-000000000002",
+  "sequence": 2,
+  "kind": "run_linked",
+  "role": "assistant",
+  "runId": "30000000-0000-4000-8000-000000000001",
+  "content": "Linked run.",
+  "run": {
+    "runId": "30000000-0000-4000-8000-000000000001",
+    "capability": "meridian-member-inquiry",
+    "version": "1.0.0",
+    "state": "success",
+    "result": { "status": "success", "sensitiveValuesUnavailable": true }
+  }
+}
+```
+
+The safe run projection can include validated structure whose values are `withheld`. It never includes inputs, member identity, raw outputs, interventions, or evidence paths. Cross-owner or missing runs and conversations return `404`. A subject request made while storage is disabled returns `503`; legacy principals receive `403`.
+
+Archived conversations are read-only until unarchived and are the normal UI removal mechanism. Explicit deletion removes stored events but keeps an opaque tombstone so stale retries cannot resurrect an ID. It does not delete or change journal records, idempotency aliases, evidence, run status, or unknown-outcome quarantine. Apply journal/evidence retention separately according to the existing run policy.
+
+Saved events are display references only. They are never replayed into `/chat` or `/api/chat`, never start an invocation, and never make an approval decision. Clients must use the existing run and chat APIs for those actions.
+
+On `SIGINT` or `SIGTERM`, the server rejects new runtime work, closes active HTTP connections, drains the invocation service, ends the PostgreSQL pool, releases the journal lock, and removes its generated UI build.
