@@ -26,3 +26,20 @@ CREATE TABLE IF NOT EXISTS meridian_conversation_events (
     OR (kind = 'message_omitted' AND run_id IS NULL)
   )
 );
+
+CREATE TABLE IF NOT EXISTS meridian_conversation_subject_quotas (
+  owner_id uuid PRIMARY KEY,
+  conversation_count bigint NOT NULL DEFAULT 0 CHECK (conversation_count >= 0),
+  event_count bigint NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+  rate_tokens double precision NOT NULL DEFAULT 20 CHECK (rate_tokens >= 0 AND rate_tokens <= 20),
+  rate_refilled_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+INSERT INTO meridian_conversation_subject_quotas (owner_id, conversation_count, event_count)
+SELECT conversations.owner_id, count(DISTINCT conversations.id)::bigint, count(events.id)::bigint
+FROM meridian_conversations conversations
+LEFT JOIN meridian_conversation_events events ON events.conversation_id = conversations.id
+GROUP BY conversations.owner_id
+ON CONFLICT (owner_id) DO UPDATE
+SET conversation_count = EXCLUDED.conversation_count,
+    event_count = EXCLUDED.event_count;
