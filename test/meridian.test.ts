@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { Journal } from '../src/runtime/journal.js';
-import { applyMeridianContract, assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferOutputs, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
+import { applyMeridianContract, assertHoldEligibility, assertHoldFacts, assertHoldResult, assertMemberUpdateFacts, assertOpenShareFacts, assertOpenShareResult, assertTransferEligibility, assertTransferFacts, assertTransferResult, meridianContracts, meridianMemberContactTable, meridianTransferMemberTable } from '../src/runtime/contracts.js';
 import { Approval, publicIntervention } from '../src/runtime/approval.js';
 import { describePendingApproval, requestApproval, startApprovalServer } from '../src/escalation/approval-cli.js';
 import { OperatorConsole } from '../src/escalation/operator.js';
@@ -666,24 +666,11 @@ function memberRecordArtifact(outputs: Array<Record<string, unknown>>) {
 }
 
 function transferOutputDeclarations(): Array<Record<string, unknown>> {
-  const columns = [
-    { name: 'member', selector: 'td:nth-of-type(1)', type: 'string', sensitive: true },
-    { name: 'sourceShare', selector: 'td:nth-of-type(2)', type: 'string', sensitive: true },
-    { name: 'destinationShare', selector: 'td:nth-of-type(3)', type: 'string', sensitive: true },
-    { name: 'amount', selector: 'td:nth-of-type(4)', type: 'money', sensitive: true },
-    { name: 'memo', selector: 'td:nth-of-type(5)', type: 'string', sensitive: true },
-    { name: 'confirmation', selector: 'td:nth-of-type(6)', type: 'string', sensitive: true },
-  ];
-  return [
-    { name: 'confirmation', type: 'string', description: 'Confirmation', sensitive: true },
-    { name: 'transaction', type: 'table', description: 'Transaction', sensitive: true, minRows: 1, columns },
-  ];
+  return [{ name: 'confirmation', type: 'string', description: 'Confirmation', sensitive: true }];
 }
 
 function transferArtifact(outputs: Array<Record<string, unknown>> = transferOutputDeclarations()) {
-  const transactionTarget = { description: 'transaction', strategies: [{ kind: 'css' as const, selector: '#transaction' }] };
   const confirmationTarget = { description: 'confirmation', strategies: [{ kind: 'css' as const, selector: '#confirmation' }] };
-  const columns = (outputs.find(output => output.name === 'transaction')?.columns ?? []) as Array<Record<string, unknown>>;
   return CapabilityArtifact.parse({
     schemaVersion: 2,
     id: 'meridian-funds-transfer',
@@ -710,7 +697,6 @@ function transferArtifact(outputs: Array<Record<string, unknown>> = transferOutp
       { id: 'post', intent: 'post transfer', action: 'click', target, risk: 'irreversible' },
       { id: 'post-checkpoint', intent: 'verify posted transfer', action: 'assert', assert: { kind: 'textVisible' as const, text: 'Transfer complete' }, risk: 'read' },
       { id: 'confirmation', intent: 'record confirmation', action: 'extract', target: confirmationTarget, extract: { output: 'confirmation', pattern: '(.+)' }, risk: 'read' },
-      { id: 'transaction', intent: 'record transaction', action: 'extract', target: transactionTarget, extract: { output: 'transaction', columns, rowSelector: 'tr' }, risk: 'read' },
     ],
     successCondition: { kind: 'textVisible' as const, text: 'Transfer complete' },
     detectors: [],
@@ -1000,58 +986,46 @@ describe('MERIDIAN funds-transfer semantic checks', () => {
     expect(() => assertTransferFacts(request, { ...request, amount: '1.0' })).not.toThrow();
   });
 
-  it('accepts one canonical headerless transaction row and matching confirmation', () => {
-    const outputs: Record<string, OutputValue> = {
-      confirmation: 'CONF-123',
-      transaction: [{ ...request, confirmation: 'CONF-123' }],
-    };
-    expect(() => assertTransferOutputs(request, outputs)).not.toThrow();
+  const before = [
+    { share: '9001-A', status: 'OPEN', balance: '2.00' }, { share: '9001-B', status: 'OPEN', balance: '0.00' }, { share: '9001-C', status: 'OPEN', balance: '9.00' },
+  ];
+  const after = [
+    { share: '9001-A', status: 'OPEN', balance: '1.00' }, { share: '9001-B', status: 'OPEN', balance: '1.00' }, { share: '9001-C', status: 'OPEN', balance: '9.00' },
+  ];
+
+  it('accepts a confirmation whose fresh balances moved by exactly the requested amount', () => {
+    expect(() => assertTransferResult(request, before, after, { confirmation: 'CONF-123' })).not.toThrow();
+    expect(() => assertTransferResult({ ...request, amount: '1.0' }, before, after, { confirmation: 'CONF-123' })).not.toThrow();
   });
 
   it.each([
-    ['missing confirmation', { transaction: [{ ...request, confirmation: 'CONF-123' }] }],
-    ['blank confirmation', { confirmation: '  ', transaction: [{ ...request, confirmation: '  ' }] }],
-    ['missing transaction', { confirmation: 'CONF-123' }],
-    ['duplicate transaction rows', { confirmation: 'CONF-123', transaction: [{ ...request, confirmation: 'CONF-123' }, { ...request, confirmation: 'CONF-123' }] }],
-    ['header row', { confirmation: 'CONF-123', transaction: [{ member: 'Member', sourceShare: 'Source', destinationShare: 'Destination', amount: 'Amount', memo: 'Memo', confirmation: 'Confirmation' }, { ...request, confirmation: 'CONF-123' }] }],
-    ['legacy field/value row', { confirmation: 'CONF-123', transaction: [{ field: 'Member:', value: '9001' }] }],
-    ['extra row field', { confirmation: 'CONF-123', transaction: [{ ...request, confirmation: 'CONF-123', extra: 'unexpected' }] }],
-    ['wrong transaction confirmation', { confirmation: 'CONF-123', transaction: [{ ...request, confirmation: 'CONF-999' }] }],
-    ['wrong transaction value', { confirmation: 'CONF-123', transaction: [{ ...request, amount: '2.00', confirmation: 'CONF-123' }] }],
-    ['extra output', { confirmation: 'CONF-123', transaction: [{ ...request, confirmation: 'CONF-123' }], extra: 'unexpected' }],
-  ] as const)('rejects %s output shape or value', (_kind, outputs) => {
-    expect(() => assertTransferOutputs(request, outputs as Record<string, OutputValue>)).toThrow();
+    ['missing confirmation', before, after, {}],
+    ['blank confirmation', before, after, { confirmation: '  ' }],
+    ['extra output', before, after, { confirmation: 'CONF-123', transaction: [] }],
+    ['unchanged source', before, [{ ...after[0]!, balance: '2.00' }, after[1]!, after[2]!], { confirmation: 'CONF-123' }],
+    ['overshot destination', before, [after[0]!, { ...after[1]!, balance: '1.01' }, after[2]!], { confirmation: 'CONF-123' }],
+    ['unrelated share changed', before, [after[0]!, after[1]!, { ...after[2]!, balance: '8.00' }], { confirmation: 'CONF-123' }],
+    ['share missing from read-back', before, after.slice(0, 2), { confirmation: 'CONF-123' }],
+    ['duplicate share rows', before, [...after, after[2]!], { confirmation: 'CONF-123' }],
+    ['unparsable balance', before, [{ ...after[0]!, balance: 'n/a' }, after[1]!, after[2]!], { confirmation: 'CONF-123' }],
+    ['source absent before posting', before.slice(1), after.slice(1), { confirmation: 'CONF-123' }],
+  ] as const)('rejects %s', (_kind, prior, current, outputs) => {
+    expect(() => assertTransferResult(request, prior, current, outputs as Record<string, OutputValue>)).toThrow(/transfer/i);
   });
 
-  it('rejects legacy and malformed transfer output declarations before application', () => {
-    const legacy = transferOutputDeclarations();
-    legacy[1]!.columns = [
-      { name: 'field', selector: 'td:nth-of-type(1)', type: 'string', sensitive: true },
-      { name: 'value', selector: 'td:nth-of-type(2)', type: 'string', sensitive: true },
-    ];
-    expect(() => applyMeridianContract(transferArtifact(legacy))).toThrow(/canonical|transfer/i);
-
+  it('rejects transfer declarations that still carry a transaction table', () => {
+    const withTable = [...transferOutputDeclarations(), { name: 'transaction', type: 'table', description: 'Transaction', sensitive: true, minRows: 1,
+      columns: [{ name: 'amount', selector: 'td', type: 'money', sensitive: true }] }];
+    expect(() => applyMeridianContract(transferArtifact(withTable))).toThrow(/contract|scalar/i);
     const wrongType = transferOutputDeclarations();
-    (wrongType[1]!.columns as Array<Record<string, unknown>>)[3]!.type = 'string';
-    expect(() => applyMeridianContract(transferArtifact(wrongType))).toThrow(/canonical|transfer/i);
-
-    const wrongOutputType = transferOutputDeclarations();
-    wrongOutputType[1]!.type = 'string';
-    expect(() => applyMeridianContract(transferArtifact(wrongOutputType))).toThrow(/canonical|transfer/i);
-
-    const wrongExtraction = transferArtifact();
-    const extract = wrongExtraction.steps.find(step => step.id === 'transaction')!.extract!;
-    extract.columns = [{ name: 'field', selector: 'td', type: 'string', sensitive: true }];
-    expect(() => applyMeridianContract(wrongExtraction)).toThrow(/canonical|transfer/i);
+    wrongType[0]!.type = 'table';
+    wrongType[0]!.columns = [{ name: 'code', selector: 'td', type: 'string', sensitive: true }];
+    expect(() => applyMeridianContract(transferArtifact(wrongType))).toThrow(/scalar/i);
   });
 
-  it('promotes a canonical transfer declaration with the observed selectors deferred to the new recording', () => {
+  it('promotes a scalar transfer declaration without inventing a transaction table', () => {
     const approved = applyMeridianContract(transferArtifact());
-    expect(approved.outputs.find(output => output.name === 'transaction')).toMatchObject({ type: 'table', minRows: 1, sensitive: true });
-    expect(approved.outputs.find(output => output.name === 'transaction')?.columns?.map(column => [column.name, column.type, column.sensitive])).toEqual([
-      ['member', 'string', true], ['sourceShare', 'string', true], ['destinationShare', 'string', true],
-      ['amount', 'money', true], ['memo', 'string', true], ['confirmation', 'string', true],
-    ]);
+    expect(approved.outputs).toEqual([{ name: 'confirmation', type: 'string', description: 'Confirmation', sensitive: true }]);
   });
 });
 
@@ -1061,7 +1035,7 @@ it.each([
 ])('keeps funds outcome phase correct: intent=$afterIntent startup=$startup', async ({ afterIntent, startup }) => {
   const artifact = applyMeridianContract(transferArtifact());
   artifact.status = 'approved';
-  artifact.steps = artifact.steps.filter(step => step.id === 'post');
+  artifact.steps = artifact.steps.filter(step => ['post', 'confirmation'].includes(step.id));
   const params = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B',
     amount: '1.00', memo: 'fixture', operator: 'SUPER1', password: 'secret', branch: 'MAIN-001' };
   const report = { strategyUsed: 0, kind: 'nameAttr', matches: 1 } as const;
@@ -1082,7 +1056,7 @@ it.each([
   };
   const escalate = vi.fn(async () => 'abort' as const);
   const logger = new RunLogger('replay', new Redactor(), temp(), true);
-  const replay = await runReplay(artifact, params, { surface, logger, policy, escalate });
+  const replay = await runReplay(artifact, params, { surface, logger, policy, escalate, validateCompletion: async () => {} });
   expect(replay).toMatchObject(afterIntent
     ? { status: 'failure', failure: { code: 'POST_OUTCOME_UNKNOWN' } }
     : { status: 'business_outcome', outcomeCode: 'INSUFFICIENT_FUNDS' });
@@ -1207,7 +1181,7 @@ describe('MERIDIAN guarded transfer path', () => {
         artifact.app.entryUrl = memberUrl;
         artifact.app.allowedOrigins = allowedOrigins;
         const result = entry === 'replay'
-          ? await runReplay(artifact, params, { surface, logger, policy: localPolicy, escalate })
+          ? await runReplay(artifact, params, { surface, logger, policy: localPolicy, escalate, validateCompletion: async () => {} })
           : await runDiscovery('transfer', memberUrl, params, allowedOrigins, {
             surface, logger, escalate, model: 'fixture', maxSteps: 1,
             openai: { chat: { completions: { create } } } as unknown as Parameters<typeof runDiscovery>[4]['openai'],
@@ -1290,6 +1264,7 @@ describe('MERIDIAN guarded transfer path', () => {
       frameUrls: () => [`${origin}/frameset`, url],
       readTable: async () => currentRows,
       readOnlyPage,
+      navigate: async (next: string) => { url = next; frameUrl = next; navigation++; },
     }, gate, { artifact: 'meridian-funds-transfer', transfer: { expected, memberTable: meridianTransferMemberTable } }, onAction, async expectedControl => {
       if (expectedControl.destination === memberUrl) url = memberUrl;
       else if (expectedControl.destination === transferUrl) url = transferUrl;
@@ -1330,6 +1305,19 @@ describe('MERIDIAN guarded transfer path', () => {
     harness.run.dispatch.mockClear();
     return harness;
   }
+
+  it('proves a posted transfer by a fresh member read-back and refuses unmoved or extra outputs', async () => {
+    const accepted = await eligibleTransfer();
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).rejects.toThrow(/dispatched/);
+    await accepted.run.surface.click(target, 1000, 'irreversible');
+    expect(accepted.run.surface.mutationDispatched).toBe(true);
+    expect(accepted.run.dispatch).toHaveBeenCalledOnce();
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).rejects.toThrow(/transfer/i);
+    accepted.setRows([{ ...eligibleRows[0]!, balance: '1.00' }, { ...eligibleRows[1]!, balance: '1.00' }, eligibleRows[2]!]);
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123', transaction: [] })).rejects.toThrow(/transfer/i);
+    await expect(accepted.run.surface.validateTransferCompletion({ confirmation: 'CONF-123' })).resolves.toBeUndefined();
+    expect(accepted.run.dispatch).toHaveBeenCalledOnce();
+  });
 
   it('requires the current member table eligibility before entering transfer', async () => {
     const rows = [
@@ -1561,10 +1549,6 @@ describe('MERIDIAN guarded transfer path', () => {
     await expect(accepted.run.surface.click(target, 1000, 'irreversible')).resolves.toBeDefined();
     expect(accepted.run.beforeDispatch).toHaveBeenCalledOnce();
     expect(accepted.run.dispatch).toHaveBeenCalledOnce();
-    expect(() => assertTransferOutputs(expected, {
-      confirmation: 'CONF-123',
-      transaction: [{ ...expected, memo: 'fixture', confirmation: 'CONF-123' }],
-    })).not.toThrow();
 
     const changedNative = await eligibleTransfer(eligibleRows, renderedFacts, expected);
     changedNative.setLive({ facts: { ...renderedFacts, memo: 'fixture' } });
@@ -2873,6 +2857,7 @@ it.each([
 });
 
 it.each([
+  ['meridian-funds-transfer', { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture' }],
   ['meridian-open-share', requestOpenShare()],
   ['meridian-update-member', requestMemberUpdate()],
   ['meridian-place-hold', requestHold()],
@@ -2882,7 +2867,7 @@ it.each([
     id: capability, name: capability, description: capability, version: '1.0.0', status: 'approved',
     app: { appId: 'meridian', entryUrl: `${origin}/signon`, allowedOrigins: [origin] },
     parameters: meridianContracts[capability].parameters,
-    outputs: [{ name: capability === 'meridian-open-share' ? 'shareId' : capability === 'meridian-update-member' ? 'saved' : 'heldShare', type: 'string', description: 'Result' }],
+    outputs: [{ name: meridianContracts[capability].outputs[0]!, type: 'string', description: 'Result' }],
     steps: [{ id: 'checkpoint', intent: 'fixture', action: 'assert', assert: { kind: 'urlMatches', pattern: '.*' }, risk: 'read' }],
     successCondition: { kind: 'urlMatches', pattern: '.*' }, detectors: [],
     provenance: { discoveredAt: '', model: '', discoveryRunId: '', goal: '' },
@@ -2895,10 +2880,10 @@ it.each([
   expect(run.dispatch).not.toHaveBeenCalled();
 });
 
-it('terminates replay unknown after one post when the canonical transaction row is wrong', async () => {
+it('terminates replay unknown after one post when the fresh read-back rejects the transfer', async () => {
   const artifact = applyMeridianContract(transferArtifact());
   artifact.status = 'approved';
-  artifact.steps = artifact.steps.filter(step => ['post', 'post-checkpoint', 'confirmation', 'transaction'].includes(step.id));
+  artifact.steps = artifact.steps.filter(step => ['post', 'post-checkpoint', 'confirmation'].includes(step.id));
   const report = { strategyUsed: 0, kind: 'css', matches: 1 } as const;
   const surface: Surface = {
     mutationDispatched: false,
@@ -2911,7 +2896,6 @@ it('terminates replay unknown after one post when the canonical transaction row 
     fill: async () => report,
     select: async () => report,
     readText: async () => ({ text: 'CONF-123', report }),
-    readTable: async () => [{ member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '2.00', memo: 'fixture', confirmation: 'CONF-123' }],
     isTextVisible: async text => text === 'Transfer complete',
     describeTarget: async descriptor => descriptor,
     screenshot: async () => {},
@@ -2919,7 +2903,9 @@ it('terminates replay unknown after one post when the canonical transaction row 
   };
   const logger = new RunLogger('replay', new Redactor(), temp(), true);
   const params = { member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture', operator: 'SUPER1', password: 'secret', branch: 'MAIN-001' };
-  const result = await runReplay(artifact, params, { surface, logger, policy });
+  const validateCompletion = vi.fn(async () => { throw new Error('PRIVATE balances unchanged'); });
+  const result = await runReplay(artifact, params, { surface, logger, policy, validateCompletion });
+  expect(validateCompletion).toHaveBeenCalledOnce();
   expect(result.status).toBe('failure');
   expect(result.status === 'failure' && result.failure.code).toBe('POST_OUTCOME_UNKNOWN');
   expect(surface.mutationDispatched).toBe(true);
@@ -3426,8 +3412,6 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
     );
     const outputs: Record<string, OutputValue> = { confirmation: 'CONF-123', transaction };
     expect(transaction).toEqual([{ ...request, confirmation: 'CONF-123' }]);
-    expect(() => assertTransferOutputs(request, outputs)).not.toThrow();
-    expect(() => assertTransferOutputs(request, { ...outputs, transaction: [{ ...transaction[0]!, amount: '2.00' }] })).toThrow(/validation/);
 
     for (const [selector, type, failure] of [
       ['td', 'string', 'cell_count'],
@@ -3471,8 +3455,6 @@ it('extracts one canonical transfer row from a vertical receipt and persists onl
       .rejects.toMatchObject({ failure: 'cell_count' });
     const grouped = await browser.readTable(outer, receiptColumns, 1000, ':scope > tbody > tr:nth-of-type(3)');
     expect(grouped).toEqual([{ ...request, confirmation: 'CONF-123' }]);
-    expect(() => assertTransferOutputs(request, { confirmation: 'CONF-123', transaction: grouped })).not.toThrow();
-    expect(() => assertTransferOutputs(request, { confirmation: 'DIFFERENT', transaction: grouped })).toThrow();
   } finally { await browser.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 15000);
 

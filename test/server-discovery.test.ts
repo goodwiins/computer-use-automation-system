@@ -252,21 +252,17 @@ it('authenticates strict discovery HTTP admission and exposes canonical form met
   expect(JSON.stringify(metadata)).not.toContain(context.password);
 });
 
-it('rejects matching transfer outputs until the authoritative surface reports dispatch', async () => {
+it('forwards the runtime transfer completion validator to discovery', async () => {
   const f = fixture();
-  let validated = false;
+  let forwarded: unknown;
   const input = { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'fixture transfer' };
   f.run.mockImplementation(async (_goal, _url, _params, _origins, options) => {
-    const outputs = { confirmation: 'FIXTURE-1', transaction: [{ ...input, confirmation: 'FIXTURE-1' }] };
-    expect(() => options!.validateCompletion!(outputs)).toThrow('Transfer mutation was not dispatched');
+    forwarded = options!.validateCompletion;
     Object.assign(f.active().surface, { mutationDispatched: true });
-    expect(() => options!.validateCompletion!(outputs)).not.toThrow();
-    expect(() => options!.validateCompletion!({ ...outputs, confirmation: 'WRONG' })).toThrow();
-    validated = true;
     return stopped();
   });
   const accepted = await f.service.discover('operator', 'meridian-funds-transfer', input, 'transfer-dispatch');
   expect((await f.settle(accepted.runId)).state).toBe('POST_OUTCOME_UNKNOWN');
   expect(f.run).toHaveBeenCalledOnce();
-  expect(validated).toBe(true);
+  expect(forwarded).toBe(f.active().validateCompletion);
 });

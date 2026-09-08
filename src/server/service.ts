@@ -8,7 +8,7 @@ import { toToolSchema } from '../artifact/tools.js';
 import { OperatorConsole } from '../escalation/operator.js';
 import { ControlSession } from '../escalation/session.js';
 import { postIntentUnknown, type ReplayResult } from '../replay/outcomes.js';
-import { applyMeridianContract, meridianContracts, assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
+import { applyMeridianContract, meridianContracts } from '../runtime/contracts.js';
 import { Approval, publicIntervention } from '../runtime/approval.js';
 import { RequestError, type JournalRecord, type RunJournal } from '../runtime/journal.js';
 import { type AppProfile } from '../runtime/profile.js';
@@ -414,7 +414,6 @@ export class InvocationService {
         state.close = async () => { await closeRuntime(running); if (running.cleanupFailed) this.cleanupFailed = true; };
         await this.journal.update(record.runId, 'running');
         const recordingGoal = `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${contract.outputs.join(', ')}. Table outputs must use named columns. ${id === 'meridian-funds-transfer' ? 'The transaction output must declare exactly one row with canonical columns member, sourceShare, destinationShare, amount, memo, confirmation; use type money only for amount and type string for the other columns, and mark every output and column sensitive. Observe each column selector and header handling from this recording; do not invent them.' : ''} Never choose the first of ambiguous matches.`;
-        const expectedTransfer = id === 'meridian-funds-transfer' ? transferFactsFromParams(normalized) : undefined;
         const completion = (async () => {
           const metadata = { runId: record.runId, evidenceDir: running.logger.dir, recoveries: [] as string[] };
           const failure = (): ReplayResult => ({ ...metadata, status: 'failure', escalated: false,
@@ -426,10 +425,7 @@ export class InvocationService {
               timeoutMs: this.policy.maxDiscoveryMs, detectors: this.profile.detectors,
               boundParams: { operator: context.operator, password: context.password, branch: context.branch },
               sanitizeObservation: text => running.promptRedactor.redactString(text),
-              validateCompletion: expectedTransfer ? outputs => {
-                if (!running.surface.mutationDispatched) throw new Error('Transfer mutation was not dispatched');
-                assertTransferOutputs(expectedTransfer, outputs);
-              } : running.validateCompletion,
+              validateCompletion: running.validateCompletion,
               escalate: async req => {
                 const detach = await new OperatorConsole(running.browser.page, running.logger, session).recordHumanActions();
                 try { return await approval.wait(req) === 'retry' ? 'retry' : 'abort'; }

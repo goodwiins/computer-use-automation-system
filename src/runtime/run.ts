@@ -69,7 +69,8 @@ export function createRuntime(options: {
     } : undefined, (event, data) => logger.log(event, data));
   let timer: ReturnType<typeof setTimeout>;
   const runtime = { surface, browser, logger, session, redactor, promptRedactor, deadline, cleanupFailed: false as boolean,
-    validateCompletion: openShare ? surface.validateOpenShareCompletion.bind(surface)
+    validateCompletion: transfer && options.artifact === 'meridian-funds-transfer' ? surface.validateTransferCompletion.bind(surface)
+      : openShare ? surface.validateOpenShareCompletion.bind(surface)
       : memberUpdate ? surface.validateMemberUpdateCompletion.bind(surface)
         : hold ? surface.validateHoldCompletion.bind(surface) : undefined,
     close: async () => { clearTimeout(timer); try { options.onClose?.(); } finally { await surface.close(); } } };

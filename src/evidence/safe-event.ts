@@ -6,7 +6,6 @@ const withheldOutput = z.object({ name: z.string(), type: z.enum(['string', 'num
 const tableFields: Record<string, readonly string[]> = {
   members: ['memberNumber', 'name'],
   shares: meridianTransferMemberTable.columns.map(column => column.name),
-  transaction: ['member', 'sourceShare', 'destinationShare', 'amount', 'memo', 'confirmation'],
 };
 const structure = z.object({
   capability: z.string(),

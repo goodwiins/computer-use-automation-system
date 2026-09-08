@@ -29,7 +29,7 @@ import { PolicyViolationError, RunAbortedError } from '../surface/guarded.js';
 import type { Surface } from '../surface/types.js';
 import { checkDetectors, matchDetector } from './detectors.js';
 import { InsufficientFundsError, type ReplayResult, type StepFailure } from './outcomes.js';
-import { assertMeridianScalarWriteOutputs, assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
+import { assertMeridianScalarWriteOutputs } from '../runtime/contracts.js';
 
 export interface ReplayDeps {
   surface: Surface; // must already be policy-guarded
@@ -54,8 +54,7 @@ export async function runReplay(
 
   // Per-tenant defaults (from an overlay) fill in under the caller's params.
   params = { ...artifact.paramDefaults, ...params };
-  const transfer = artifact.app.appId === 'meridian' ? transferFactsFromParams(params) : undefined;
-  const requiresFreshCompletion = artifact.app.appId === 'meridian' && ['meridian-open-share', 'meridian-update-member', 'meridian-place-hold'].includes(artifact.id);
+  const requiresFreshCompletion = artifact.app.appId === 'meridian' && ['meridian-funds-transfer', 'meridian-open-share', 'meridian-update-member', 'meridian-place-hold'].includes(artifact.id);
   const paramCheck = validateParams(artifact, params);
   if (!paramCheck.ok) {
     return fail({ stepId: '(pre-flight)', intent: 'validate parameters', expected: 'params matching the artifact contract', observed: paramCheck.error });
@@ -438,10 +437,6 @@ export async function runReplay(
 
   for (const output of artifact.outputs) {
     if (artifact.schemaVersion === 2 && !validOutput(output, outputs[output.name])) return fail({ stepId: '(outputs)', intent: 'validate output types', expected: output.type, observed: 'Output does not satisfy its declared contract' });
-  }
-  if (transfer) {
-    try { assertTransferOutputs(transfer, outputs); }
-    catch { return fail({ stepId: '(outputs)', intent: 'verify transfer completion details', expected: 'current transfer details matching the request', observed: 'Output does not satisfy its declared contract' }); }
   }
   if (requiresFreshCompletion) {
     if (!deps.validateCompletion) return fail({ stepId: '(outputs)', intent: 'verify completion details', expected: 'a fresh member-record read-back validator', observed: 'completion validator became unavailable' });
