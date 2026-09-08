@@ -21,7 +21,7 @@ import {
   type ChatLifecycleCallbacks,
 } from './transport';
 import { completedActionReady, pending, useRuns } from './session';
-import { CapabilityRunCard } from './dashboard';
+import { CapabilityRunCard, GuidedOperations } from './dashboard';
 import {
   ConversationNavigation,
   ConversationStatus,
@@ -114,7 +114,7 @@ function RunTool({ result, status }: { result?: unknown; status?: { type: string
   }, [runId, watch]);
   if (runId) return <>
     {output?.reused === true && <p role="status">Using a previously accepted run. No new operation was started.</p>}
-    <CapabilityRunCard runId={runId} />
+    <CapabilityRunCard runId={runId} inlineApproval />
   </>;
   if (output?.kind === 'error')
     return (
@@ -342,6 +342,7 @@ export function Chat() {
         <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">
             <div className="conversation">
+              {session.readinessRequired !== false && <GuidedOperations />}
               <ThreadPrimitive.Empty>
                 <div className="chat-welcome">
                   <span className="welcome-mark" aria-hidden="true">M</span>
@@ -350,6 +351,7 @@ export function Chat() {
                 </div>
               </ThreadPrimitive.Empty>
               <ThreadPrimitive.Messages components={{ Message }} />
+              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} inlineApproval /></div>}
               <AuiIf condition={s => s.thread.isRunning}><p className="thinking" role="status">Working…</p></AuiIf>
             </div>
             <ThreadPrimitive.ViewportFooter className="composer-footer">
@@ -367,7 +369,6 @@ export function Chat() {
                   <button type="button" disabled={lookupBusy} onClick={abandonUnknownChat}>Start a separate inquiry</button>
                 </AuiIf>
               </p>}
-              {lookupRunId && <div className="chat-recovery"><p role="status">The original request was bound to run {lookupRunId}. Follow its authoritative state below.</p><CapabilityRunCard runId={lookupRunId} /></div>}
               {error && <p role="alert">{error}</p>}
               <ComposerPrimitive.Root className="composer">
                 <label htmlFor="message" className="sr-only">Your request</label>

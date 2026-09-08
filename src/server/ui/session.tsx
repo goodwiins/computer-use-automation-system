@@ -7,14 +7,28 @@ import { fetchMissingRuns, RunWatch } from './run-watch';
 export type Capability = ReturnType<InvocationService['catalog']>[number];
 export type Availability = Awaited<ReturnType<InvocationService['availability']>>[number];
 export type Run = Awaited<ReturnType<InvocationService['get']>>;
+export type OperationParameter = {
+  name: string;
+  type: 'string' | 'number';
+  description: string;
+  required: boolean;
+  sensitive: boolean;
+  pattern?: string;
+  enum?: string[];
+  format?: string;
+};
+export type OperationContract = { id: string; parameters: OperationParameter[]; discovery: boolean };
 export type ProjectedRole = 'caller' | 'operator';
 export type Session = {
   token: string;
   principal: ProjectedRole;
   subjectId?: string;
+  conversationText?: boolean;
   capabilities: Capability[];
   availability?: Availability[];
+  operationContracts: OperationContract[];
   readinessRequired?: boolean;
+  supervisorVerified?: boolean;
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,6 +43,41 @@ export class CapabilityAuthorityError extends Error {
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+const operationIds = new Set([
+  'meridian-funds-transfer', 'meridian-open-share', 'meridian-update-member', 'meridian-place-hold',
+]);
+export function validateOperationContracts(value: unknown): OperationContract[] {
+  if (!Array.isArray(value)) return [];
+  const contracts: OperationContract[] = [];
+  for (const candidate of value) {
+    if (!plainRecord(candidate) || typeof candidate.id !== 'string' || !operationIds.has(candidate.id)
+      || typeof candidate.discovery !== 'boolean' || !Array.isArray(candidate.parameters)) return [];
+    const parameters: OperationParameter[] = [];
+    for (const parameter of candidate.parameters) {
+      if (!plainRecord(parameter) || typeof parameter.name !== 'string' || !/^[a-z][A-Za-z0-9]*$/.test(parameter.name)
+        || (parameter.type !== 'string' && parameter.type !== 'number') || typeof parameter.description !== 'string'
+        || typeof parameter.required !== 'boolean' || typeof parameter.sensitive !== 'boolean'
+        || (parameter.pattern !== undefined && typeof parameter.pattern !== 'string')
+        || (parameter.format !== undefined && typeof parameter.format !== 'string')
+        || (parameter.enum !== undefined && (!Array.isArray(parameter.enum) || parameter.enum.some(item => typeof item !== 'string')))) return [];
+      parameters.push({
+        name: parameter.name,
+        type: parameter.type,
+        description: parameter.description,
+        required: parameter.required,
+        sensitive: parameter.sensitive,
+        ...(parameter.pattern === undefined ? {} : { pattern: parameter.pattern }),
+        ...(parameter.format === undefined ? {} : { format: parameter.format }),
+        ...(parameter.enum === undefined ? {} : { enum: [...parameter.enum] as string[] }),
+      });
+    }
+    if (!parameters.length || new Set(parameters.map(parameter => parameter.name)).size !== parameters.length) return [];
+    contracts.push({ id: candidate.id, discovery: candidate.discovery, parameters });
+  }
+  return contracts.length === operationIds.size && new Set(contracts.map(contract => contract.id)).size === operationIds.size
+    ? contracts : [];
 }
 
 export function validateReadinessMetadata(value: unknown): boolean {
@@ -139,6 +188,7 @@ export type ReviewAttempt = {
   error?: string;
   probeVersion?: number;
   probeSettled?: boolean;
+  probeId?: string;
 };
 export function useRuns() {
   const value = useContext(Context);
@@ -158,6 +208,7 @@ export function RunProvider({
   const [capabilities, setCapabilities] = useState(session.capabilities);
   const capabilitiesRef = useRef(session.capabilities);
   const [availability, setAvailability] = useState(session.availability);
+  const [operationContracts, setOperationContracts] = useState(session.operationContracts);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -252,6 +303,7 @@ export function RunProvider({
       const nextAvailability = hasCapabilities && Array.isArray(metadata.availability)
         ? metadata.availability as Availability[]
         : undefined;
+      const nextOperationContracts = validateOperationContracts(metadata.operationContracts);
       const pinned = new Set<string>();
       const held = actionHoldRef.current;
       if (held?.state === 'bound' && held.runId) pinned.add(held.runId);
@@ -271,6 +323,7 @@ export function RunProvider({
         setCapabilities(nextCapabilities);
         capabilitiesRef.current = nextCapabilities;
         setAvailability(nextAvailability);
+        setOperationContracts(nextOperationContracts);
         setError('');
       }
     } catch (e) {
@@ -372,7 +425,7 @@ export function RunProvider({
     }, 1500);
     return () => clearInterval(timer);
   }, [runs, error, loading, refresh, actionHold?.state]);
-  const currentSession = { ...session, capabilities, availability };
+  const currentSession = { ...session, capabilities, availability, operationContracts };
   return (
     <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current.ids, loading, error, actionHold,
       beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>

@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS meridian_conversation_events (
 
 LOCK TABLE meridian_conversation_events IN EXCLUSIVE MODE;
 
+-- Additive local text retention; old metadata-only events stay unchanged.
+ALTER TABLE meridian_conversation_events ADD COLUMN IF NOT EXISTS text_ciphertext bytea;
+ALTER TABLE meridian_conversation_events DROP CONSTRAINT IF EXISTS meridian_conversation_events_kind_check;
+ALTER TABLE meridian_conversation_events DROP CONSTRAINT IF EXISTS meridian_conversation_events_check;
+ALTER TABLE meridian_conversation_events ADD CONSTRAINT meridian_conversation_events_kind_check
+  CHECK (kind IN ('message_omitted', 'run_linked', 'message_saved'));
+ALTER TABLE meridian_conversation_events ADD CONSTRAINT meridian_conversation_events_check CHECK (
+  (kind = 'run_linked' AND run_id IS NOT NULL AND text_ciphertext IS NULL)
+  OR (kind = 'message_omitted' AND run_id IS NULL AND text_ciphertext IS NULL)
+  OR (kind = 'message_saved' AND run_id IS NULL AND text_ciphertext IS NOT NULL
+      AND octet_length(text_ciphertext) BETWEEN 29 AND 16028)
+);
+
 -- Older schemas used globally unique public IDs. Existing rows are unambiguous,
 -- so attach event ownership before replacing those constraints with owner-scoped identities.
 ALTER TABLE meridian_conversation_events ADD COLUMN IF NOT EXISTS owner_id uuid;

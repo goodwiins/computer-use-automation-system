@@ -44,6 +44,32 @@ const readinessLabels = [
   ['meridian-update-member', 'Update contact'],
   ['meridian-place-hold', 'Supervisor hold'],
 ] as const;
+const operationContracts = [
+  { id: 'meridian-funds-transfer', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'sourceShare', type: 'string', description: 'Stable source share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'destinationShare', type: 'string', description: 'Stable destination share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'amount', type: 'string', description: 'Decimal amount', required: true, sensitive: true, format: 'positiveMoney' },
+    { name: 'memo', type: 'string', description: 'Transfer memo', required: true, sensitive: true },
+  ] },
+  { id: 'meridian-open-share', discovery: false, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'shareType', type: 'string', description: 'New share type', required: true, sensitive: false, enum: ['S0001', 'S0070', 'MMKT', 'CERT'] },
+    { name: 'deposit', type: 'string', description: 'Decimal initial deposit', required: true, sensitive: true, format: 'positiveMoney' },
+  ] },
+  { id: 'meridian-update-member', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'email', type: 'string', description: 'Email address', required: true, sensitive: true },
+    { name: 'phone', type: 'string', description: 'Phone', required: true, sensitive: true },
+    { name: 'address', type: 'string', description: 'Mailing address', required: true, sensitive: true },
+  ] },
+  { id: 'meridian-place-hold', discovery: true, parameters: [
+    { name: 'member', type: 'string', description: 'Member number', required: true, sensitive: true, pattern: '^[0-9]{1,12}$' },
+    { name: 'share', type: 'string', description: 'Stable share ID', required: true, sensitive: true, pattern: '^[0-9]{1,12}-[A-Za-z0-9-]+$' },
+    { name: 'reason', type: 'string', description: 'Hold reason', required: true, sensitive: false, enum: ['FRAUD', 'LEGAL', 'DECEASED'] },
+    { name: 'notes', type: 'string', description: 'Notes', required: true, sensitive: true },
+  ] },
+] as const;
 
 function walkthroughScreenshotPath(name: string) {
   const outputDir = process.env.MERIDIAN_WALKTHROUGH_SCREENSHOT_DIR
@@ -647,6 +673,7 @@ async function fixture(
     requestContexts: () => new Map(),
     evidenceDir,
     catalog: () => [capability],
+    operationContracts: () => operationContracts,
     availability: () => availabilityOverride ? availabilityOverride() : [
       ['meridian-sign-on', 'Sign on'],
       ['meridian-member-inquiry', 'Member inquiry'],
@@ -687,6 +714,17 @@ async function fixture(
       if (!state.invocations.has(key)) {
         state.invocations.set(key, fingerprint);
         state.runs.push({ ...initialRun(), capability: id });
+      }
+      return { runId };
+    }),
+    discover: vi.fn((_principal: string, id: string, args: unknown, key: string, role = 'TELLER', lookupOnly = false) => {
+      const fingerprint = JSON.stringify(['discovery', id, args, role]);
+      if (state.invocations.has(key) && state.invocations.get(key) !== fingerprint)
+        throw new RequestError(409, 'Conflicting idempotency key');
+      if (lookupOnly && !state.invocations.has(key)) throw new RequestError(404, 'No accepted request found');
+      if (!state.invocations.has(key)) {
+        state.invocations.set(key, fingerprint);
+        state.runs.push({ ...initialRun(), kind: 'discovery', capability: id });
       }
       return { runId };
     }),
@@ -1236,6 +1274,7 @@ it('preserves the conversation across responsive Activity navigation', async () 
   const navigationTargets = /(?:\/api\/chat|\/invoke|\/decision|\/cancel|\/transaction)/;
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
+    await settleConversationLayout(page);
     await messages.evaluate((node) => {
       (node as HTMLElement).scrollTop = 320;
     });
@@ -1329,6 +1368,7 @@ it('preserves a newer conversation scroll position when closing wide Activity', 
     (node as HTMLElement).style.minHeight = '1200px';
   });
   await activity.click();
+  await settleConversationLayout(page);
   await messages.evaluate((node) => {
     (node as HTMLElement).scrollTop = 120;
   });
@@ -2677,6 +2717,241 @@ it('offline operator review controls require live authority, keyboard focus, bro
   await page.screenshot({ path: join(evidencePath, 'offline-unknown.png'), fullPage: true });
   expect(await page.evaluate(() => (window as any).cspViolations)).toEqual([]);
   expect(errors).toEqual([]);
+}, 60000);
+
+it.each([
+  ['operator accept', operatorToken, 'Accept', 'approve'],
+  ['operator reject', operatorToken, 'Reject', 'abort'],
+  ['caller', callerToken, undefined, undefined],
+] as const)('shows exact inline approval only to the %s and shares one decision lock with Activity', async (_role, token, buttonLabel, expectedDecision) => {
+  const { page, state, service, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId,
+    expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Read fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post',
+      destination: 'https://offline.example/post', method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { private: 'withheld' }, visibleFacts: { member: 'offline-member', action: 'Read shares' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    const key = route.request().headers()['idempotency-key'] ?? '';
+    service.invoke('caller', capability.id, { member: 'offline-member' }, key);
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(token);
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor({ timeout: 5000 });
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`).first();
+  await chatCard.waitFor({ timeout: 5000 });
+  if (buttonLabel) await chatCard.getByRole('button', { name: buttonLabel, exact: true }).waitFor({ timeout: 5000 });
+  expect(await chatCard.getByRole('button', { name: 'Accept', exact: true }).count()).toBe(buttonLabel ? 1 : 0);
+  expect(await chatCard.getByRole('button', { name: 'Reject', exact: true }).count()).toBe(buttonLabel ? 1 : 0);
+  if (!buttonLabel) return;
+
+  await chatCard.getByText('offline-member', { exact: true }).waitFor();
+  await chatCard.getByText('Read shares', { exact: true }).waitFor();
+  let posts = 0;
+  let decision: unknown;
+  await page.route('**/decision', route => {
+    posts += 1;
+    decision = route.request().postDataJSON();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+  const inlineDecision = chatCard.getByRole('button', { name: buttonLabel, exact: true });
+  await inlineDecision.click();
+  await vi.waitFor(() => expect(posts).toBe(1));
+  expect(decision).toEqual({ approvalId, decision: expectedDecision });
+  const inlineSubmitted = chatCard.getByText('Decision submitted. Waiting for authoritative run updates.', { exact: true });
+  await inlineSubmitted.waitFor();
+  expect(await inlineSubmitted.evaluate(element => element === document.activeElement)).toBe(true);
+  await chatCard.getByRole('button', { name: 'Review request', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const dialogConfirm = dialog.getByRole('button', { name: 'Confirm request', exact: true });
+  await dialogConfirm.waitFor();
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(await dialog.getByRole('button', { name: 'Refuse request', exact: true }).isDisabled()).toBe(true);
+  await dialogConfirm.evaluate(button => (button as HTMLButtonElement).click());
+  expect(posts).toBe(1);
+  expect(state.decisions).toEqual([]);
+}, 30000);
+
+it('claims one shared recovery probe across inline and dialog panels before a newer decision', async () => {
+  const { page, state, service, connect } = await fixture();
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capability.id, goal: 'Read fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capability.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', facts: {},
+      visibleFacts: { member: 'offline-member' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    service.invoke('caller', capability.id, { member: 'offline-member' }, route.request().headers()['idempotency-key'] ?? '');
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(operatorToken);
+  await page.locator('#message').fill('Read offline-member shares');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor();
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capability.id, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`).first();
+  const accept = chatCard.getByRole('button', { name: 'Accept', exact: true });
+  await accept.waitFor();
+  await chatCard.getByRole('button', { name: 'Review request', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const dialogConfirm = dialog.getByRole('button', { name: 'Confirm request', exact: true });
+  await dialogConfirm.waitFor();
+
+  let posts = 0;
+  await page.route('**/decision', async route => { posts += 1; await route.abort(); });
+  let releaseProbe!: () => void;
+  const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; });
+  let probes = 0;
+  await page.route(`**/runs/${runId}`, async route => { probes += 1; await heldProbe; await route.continue(); });
+  await dialogConfirm.click();
+  await page.getByText('Refresh to inspect authoritative state.', { exact: false }).first().waitFor();
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(await dialog.getByRole('button', { name: 'Refuse request', exact: true }).isDisabled()).toBe(true);
+  const heading = dialog.getByRole('heading', { name: 'Review request', exact: true });
+  const uncertainClose = dialog.getByRole('button', { name: 'Close', exact: true });
+  const uncertainDetails = dialog.getByText('Details', { exact: true });
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  expect(await uncertainClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await uncertainDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  const hiddenDetailsValue = uncertainDetails.locator('..').locator('dd').first();
+  await hiddenDetailsValue.evaluate(element => element.setAttribute('tabindex', '0'));
+  await uncertainDetails.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: a closed Details child and disabled unconfirmed actions must stay outside the dialog focus order.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await hiddenDetailsValue.evaluate(element => element.removeAttribute('tabindex'));
+  await page.keyboard.press('Shift+Tab');
+  expect(await uncertainDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await uncertainClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  // The two mounted panels claim one shared recovery probe for the exact pending intervention.
+  await vi.waitFor(() => expect(probes).toBe(1));
+  await page.waitForTimeout(50);
+  expect(probes).toBe(1);
+  releaseProbe();
+  await page.getByText('The server confirms this intervention is still pending.', { exact: false }).first().waitFor();
+  await vi.waitFor(async () => expect(await dialogConfirm.isEnabled()).toBe(true));
+
+  await page.unroute('**/decision');
+  await page.route('**/decision', route => { posts += 1; return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });
+  await dialogConfirm.click();
+  await vi.waitFor(() => expect(posts).toBe(2));
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(await accept.isDisabled()).toBe(true);
+  await page.waitForTimeout(50);
+  expect(await dialogConfirm.isDisabled()).toBe(true);
+  expect(posts).toBe(2);
+}, 30000);
+
+it.each(['chat', 'guided'] as const)('resets only the active %s inline panel on replacement without approving newly presented facts', async surface => {
+  const capabilityId = 'meridian-funds-transfer';
+  const { page, state, service, connect, errors } = await fixture(false, undefined, { capabilityId });
+  page.setDefaultTimeout(5000);
+  const intervention = publicIntervention({
+    id: approvalId, expiresAt: Date.now() + 60000,
+    request: { kind: 'risk_approval', reason: 'Review exact operation', capability: capabilityId, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+    action: {
+      runId, artifact: capabilityId, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post',
+      method: 'POST', operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER',
+      facts: { amount: '25.00' }, visibleFacts: { amount: '25.00', memo: 'original' }, tokenPresent: true, control: 'Post',
+    },
+  });
+  await page.route('**/api/chat', async route => {
+    service.invoke('caller', capabilityId, { member: 'offline-member' }, route.request().headers()['idempotency-key'] ?? '');
+    state.runs[0] = { ...state.runs[0], state: 'awaiting-human', intervention };
+    await route.abort();
+    await page.unroute('**/api/chat');
+  });
+  await connect(operatorToken);
+  await page.locator('#message').fill('Transfer fixture');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).waitFor();
+  await page.route('**/api/chat/request', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ kind: 'run', runId, capability: capabilityId, state: 'awaiting-human' }),
+  }));
+  await page.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  const chatCard = page.locator(`.chat-recovery [data-run-id="${runId}"]`);
+  const guidedCard = page.locator(`.guided-operations [data-run-id="${runId}"]`);
+  const activeCard = surface === 'chat' ? chatCard : guidedCard;
+  await chatCard.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  await guidedCard.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  async function replace(id: string) {
+    state.runs[0] = { ...state.runs[0], intervention: publicIntervention({
+      ...intervention, id,
+      action: { ...intervention.action!, visibleFacts: { amount: '99.00', memo: id } },
+    }) };
+    // Authenticated polling refreshes both mounted copies without moving focus through a refresh-button click.
+    await chatCard.getByText(id, { exact: true }).waitFor();
+    await guidedCard.getByText(id, { exact: true }).waitFor();
+  }
+  const message = page.locator('#message');
+  await message.focus();
+  await replace('33333333-3333-4333-8333-333333333333');
+  expect(await message.evaluate(element => element === document.activeElement)).toBe(true);
+  const refresh = page.locator('#refresh');
+  await refresh.focus();
+  await replace('44444444-4444-4444-8444-444444444444');
+  expect(await refresh.evaluate(element => element === document.activeElement)).toBe(true);
+  const review = activeCard.getByRole('button', { name: 'Review request', exact: true });
+  await review.scrollIntoViewIfNeeded();
+  const geometry = await review.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    const footer = document.querySelector('.composer-footer')!.getBoundingClientRect();
+    return { button: rect.toJSON(), footer: footer.toJSON(), hit: hit?.outerHTML, unobscured: Boolean(hit && element.contains(hit)), viewport: { width: innerWidth, height: innerHeight } };
+  });
+  writeFileSync(walkthroughScreenshotPath(`replacement-${surface}-geometry.json`), JSON.stringify(geometry, null, 2));
+  await page.screenshot({ path: walkthroughScreenshotPath(`replacement-${surface}.png`) });
+  expect(geometry.unobscured).toBe(true);
+  await review.click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Confirm transfer', exact: true }).focus();
+  await replace('55555555-5555-4555-8555-555555555555');
+  expect(await dialog.getByRole('heading', { name: 'Review request', exact: true }).evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Escape');
+
+  const decision = activeCard.getByRole('button', { name: surface === 'chat' ? 'Accept' : 'Reject', exact: true });
+  await decision.focus();
+  await replace(secondApprovalId);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  expect(state.requests.filter(request => request.path.endsWith('/decision'))).toEqual([]);
+  expect(await activeCard.getByRole('heading', { name: 'Operator approval required', exact: true }).evaluate(element => element === document.activeElement)).toBe(true);
+  await decision.click();
+  const expectedDecision = surface === 'chat' ? 'approve' : 'abort';
+  await vi.waitFor(() => expect(state.decisions).toEqual([expectedDecision]));
+  expect(state.requests.filter(request => request.path.endsWith('/decision')).map(request => ({ path: request.path, body: request.body }))).toEqual([
+    { path: `/runs/${runId}/decision`, body: { approvalId: secondApprovalId, decision: expectedDecision } },
+  ]);
+  expect(errors).toEqual([]);
 }, 30000);
 
 it('neutral replacement focus resets when an open review receives a replacement intervention', async () => {
@@ -2721,6 +2996,200 @@ it('neutral replacement focus resets when an open review receives a replacement 
     approvalId: replacementId,
     decision: 'approve',
   });
+}, 15000);
+
+it('collects and reviews all four guided operations without starting a request', async () => {
+  const { page, state, connect } = await fixture();
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  const cases = [
+    ['meridian-funds-transfer', [
+      ['Member number', '9001'], ['From share', '9001-S001'], ['To share', '9001-S002'],
+      ['Amount', '25.00'], ['Memo', 'Rent'],
+    ]],
+    ['meridian-open-share', [
+      ['Member number', '9002'], ['Share type', 'MMKT'], ['Initial deposit', '100.00'],
+    ]],
+    ['meridian-update-member', [
+      ['Member number', '9003'], ['Email', 'member@example.test'], ['Phone', '555-0103'],
+      ['Mailing address', '3 Main Street'],
+    ]],
+    ['meridian-place-hold', [
+      ['Member number', '9004'], ['Share', '9004-S001'], ['Reason code', 'FRAUD'], ['Notes', 'Review required'],
+    ]],
+  ] as const;
+  for (const [operation, fields] of cases) {
+    await guided.getByLabel('Operation').selectOption(operation);
+    for (const [label, value] of fields) {
+      const control = guided.getByLabel(label, { exact: true });
+      if (await control.evaluate(element => element instanceof HTMLSelectElement)) await control.selectOption(value);
+      else await control.fill(value);
+    }
+    await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+    const preview = guided.locator('.operation-preview');
+    await preview.getByText('Request preparation · This preview does not submit a transaction.', { exact: true }).waitFor();
+    for (const [label, value] of fields) {
+      const presented = ['Amount', 'Initial deposit'].includes(label) ? `$${value}` : value;
+      await preview.getByText(presented, { exact: true }).waitFor();
+    }
+    await guided.getByRole('button', { name: 'Edit request', exact: true }).click();
+  }
+  expect(state.requests.filter(request => request.path.endsWith('/invoke') || request.path.endsWith('/discover'))).toEqual([]);
+}, 30000);
+
+it('requires supervisor context for hold and recovers an operator-selected role with the exact discovery request', async () => {
+  const { page, state, connect } = await fixture();
+  const guided = page.locator('.guided-operations');
+  const fillHold = async () => {
+    await guided.getByLabel('Operation').selectOption('meridian-place-hold');
+    await guided.getByLabel('Member number', { exact: true }).fill('9004');
+    await guided.getByLabel('Share', { exact: true }).fill('9004-S001');
+    await guided.getByLabel('Reason code', { exact: true }).selectOption('FRAUD');
+    await guided.getByLabel('Notes', { exact: true }).fill('Review required');
+    await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+  };
+  await connect(callerToken);
+  await fillHold();
+  await guided.getByText('Only an authenticated operator can start supervised discovery.', { exact: true }).waitFor();
+  expect(await guided.getByLabel('Target role', { exact: true }).count()).toBe(0);
+  expect(await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).count()).toBe(0);
+
+  await connect(operatorToken);
+  await guided.getByLabel('Operation').selectOption('meridian-place-hold');
+  const targetRole = guided.getByLabel('Target role', { exact: true });
+  expect(await targetRole.inputValue()).toBe('SUPERVISOR');
+  expect(await targetRole.isDisabled()).toBe(true);
+  await guided.getByLabel('Operation').selectOption('meridian-funds-transfer');
+  await guided.getByLabel('Member number', { exact: true }).fill('9004');
+  await guided.getByLabel('From share', { exact: true }).fill('9004-S001');
+  await guided.getByLabel('To share', { exact: true }).fill('9004-S002');
+  await guided.getByLabel('Amount', { exact: true }).fill('25.00');
+  await guided.getByLabel('Memo', { exact: true }).fill('Review required');
+  await targetRole.selectOption('SUPERVISOR');
+  await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+  await guided.getByText('Requested target role: SUPERVISOR', { exact: false }).waitFor();
+  let first = true;
+  await page.route('**/capabilities/meridian-funds-transfer/discover', async route => {
+    if (first) {
+      first = false;
+      await route.fetch();
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  await guided.getByRole('button', { name: 'Start supervised discovery', exact: true }).click();
+  await guided.getByRole('alert').waitFor();
+  expect(await guided.getByRole('alert').textContent()).toContain('Acceptance is unconfirmed.');
+  await guided.getByRole('button', { name: 'Look up original request', exact: true }).click();
+  await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  const requests = state.requests.filter(request => request.path === '/capabilities/meridian-funds-transfer/discover');
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.body).toEqual({
+    args: { member: '9004', sourceShare: '9004-S001', destinationShare: '9004-S002', amount: '25.00', memo: 'Review required' },
+    operator: 'SUPERVISOR',
+  });
+  expect(requests[1]?.body).toEqual({ ...requests[0]?.body, lookupOnly: true });
+  expect(requests[1]?.key).toBe(requests[0]?.key);
+}, 30000);
+
+it('starts an available guided transfer and restores pending inline approval from authenticated history after reconnect', async () => {
+  const { page, state, service, connect } = await fixture();
+  const transfer = {
+    ...capability,
+    id: 'meridian-funds-transfer',
+    parameters: operationContracts[0].parameters.map(parameter => ({ ...parameter })),
+    tools: { ...capability.tools, openai: { ...capability.tools.openai, function: { ...capability.tools.openai.function, name: 'meridian-funds-transfer' } } },
+  };
+  service.catalog = () => [transfer];
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  await guided.getByLabel('Operation').selectOption(transfer.id);
+  await guided.getByLabel('Member number', { exact: true }).fill('9001');
+  await guided.getByLabel('From share', { exact: true }).fill('9001-S001');
+  await guided.getByLabel('To share', { exact: true }).fill('9001-S002');
+  await guided.getByLabel('Amount', { exact: true }).fill('25.00');
+  await guided.getByLabel('Memo', { exact: true }).fill('Rent');
+  await guided.getByLabel('Target role', { exact: true }).selectOption('SUPERVISOR');
+  await guided.getByRole('button', { name: 'Preview request', exact: true }).click();
+  await guided.getByRole('button', { name: 'Start operation', exact: true }).click();
+  await guided.getByText(`Accepted run: ${runId}.`, { exact: false }).waitFor();
+  await guided.getByText('Request preparation · This preview does not submit a transaction.', { exact: true }).waitFor();
+  expect(await guided.getByText('Nothing has been posted', { exact: false }).count()).toBe(0);
+  const invoked = state.requests.filter(request => request.path === `/capabilities/${transfer.id}/invoke`);
+  expect(invoked).toHaveLength(1);
+  expect(invoked[0]?.body).toEqual({
+    args: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+    operator: 'SUPERVISOR',
+  });
+
+  state.runs[0] = {
+    ...state.runs[0], state: 'awaiting-human',
+    intervention: publicIntervention({
+      id: approvalId, expiresAt: Date.now() + 60000,
+      request: { kind: 'risk_approval', reason: 'Review transfer', capability: transfer.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+      action: {
+        runId, artifact: transfer.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post', method: 'POST',
+        operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', tokenPresent: true, control: 'Post',
+        facts: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+        visibleFacts: { member: '9001', sourceShare: '9001-S001', destinationShare: '9001-S002', amount: '25.00', memo: 'Rent' },
+      },
+    }),
+  };
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await connect(operatorToken);
+  const current = page.locator('.guided-operations').locator(`[data-run-id="${runId}"]`);
+  await current.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+  await current.getByText('$25.00', { exact: true }).waitFor();
+
+  const recovered = state.runs.find(run => run.runId === runId)!;
+  Object.assign(recovered, {
+    state: 'success', intervention: undefined, finishedAt: new Date().toISOString(),
+    result: { status: 'success', outputs: { confirmation: 'Posted' } },
+  });
+  await page.locator('#refresh').click();
+  await current.getByRole('status').filter({ hasText: 'Completed' }).waitFor();
+  await current.getByText('Posted', { exact: true }).waitFor();
+  expect(await current.getByRole('button', { name: /Accept|Reject|Retry/ }).count()).toBe(0);
+  await guided.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  expect(await current.count()).toBe(0);
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  expect(await page.locator('#workspace').count()).toBe(0);
+  expect(await page.getByRole('button', { name: 'Connect', exact: true }).isVisible()).toBe(true);
+}, 20000);
+
+it('retains a recovered rejected operation until its authoritative result is dismissed', async () => {
+  const { page, state, service, connect } = await fixture();
+  const transfer = {
+    ...capability,
+    id: 'meridian-funds-transfer',
+    parameters: operationContracts[0].parameters.map(parameter => ({ ...parameter })),
+    tools: { ...capability.tools, openai: { ...capability.tools.openai, function: { ...capability.tools.openai.function, name: 'meridian-funds-transfer' } } },
+  };
+  service.catalog = () => [transfer];
+  state.runs.push({
+    ...initialRun(), capability: transfer.id, state: 'awaiting-human',
+    intervention: publicIntervention({
+      id: approvalId, expiresAt: Date.now() + 60000,
+      request: { kind: 'risk_approval', reason: 'Review transfer', capability: transfer.id, goal: 'Transfer fixture', url: 'https://offline.example/review' },
+      action: {
+        runId, artifact: transfer.id, version: '1.0.0', stepId: 'post', destination: 'https://offline.example/post', method: 'POST',
+        operator: 'offline-teller', branch: 'OFFLINE', role: 'TELLER', tokenPresent: true, control: 'Post',
+        facts: { member: '9001', amount: '25.00' }, visibleFacts: { member: '9001', amount: '25.00' },
+      },
+    }),
+  });
+  await connect(operatorToken);
+  const guided = page.locator('.guided-operations');
+  const current = guided.locator(`[data-run-id="${runId}"]`);
+  await current.getByRole('button', { name: 'Reject', exact: true }).waitFor();
+  const recovered = state.runs.find(run => run.runId === runId)!;
+  Object.assign(recovered, { state: 'interrupted', intervention: undefined });
+  await page.locator('#refresh').click();
+  await current.getByRole('status').filter({ hasText: 'Interrupted' }).waitFor();
+  expect(await current.getByRole('button', { name: /Accept|Reject|Retry/ }).count()).toBe(0);
+  await guided.getByRole('button', { name: 'Dismiss result', exact: true }).click();
+  expect(await current.count()).toBe(0);
 }, 15000);
 
 it('offline direct invocation keeps an uncertain request key, query/auth boundaries and evidence paths remain guarded', async () => {

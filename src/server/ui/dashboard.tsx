@@ -1,13 +1,50 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { completedActionReady, hasCurrentPublicIntervention, pending, segment, useRuns, type Run } from './session';
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { completedActionReady, hasCurrentPublicIntervention, pending, segment, useRuns, type OperationContract, type Run } from './session';
 import { EvidenceViewer } from './evidence';
 import { RecordedTimeline } from './timeline';
 import type { RecordedStructure } from '../../evidence/safe-event';
 import { MERIDIAN_CAPABILITIES } from '../capability-labels.js';
 import { capabilityLabel, displayValue, fieldLabel, isReadCapability, runPresentation } from './presentation';
 import { ApiRequestError } from './transport';
+import { ApprovalPanel } from './review';
 const AVAILABILITY_STATES = new Set(['available', 'not_recorded', 'restricted', 'temporarily_unavailable']);
-type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string };
+type InvocationAttempt = { capabilityId: string; body: string; role?: string; fingerprint: string; key: string; endpoint: 'invoke' | 'discover' };
+type AttemptResult = { kind: 'accepted'; runId: string } | { kind: 'blocked' } | { kind: 'rejected' | 'uncertain'; message: string };
+async function submitRetainedAttempt(
+  retained: InvocationAttempt,
+  lookupOnly: boolean,
+  controls: Pick<ReturnType<typeof useRuns>, 'request' | 'beginAction' | 'markActionUncertain' | 'bindAction' | 'clearAction' | 'watch'>,
+): Promise<AttemptResult> {
+  if (!lookupOnly && !controls.beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId }))
+    return { kind: 'blocked' };
+  try {
+    const response = await controls.request(`/capabilities/${segment(retained.capabilityId)}/${retained.endpoint}`, {
+      method: 'POST',
+      body: lookupOnly ? JSON.stringify({ ...JSON.parse(retained.body), lookupOnly: true }) : retained.body,
+      headers: { 'Idempotency-Key': retained.key },
+    });
+    const accepted: { runId: string } = await response.json();
+    segment(accepted.runId);
+    controls.bindAction(retained.key, accepted.runId, retained.capabilityId);
+    controls.watch(accepted.runId);
+    return { kind: 'accepted', runId: accepted.runId };
+  } catch (error) {
+    if (!lookupOnly && error instanceof ApiRequestError && error.invocationRejected) {
+      controls.clearAction(retained.key);
+      return { kind: 'rejected', message: `${error.message} This request was not accepted. Review the request before submitting again.` };
+    }
+    controls.markActionUncertain(retained.key);
+    const message = error instanceof Error ? error.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
+    return {
+      kind: 'uncertain',
+      message: lookupOnly
+        ? message.includes('No accepted request found')
+          ? 'No accepted request was found by this lookup. Acceptance of the original request remains unconfirmed. This lookup did not start an operation; refresh history before making a new request.'
+          : `${message} Acceptance remains unconfirmed. Refresh history before taking further action.`
+        : `${message} Acceptance is unconfirmed. Refresh history before taking further action.`,
+    };
+  }
+}
 export function OperatorSessionControls() {
   const { session } = useRuns();
   const [role, setRole] = useState<'TELLER' | 'SUPERVISOR'>('TELLER');
@@ -67,38 +104,24 @@ export function CapabilityCatalog() {
     && completedActionReady(session, acceptedRun));
   async function submitAttempt(retained: InvocationAttempt, lookupOnly = false) {
     if (active.current || acceptedId || loading || historyError) return;
-    if (!lookupOnly && !beginAction({ kind: 'direct', key: retained.key, body: retained.body, capabilityId: retained.capabilityId })) return;
     active.current = true;
     setBusy(true);
     setRecoveryAvailable(false);
     setError('');
     try {
-      const response = await request(`/capabilities/${segment(retained.capabilityId)}/invoke`, {
-        method: 'POST',
-        body: lookupOnly ? JSON.stringify({ ...JSON.parse(retained.body), lookupOnly: true }) : retained.body,
-        headers: { 'Idempotency-Key': retained.key },
+      const result = await submitRetainedAttempt(retained, lookupOnly, {
+        request, beginAction, markActionUncertain, bindAction, clearAction, watch,
       });
-      const accepted: { runId: string } = await response.json();
-      segment(accepted.runId);
-      setAcceptedId(accepted.runId);
-      bindAction(retained.key, accepted.runId, retained.capabilityId);
-      watch(accepted.runId);
-    } catch (e) {
-      if (!lookupOnly && e instanceof ApiRequestError && e.invocationRejected) {
-        clearAction(retained.key);
+      if (result.kind === 'accepted') setAcceptedId(result.runId);
+      if (result.kind === 'rejected') {
         attempt.current = undefined;
         setRecoveryAvailable(false);
-        setError(`${e.message} This request was not accepted. Review the request before submitting again.`);
-        return;
+        setError(result.message);
       }
-      markActionUncertain(retained.key);
-      setRecoveryAvailable(true);
-      const message = e instanceof Error ? e.message : lookupOnly ? 'Lookup interrupted.' : 'Request interrupted.';
-      setError(lookupOnly
-        ? message.includes('No accepted request found')
-          ? 'No accepted request was found by this lookup. Acceptance of the original request remains unconfirmed. This lookup did not start an operation; refresh history before making a new request.'
-          : `${message} Acceptance remains unconfirmed. Refresh history before taking further action.`
-        : `${message} Acceptance is unconfirmed. Refresh history before taking further action.`);
+      if (result.kind === 'uncertain') {
+        setRecoveryAvailable(true);
+        setError(result.message);
+      }
     } finally {
       active.current = false;
       setBusy(false);
@@ -138,6 +161,7 @@ export function CapabilityCatalog() {
         role: session.principal === 'operator' ? String(data.get('operator') ?? '') : undefined,
         fingerprint,
         key: crypto.randomUUID(),
+        endpoint: 'invoke',
       };
     }
     const nextAttempt = attempt.current;
@@ -256,6 +280,274 @@ export function CapabilityCatalog() {
     </section>
   );
 }
+
+const guidedOperationLabels = new Map([
+  ['meridian-funds-transfer', 'Funds Transfer'],
+  ['meridian-open-share', 'Open New Share'],
+  ['meridian-update-member', 'Update Member Information'],
+  ['meridian-place-hold', 'Place Account Hold'],
+]);
+const guidedFieldLabels = new Map([
+  ['member', 'Member number'], ['sourceShare', 'From share'], ['destinationShare', 'To share'],
+  ['amount', 'Amount'], ['memo', 'Memo'], ['shareType', 'Share type'], ['deposit', 'Initial deposit'],
+  ['email', 'Email'], ['phone', 'Phone'], ['address', 'Mailing address'], ['share', 'Share'],
+  ['reason', 'Reason code'], ['notes', 'Notes'],
+]);
+const enumLabels = new Map([
+  ['S0001', 'Regular Shares'], ['S0070', 'Share Draft (Checking)'], ['MMKT', 'Money Market'], ['CERT', 'Certificate'],
+  ['FRAUD', 'Fraud'], ['LEGAL', 'Legal'], ['DECEASED', 'Deceased'],
+]);
+type OperationRole = 'TELLER' | 'SUPERVISOR';
+type GuidedPreview = { args: Record<string, string | number>; body: string; mode?: 'invoke' | 'discover'; role?: OperationRole };
+
+export function GuidedOperations() {
+  const controls = useRuns();
+  const { session, runs, loading, error: historyError, actionHold } = controls;
+  const prefix = useId().replace(/:/g, '');
+  const contracts = session.operationContracts;
+  const [selected, setSelected] = useState(contracts[0]?.id ?? '');
+  const [preview, setPreview] = useState<GuidedPreview | undefined>(undefined);
+  const [targetRole, setTargetRole] = useState<OperationRole>('TELLER');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [acceptedId, setAcceptedId] = useState('');
+  const [trackedRunIds, setTrackedRunIds] = useState<string[]>([]);
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
+  const active = useRef(false);
+  const attempt = useRef<InvocationAttempt | undefined>(undefined);
+  const contract = contracts.find(item => item.id === selected) ?? contracts[0];
+  const status = contract ? session.availability?.find(item => item.id === contract.id) : undefined;
+  const approved = contract ? session.capabilities.some(item => item.id === contract.id) : false;
+  const unknown = contract ? runs.some(run => run.capability === contract.id && run.state === 'POST_OUTCOME_UNKNOWN') : false;
+  const mode: 'invoke' | 'discover' | undefined = !contract || unknown ? undefined
+    : status?.state === 'available' && approved ? 'invoke'
+      : status?.state === 'not_recorded' && contract.discovery && session.principal === 'operator' ? 'discover'
+        : undefined;
+  const acceptedRun = runs.find(run => run.runId === acceptedId);
+  const effectiveRole: OperationRole = contract?.id === 'meridian-place-hold' ? 'SUPERVISOR' : targetRole;
+  useEffect(() => {
+    const observed = runs.filter(run => guidedOperationLabels.has(run.capability) && pending(run)).map(run => run.runId);
+    if (!observed.length) return;
+    setTrackedRunIds(current => {
+      const next = [...new Set([...current, ...observed])];
+      return next.length === current.length ? current : next;
+    });
+  }, [runs]);
+  const shownRunIds = [...new Set([
+    ...trackedRunIds,
+    ...runs.filter(run => guidedOperationLabels.has(run.capability) && run.state === 'POST_OUTCOME_UNKNOWN').map(run => run.runId),
+    ...(acceptedId ? [acceptedId] : []),
+  ])];
+  const finishedDiscovery = acceptedRun?.kind === 'discovery' && !pending(acceptedRun)
+    && acceptedRun.state !== 'POST_OUTCOME_UNKNOWN';
+  const finishedInvocation = acceptedRun && completedActionReady(session, acceptedRun);
+  const canRelease = acceptedRun?.state === 'POST_OUTCOME_UNKNOWN' || finishedDiscovery || finishedInvocation;
+  const blocked = busy || loading || Boolean(historyError) || Boolean(actionHold);
+
+  function readinessMessage(current?: OperationContract): string {
+    if (!current) return 'Guided operation metadata is unavailable. Reconnect or refresh before preparing a request.';
+    if (unknown) return 'This operation has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.';
+    if (!status) return 'Operation readiness is unavailable. Refresh before starting anything.';
+    if (status.state === 'available' && !approved) return 'This operation is not authorized for the current session.';
+    if (status.state === 'available') return 'An approved recording is available. Starting creates a run; final Save or Post still requires exact inline approval.';
+    if (status.state === 'not_recorded' && !current.discovery) return 'No approved recording exists, and supervised discovery is not supported for this operation.';
+    if (status.state === 'not_recorded' && session.principal !== 'operator') return 'Only an authenticated operator can start supervised discovery.';
+    if (status.state === 'not_recorded') return 'No approved recording exists. An operator may explicitly start supervised discovery for a private draft.';
+    return `${status.state}. ${status.reason || 'This operation cannot start now.'}`;
+  }
+
+  function resetPrepared() {
+    if (recoveryAvailable || acceptedId) return;
+    setPreview(undefined);
+    attempt.current = undefined;
+    setError('');
+  }
+
+  function review(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!contract || recoveryAvailable || acceptedId) return;
+    const data = new FormData(event.currentTarget);
+    const args = Object.fromEntries(contract.parameters.map(parameter => [
+      parameter.name,
+      parameter.type === 'number' ? Number(data.get(parameter.name)) : String(data.get(parameter.name) ?? ''),
+    ]));
+    const body = JSON.stringify({
+      args,
+      ...(session.principal === 'operator' ? { operator: effectiveRole } : {}),
+    });
+    const fingerprint = `${contract.id}:${mode ?? 'blocked'}:${body}`;
+    if (mode && attempt.current?.fingerprint !== fingerprint) {
+      attempt.current = {
+        capabilityId: contract.id,
+        body,
+        role: session.principal === 'operator' ? effectiveRole : undefined,
+        fingerprint,
+        key: crypto.randomUUID(),
+        endpoint: mode,
+      };
+    }
+    if (!mode) attempt.current = undefined;
+    setPreview({ args, body, mode, ...(session.principal === 'operator' ? { role: effectiveRole } : {}) });
+    setError('');
+  }
+
+  async function start(lookupOnly = false) {
+    const retained = attempt.current;
+    if (!retained || active.current || acceptedId || loading || historyError) return;
+    if (!lookupOnly && (retained.endpoint !== mode || actionHold)) {
+      setError(actionHold ? 'Another operation request is unresolved. Resolve it before starting this request.' : 'Readiness changed. Review this request again before starting.');
+      return;
+    }
+    active.current = true;
+    setBusy(true);
+    setRecoveryAvailable(false);
+    setError('');
+    try {
+      const result = await submitRetainedAttempt(retained, lookupOnly, controls);
+      if (result.kind === 'accepted') setAcceptedId(result.runId);
+      if (result.kind === 'rejected') {
+        attempt.current = undefined;
+        setPreview(undefined);
+        setError(result.message);
+      }
+      if (result.kind === 'uncertain') {
+        setRecoveryAvailable(true);
+        setError(result.message);
+      }
+    } finally {
+      active.current = false;
+      setBusy(false);
+    }
+  }
+
+  function abandonUnconfirmed() {
+    const retained = attempt.current;
+    if (!retained || busy) return;
+    controls.abandonAction(retained.key);
+    attempt.current = undefined;
+    setRecoveryAvailable(false);
+    setPreview(undefined);
+    setError('The original request may still run or may have completed. This local action did not cancel it.');
+  }
+
+  function releaseFinished() {
+    if (!canRelease || !acceptedRun) return;
+    if (attempt.current) controls.clearAction(attempt.current.key);
+    attempt.current = undefined;
+    setTrackedRunIds(current => current.filter(runId => runId !== acceptedId));
+    setAcceptedId('');
+    setPreview(undefined);
+    setError(acceptedRun.state === 'POST_OUTCOME_UNKNOWN'
+      ? 'The original run remains quarantined. No retry or cancellation was sent; use a separate read-only inquiry.'
+      : acceptedRun.kind === 'discovery'
+        ? 'Discovery finished. Its private draft is not an approved callable capability.'
+        : 'The authoritative run is complete.');
+  }
+
+  return (
+    <section className="guided-operations" aria-labelledby={`${prefix}-heading`}>
+      <div className="section-title">
+        <h3 id={`${prefix}-heading`}>Operations</h3>
+        <span className="badge">Guided request</span>
+      </div>
+      {!contract ? <p className="warning">{readinessMessage()}</p> : <>
+        <form onSubmit={review} autoComplete="off" onChange={resetPrepared}>
+          <fieldset disabled={busy || Boolean(acceptedId) || recoveryAvailable}>
+            <label htmlFor={`${prefix}-operation`}>Operation</label>
+            <select id={`${prefix}-operation`} value={contract.id} onChange={event => {
+              setSelected(event.target.value);
+              setTargetRole(event.target.value === 'meridian-place-hold' ? 'SUPERVISOR' : 'TELLER');
+              setPreview(undefined);
+              attempt.current = undefined;
+              setError('');
+            }}>
+              {contracts.map(item => <option key={item.id} value={item.id}>{guidedOperationLabels.get(item.id) ?? item.id}</option>)}
+            </select>
+            {session.principal === 'operator' && <div className="guided-field">
+              <label htmlFor={`${prefix}-target-role`}>Target role</label>
+              <select
+                id={`${prefix}-target-role`}
+                value={effectiveRole}
+                disabled={contract.id === 'meridian-place-hold'}
+                onChange={event => setTargetRole(event.target.value as OperationRole)}
+              >
+                <option value="TELLER">TELLER</option>
+                <option value="SUPERVISOR">SUPERVISOR</option>
+              </select>
+              {contract.id === 'meridian-place-hold' && <span className="muted">Account holds require SUPERVISOR.</span>}
+            </div>}
+            <div className="guided-fields" key={contract.id}>
+              {contract.parameters.map(parameter => {
+                const id = `${prefix}-${parameter.name}`;
+                const label = guidedFieldLabels.get(parameter.name) ?? fieldLabel(parameter.name);
+                return <div className="guided-field" key={parameter.name}>
+                  <label htmlFor={id}>{label}</label>
+                  {parameter.enum ? <select id={id} name={parameter.name} required={parameter.required}>
+                    <option value="">Choose {label.toLowerCase()}</option>
+                    {parameter.enum.map(value => <option key={value} value={value}>{enumLabels.get(value) ? `${enumLabels.get(value)} (${value})` : value}</option>)}
+                  </select> : <input
+                    id={id}
+                    name={parameter.name}
+                    required={parameter.required}
+                    type="text"
+                    inputMode={parameter.format === 'positiveMoney' ? 'decimal' : undefined}
+                    pattern={parameter.pattern ?? (parameter.format === 'positiveMoney' ? '^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,2})?$' : undefined)}
+                    autoComplete="off"
+                  />}
+                </div>;
+              })}
+            </div>
+            <button disabled={Boolean(preview) || recoveryAvailable}>Preview request</button>
+          </fieldset>
+        </form>
+        <p className={mode ? 'muted' : 'warning'}>{readinessMessage(contract)}</p>
+        {preview && <div className="operation-preview">
+          <p className="eyebrow">Request preparation · This preview does not submit a transaction.</p>
+          <h4>Request preview</h4>
+          <dl className="review-facts">{contract.parameters.map(parameter => <div key={parameter.name}>
+            <dt>{guidedFieldLabels.get(parameter.name) ?? fieldLabel(parameter.name)}</dt>
+            <dd>{displayValue(parameter.name, preview.args[parameter.name])}</dd>
+          </div>)}</dl>
+          {session.principal === 'operator' && <p className="review-operator">
+            Requested target role: {preview.role}. {contract.id === 'meridian-place-hold'
+              ? session.supervisorVerified ? 'Supervisor context was verified at sign-on; native action facts still control final approval.'
+                : 'This operator credential does not by itself verify the target role; native action facts must do so before final approval.'
+              : 'Native action facts must verify the actual target session before final approval.'}
+          </p>}
+          <div className="actions">
+            <button type="button" className="secondary" disabled={blocked} onClick={() => {
+              if (recoveryAvailable || acceptedId) return;
+              setPreview(undefined);
+              attempt.current = undefined;
+              setError('');
+            }}>Edit request</button>
+            {preview.mode && <button type="button" disabled={blocked} onClick={() => void start()}>
+              {preview.mode === 'discover' ? 'Start supervised discovery' : 'Start operation'}
+            </button>}
+          </div>
+        </div>}
+        {error && <p role="alert">{error}</p>}
+        {recoveryAvailable && attempt.current && <p>
+          Acceptance is unconfirmed. Looking up the original request uses the same endpoint, facts, and key; it does not retry the operation.
+          <button type="button" disabled={busy} onClick={() => void start(true)}>Look up original request</button>
+          <button type="button" disabled={busy} onClick={abandonUnconfirmed}>Start a separate request</button>
+        </p>}
+        {acceptedId && <p role="status">Accepted run: {acceptedId}. Follow the authoritative state below; this preparation is not final Save or Post approval.</p>}
+        {shownRunIds.map(runId => {
+          const run = runs.find(candidate => candidate.runId === runId);
+          const recoveredTerminal = runId !== acceptedId && run && !pending(run) && run.state !== 'POST_OUTCOME_UNKNOWN';
+          return <div className="guided-run" key={runId}>
+            <CapabilityRunCard runId={runId} inlineApproval />
+            {recoveredTerminal && <button type="button" onClick={() => setTrackedRunIds(current => current.filter(id => id !== runId))}>Dismiss result</button>}
+          </div>;
+        })}
+        {canRelease && <button type="button" onClick={releaseFinished}>{acceptedRun?.state === 'POST_OUTCOME_UNKNOWN'
+          ? 'Choose a separate inquiry' : acceptedRun?.kind === 'discovery' ? 'Finish discovery' : 'Dismiss result'}</button>}
+      </>}
+    </section>
+  );
+}
+
 function WithheldFields({ fields }: { fields: NonNullable<RecordedStructure['outputs']> }) {
   return <ul>{fields.map(field => <li key={field.name}>
     {field.name}: {field.type} — value withheld
@@ -366,8 +658,8 @@ export function RunDetail({ run }: { run: Run }) {
     </details>
   );
 }
-export function CapabilityRunCard({ runId, detail = false }: { runId: string; detail?: boolean }) {
-  const { runs, error, refresh } = useRuns();
+export function CapabilityRunCard({ runId, detail = false, inlineApproval = false }: { runId: string; detail?: boolean; inlineApproval?: boolean }) {
+  const { session, runs, error, refresh } = useRuns();
   const run = runs.find((r) => r.runId === runId);
   if (!run)
     return (
@@ -408,6 +700,9 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
           Run updates disconnected; last confirmed state shown.
         </p>
       )}
+      {inlineApproval && session.principal === 'operator' && run.state === 'awaiting-human'
+        && run.intervention && 'id' in run.intervention && run.intervention.request.kind === 'risk_approval'
+        && <ApprovalPanel run={run} intervention={run.intervention} inline />}
       <ReviewRequestButton run={run} />
       {detail && (
         <>

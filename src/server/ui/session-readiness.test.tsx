@@ -4,6 +4,7 @@ import { completedActionReady, validateReadinessMetadata, type Run, type Session
 const session = (readinessRequired?: boolean): Session => ({
   token: 'offline', principal: 'caller', readinessRequired, availability: [],
   capabilities: [{ id: 'meridian-funds-transfer' }] as Session['capabilities'],
+  operationContracts: [],
 });
 const run = (state: string, identity?: string) => ({
   capability: 'meridian-funds-transfer', state,

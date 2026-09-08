@@ -1,3 +1,4 @@
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
@@ -10,8 +11,8 @@ export const WRITE_RATE_BURST = 20;
 export const WRITE_RATE_REFILL_PER_SECOND = 1;
 
 export type Conversation = { id: string; archived: boolean; revision: number; createdAt: string; updatedAt: string };
-export type ConversationEvent = { id: string; sequence: number; kind: 'message_omitted' | 'run_linked'; role: 'user' | 'assistant'; runId?: string; createdAt: string };
-export type AppendEvent = { id: string; kind: 'message_omitted' | 'run_linked'; role: 'user' | 'assistant'; runId?: string; expectedRevision: number };
+export type ConversationEvent = { id: string; sequence: number; kind: 'message_omitted' | 'run_linked' | 'message_saved'; role: 'user' | 'assistant'; runId?: string; text?: string; createdAt: string };
+export type AppendEvent = { id: string; kind: 'message_omitted' | 'run_linked' | 'message_saved'; role: 'user' | 'assistant'; runId?: string; text?: string; expectedRevision: number };
 
 const uuid = z.string().uuid().refine(value => value === value.toLowerCase());
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1);
@@ -19,13 +20,16 @@ const limit = z.number().int().min(1).max(100).default(50);
 const identity = z.tuple([uuid, uuid]);
 const listOptions = z.object({ archived: z.boolean().default(false), after: uuid.optional(), limit }).strict();
 const eventOptions = z.object({ after: revision.default(0), limit }).strict();
-const appendEvent = z.object({
+export const appendEvent = z.object({
   id: uuid,
-  kind: z.enum(['message_omitted', 'run_linked']),
+  kind: z.enum(['message_omitted', 'run_linked', 'message_saved']),
   role: z.enum(['user', 'assistant']),
   runId: uuid.optional(),
+  text: z.string().min(1).max(4000).optional(),
   expectedRevision: revision,
 }).strict().superRefine((event, context) => {
+  if ((event.kind === 'message_saved') !== (event.text !== undefined))
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'text does not match kind' });
   if ((event.kind === 'run_linked') !== (event.runId !== undefined))
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'runId does not match kind' });
 });
@@ -43,7 +47,7 @@ type ConversationRow = {
 type EventRow = {
   id: string; owner_id: string; conversation_id: string; sequence: string;
   kind: ConversationEvent['kind']; role: ConversationEvent['role'];
-  run_id: string | null; created_at: Date;
+  run_id: string | null; text_ciphertext: Buffer | null; created_at: Date;
 };
 type SubjectQuotaRow = {
   owner_id: string;
@@ -75,7 +79,36 @@ const event = (row: EventRow): ConversationEvent => ({
 });
 
 export class ConversationStore {
-  constructor(private readonly pool: Pool) {}
+  private readonly textKey?: Buffer;
+  readonly textEnabled: boolean;
+  constructor(private readonly pool: Pool, textKey?: string) {
+    if (textKey !== undefined && !/^[a-f0-9]{64}$/.test(textKey)) throw new Error('Invalid conversation text key');
+    this.textKey = textKey === undefined ? undefined : Buffer.from(textKey, 'hex');
+    this.textEnabled = this.textKey !== undefined;
+  }
+
+  private decode(row: EventRow, owner: string): ConversationEvent {
+    const result = event(row);
+    if (row.kind !== 'message_saved') return result;
+    if (!this.textKey) throw new RequestError(503, 'Conversation text key is unavailable');
+    try {
+      const data = row.text_ciphertext!;
+      const decipher = createDecipheriv('aes-256-gcm', this.textKey, data.subarray(0, 12));
+      decipher.setAAD(Buffer.from(JSON.stringify([owner, row.conversation_id, row.id, row.role])));
+      decipher.setAuthTag(data.subarray(12, 28));
+      return { ...result, text: Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8') };
+    } catch { throw new RequestError(503, 'Conversation text could not be restored'); }
+  }
+
+  private encode(owner: string, conversationId: string, pending: AppendEvent): Buffer | null {
+    if (pending.kind !== 'message_saved') return null;
+    if (!this.textKey) throw new RequestError(503, 'Conversation text saving is unavailable');
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.textKey, nonce);
+    cipher.setAAD(Buffer.from(JSON.stringify([owner, conversationId, pending.id, pending.role])));
+    const encrypted = Buffer.concat([cipher.update(pending.text!, 'utf8'), cipher.final()]);
+    return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]);
+  }
 
   async migrate(): Promise<void> {
     const sql = await readFile(new URL('./conversations.sql', import.meta.url), 'utf8');
@@ -196,7 +229,7 @@ export class ConversationStore {
       const existing = found.rows[0];
       if (existing) {
         if (existing.conversation_id === id) {
-          if (existing.kind === pending.kind && existing.role === pending.role && existing.run_id === (pending.runId ?? null)) return event(existing);
+          if (existing.kind === pending.kind && existing.role === pending.role && existing.run_id === (pending.runId ?? null) && this.decode(existing, owner).text === pending.text) return this.decode(existing, owner);
           throw new RequestError(409, 'Conversation event conflicts with an existing event');
         }
         const target = await client.query<{ id: string }>(
@@ -229,10 +262,10 @@ export class ConversationStore {
         [sequence, id, owner],
       );
       const inserted = await client.query<EventRow>(
-        `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role, run_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO meridian_conversation_events (id, owner_id, conversation_id, sequence, kind, role, run_id, text_ciphertext)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (owner_id, id) DO NOTHING RETURNING *`,
-        [pending.id, owner, id, sequence, pending.kind, pending.role, pending.runId ?? null],
+        [pending.id, owner, id, sequence, pending.kind, pending.role, pending.runId ?? null, this.encode(owner, id, pending)],
       );
       if (!inserted.rows[0]) throw new RequestError(409, 'Conversation event conflicts with an existing event');
       await client.query(
@@ -241,7 +274,7 @@ export class ConversationStore {
          WHERE owner_id = $1`,
         [owner],
       );
-      return event(inserted.rows[0]);
+      return this.decode(inserted.rows[0], owner);
     });
   }
 
@@ -258,7 +291,7 @@ export class ConversationStore {
       );
       const rows = result.rows.slice(0, parsed.limit);
       return {
-        events: rows.map(event),
+        events: rows.map(row => this.decode(row, owner)),
         ...(result.rows.length > parsed.limit ? { nextCursor: Number(rows.at(-1)!.sequence) } : {}),
       };
     });

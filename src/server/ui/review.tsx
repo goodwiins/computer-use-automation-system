@@ -68,7 +68,7 @@ function ReviewDetails({ run, intervention }: { run: Run; intervention: PublicIn
   );
 }
 
-export function ApprovalPanel({ run, intervention }: { run: Run; intervention: PublicIntervention }) {
+export function ApprovalPanel({ run, intervention, inline = false }: { run: Run; intervention: PublicIntervention; inline?: boolean }) {
   const { request, refresh, refreshVersion, error: connectionError, getReviewAttempt, updateReviewAttempt } = useRuns();
   const [now, setNow] = useState(Date.now());
   const key = `${run.runId}:${intervention.id}`;
@@ -76,30 +76,43 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
   const approval = intervention.request.kind === 'risk_approval';
   const deadlinePassed = now >= intervention.expiresAt;
   const action = intervention.action;
+  const panel = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const submitted = useRef<HTMLParagraphElement>(null);
+  const activeSubmission = useRef(false);
   const actionContextValid = hasActionContext(action, run, intervention);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
   useLayoutEffect(() => {
-    if (attempt.sent) submitted.current?.focus();
+    if (inline && panel.current?.contains(document.activeElement)) heading.current?.focus();
+  }, [inline, key]);
+  useLayoutEffect(() => {
+    if (attempt.sent && activeSubmission.current) submitted.current?.focus();
   }, [attempt.sent]);
   useEffect(() => {
+    if (!attempt.sent) activeSubmission.current = false;
+  }, [attempt.sent, key]);
+  useEffect(() => {
     if (!attempt.uncertain) return;
-    if (!attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
-    if (attempt.probing && !attempt.probeSettled) return;
-    if (attempt.probing && attempt.probeSettled && attempt.probeVersion === refreshVersion) return;
-    if (attempt.probing && attempt.probeSettled && attempt.probeVersion !== refreshVersion) {
+    const currentAttempt = getReviewAttempt(key);
+    if (!currentAttempt.uncertain) return;
+    if (!currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion === refreshVersion) return;
+    if (currentAttempt.probing && !currentAttempt.probeSettled) return;
+    if (currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion === refreshVersion) return;
+    if (currentAttempt.probing && currentAttempt.probeSettled && currentAttempt.probeVersion !== refreshVersion) {
       updateReviewAttempt(key, { probing: false });
       return;
     }
     const originalRunId = run.runId;
     const originalInterventionId = intervention.id;
-    updateReviewAttempt(key, { probing: true, probeSettled: false, probeVersion: refreshVersion });
+    const probeId = crypto.randomUUID();
+    updateReviewAttempt(key, { probing: true, probeSettled: false, probeVersion: refreshVersion, probeId });
     void request(`/runs/${segment(originalRunId)}`).then(response => response.json()).then((current: Run) => {
       const currentIntervention = interventionOf(current);
-      if (current.runId === originalRunId && current.state === 'awaiting-human'
+      if (getReviewAttempt(key).probeId === probeId
+        && current.runId === originalRunId && current.state === 'awaiting-human'
         && currentIntervention?.id === originalInterventionId) {
         updateReviewAttempt(key, {
           uncertain: false,
@@ -109,14 +122,17 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
         });
       }
     }).catch(() => { /* Keep the exact intervention locked until the next explicit refresh. */ })
-      .finally(() => updateReviewAttempt(key, { probeSettled: true }));
-  }, [attempt.uncertain, attempt.probing, attempt.probeVersion, intervention.id, key, refreshVersion, request, run.runId, updateReviewAttempt]);
+      .finally(() => {
+        if (getReviewAttempt(key).probeId === probeId) updateReviewAttempt(key, { probeSettled: true });
+      });
+  }, [attempt.uncertain, attempt.probing, attempt.probeVersion, getReviewAttempt, intervention.id, key, refreshVersion, request, run.runId, updateReviewAttempt]);
   async function decide(decision: 'approve' | 'retry' | 'abort') {
     const originalRunId = run.runId;
     const originalInterventionId = intervention.id;
     const current = getReviewAttempt(key);
     if (connectionError || current.locked || (decision === 'approve' && !actionContextValid)) return;
-    updateReviewAttempt(key, { locked: true, sent: true, error: undefined });
+    activeSubmission.current = true;
+    updateReviewAttempt(key, { locked: true, sent: true, error: undefined, probeId: undefined });
     try {
       await request(`/runs/${segment(originalRunId)}/decision`, {
         method: 'POST',
@@ -135,8 +151,8 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
     }
   }
   return (
-    <section className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
-      <h3>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
+    <section ref={panel} className="approval" aria-label={approval ? 'Operator approval' : 'Operator repair'}>
+      <h3 ref={heading} tabIndex={-1}>{approval ? 'Operator approval required' : 'Operator repair required'}</h3>
       <p>{intervention.request.reason}</p>
       <p>{deadlinePassed
         ? 'Estimated deadline passed. The server will confirm whether this intervention is still pending.'
@@ -165,14 +181,14 @@ export function ApprovalPanel({ run, intervention }: { run: Run; intervention: P
           disabled={Boolean(connectionError) || attempt.sent || attempt.locked || (approval && !actionContextValid)}
           onClick={() => void decide(approval ? 'approve' : 'retry')}
         >
-          {approval ? confirmLabel(intervention.request.capability) : 'Retry after repair'}
+          {approval && inline ? 'Accept' : approval ? confirmLabel(intervention.request.capability) : 'Retry after repair'}
         </button>
         <button
           className="abort"
           disabled={Boolean(connectionError) || attempt.sent || attempt.locked}
           onClick={() => void decide('abort')}
         >
-          {approval ? 'Refuse request' : 'Stop request'}
+          {approval && inline ? 'Reject' : approval ? 'Refuse request' : 'Stop request'}
         </button>
       </div>
       {attempt.sent && <p ref={submitted} role="status" tabIndex={-1}>Decision submitted. Waiting for authoritative run updates.</p>}

@@ -15,3 +15,5 @@ evidence/meridian/
 .next/
 out/
 *.tsbuildinfo
+
+artifacts/drafts/

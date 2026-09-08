@@ -2,7 +2,7 @@
 
 import './csp';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
-import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, validateReadinessMetadata, type Session } from './session';
+import { authenticatedFetch, CapabilityAuthorityError, hasCurrentPublicIntervention, RunProvider, useRuns, validateCapabilityAuthority, validateOperationContracts, validateReadinessMetadata, type Session } from './session';
 import { Chat } from './chat';
 import { signOn } from './sign-on';
 import { CapabilityCatalog, RunHistory } from './dashboard';
@@ -96,7 +96,7 @@ export default function App() {
       if (data === null || typeof data !== 'object' || Array.isArray(data)) {
         throw new Error('Invalid capability catalog. Reconnect with an authorized credential.');
       }
-      const metadata = data as { capabilities?: unknown; availability?: unknown };
+      const metadata = data as { conversationText?: unknown; capabilities?: unknown; availability?: unknown; operationContracts?: unknown };
       if (!Array.isArray(metadata.capabilities)) {
         throw new Error('Invalid capability catalog. Reconnect with an authorized credential.');
       }
@@ -109,9 +109,12 @@ export default function App() {
       setSession({
         token,
         ...authority,
+        conversationText: metadata.conversationText === true,
         readinessRequired: validateReadinessMetadata(data),
+        supervisorVerified: Boolean(supervisorStatus),
         capabilities: metadata.capabilities as Session['capabilities'],
         availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
+        operationContracts: validateOperationContracts(metadata.operationContracts),
       });
       setStatus(supervisorStatus ?? connectedStatus);
     } catch (e) {

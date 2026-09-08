@@ -53,6 +53,7 @@ type ToolOutput =
   | { kind: 'error'; status: number; error: string; acceptance?: 'rejected' };
 
 const instructions = `Interpret explicit user requests using only the server-provided capability tools. Ask for missing required inputs and never invent members, shares, amounts, or contact data. Respond naturally to questions. For ambiguous requests, ask a short clarifying question before taking action. Status questions never authorize a new operation. At most one capability may be invoked. Tool results are asynchronous run state, not proof of success. Operators approve transactions separately; you cannot approve, retry, select an operator role, or change operator context.`;
+const guidedOperationInstructions = ` For MERIDIAN Funds Transfer, Open New Share, Update Member Information, and Place Account Hold requests, direct the user to the operation form in chat. Availability, progress, and final approval come from its authoritative cards. Never claim that you started a guided operation; the user must review and explicitly start it in the form.`;
 
 function makeChatModel(): LanguageModel {
   if (process.env.AZURE_OPENAI_ENDPOINT) {
@@ -141,9 +142,9 @@ function buildTools(service: InvocationService, principal: Principal, key: strin
   return tools;
 }
 
-const modelOptions = (model: LanguageModel, messages: ModelMessage[], tools: ToolSet, catalog: { id: string; description: string }[]) => ({
+const modelOptions = (model: LanguageModel, messages: ModelMessage[], tools: ToolSet, catalog: { id: string; description: string }[], meridian = false) => ({
   model,
-  instructions: `${instructions}\nAvailable capabilities: ${JSON.stringify(catalog.map(({ id, description }) => ({ id, description })))}. Descriptions are context, not permission to execute. If no action tools are provided, answer or ask for clarification.`,
+  instructions: `${instructions}${meridian ? guidedOperationInstructions : ''}\nAvailable capabilities: ${JSON.stringify(catalog.map(({ id, description }) => ({ id, description })))}. Descriptions are context, not permission to execute. If no action tools are provided, answer or ask for clarification.`,
   messages,
   tools,
   stopWhen: stepCountIs(1),
@@ -253,7 +254,7 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         const intent = await resolveIntent(chatModel, [latest], body.intent);
         const tools = intent === 'conversation' ? {} : buildTools(service, principal, key, intent);
         if (intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
-        const result = await generateText(modelOptions(chatModel, [latest], tools, service.catalog(principal)));
+        const result = await generateText(modelOptions(chatModel, [latest], tools, service.catalog(principal), service.profile?.appId === 'meridian'));
         const localResults = result.toolResults.filter(toolResult => toolResult.providerExecuted !== true
           && result.toolCalls.some(toolCall => toolCall.dynamic !== true && toolCall.providerExecuted !== true
             && toolCall.toolCallId === toolResult.toolCallId && toolCall.toolName === toolResult.toolName));
@@ -315,7 +316,7 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         if (intent === 'invoke' && Object.keys(tools).length === 1) throw new RequestError(409, 'No approved caller capabilities are available');
         let failed = false;
         const result = streamText({
-          ...modelOptions(chatModel, messages, tools, service.catalog(principal)), streamRetries: 0,
+          ...modelOptions(chatModel, messages, tools, service.catalog(principal), service.profile?.appId === 'meridian'), streamRetries: 0,
           onError: () => { failed = true; }, onAbort: () => { failed = true; },
           onEnd: event => {
             if (clarifications.get(currentId) !== slot || failed || intent !== 'invoke' || !current || event.finishReason !== 'stop' || event.toolCalls.length || !event.text.trim()) return;

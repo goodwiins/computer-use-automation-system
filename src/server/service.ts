@@ -1,11 +1,14 @@
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CapabilityArtifact, validateParams, normalizeParams } from '../artifact/schema.js';
+import { makeLLMClient } from '../agent/client.js';
+import { runDiscovery } from '../agent/loop.js';
+import { recordArtifact } from '../artifact/recorder.js';
 import { toToolSchema } from '../artifact/tools.js';
 import { OperatorConsole } from '../escalation/operator.js';
 import { ControlSession } from '../escalation/session.js';
 import { postIntentUnknown, type ReplayResult } from '../replay/outcomes.js';
-import { applyMeridianContract } from '../runtime/contracts.js';
+import { applyMeridianContract, meridianContracts, assertTransferOutputs, transferFactsFromParams } from '../runtime/contracts.js';
 import { Approval, publicIntervention } from '../runtime/approval.js';
 import { RequestError, type JournalRecord, type RunJournal } from '../runtime/journal.js';
 import { type AppProfile } from '../runtime/profile.js';
@@ -15,6 +18,13 @@ import type { Policy } from '../safety/policy.js';
 import { safeResult as persistedResult, type RecordedStructure } from '../evidence/safe-event.js';
 import { canAccessRun, principalKey, principalRole, type Principal } from './auth.js';
 import { MERIDIAN_CAPABILITIES, type MeridianCapabilityId } from './capability-labels.js';
+
+const discoveryGoals = {
+  'meridian-funds-transfer': 'Transfer amount from sourceShare to destinationShare for member with memo. Verify the native review facts before final posting and extract the verified confirmation and transaction.',
+  'meridian-update-member': 'Update member contact details to email, phone and address. Verify the native review facts before saving and extract the verified saved result.',
+  'meridian-place-hold': 'As SUPERVISOR, place a hold on share for member using reason and notes. Verify the native review facts before applying the hold and extract the verified heldShare.',
+} as const;
+const operationIds = ['meridian-funds-transfer', 'meridian-open-share', 'meridian-update-member', 'meridian-place-hold'] as const;
 
 export type { Principal } from './auth.js';
 export type CapabilityAvailability = {
@@ -44,7 +54,7 @@ export class InvocationService {
     chat: new Set<string>(), availability: new Set<string>(), history: new Set<string>(),
   };
   constructor(readonly journal: RunJournal, readonly policy: Policy, readonly profile: AppProfile,
-    readonly evidenceDir: string, private readonly allowlist: string[], artifactDir = 'artifacts') {
+    readonly evidenceDir: string, private readonly allowlist: string[], private readonly artifactDir = 'artifacts') {
     for (const file of readdirSync(artifactDir).filter(f => f.endsWith('.json'))) {
       let artifact = CapabilityArtifact.parse(JSON.parse(readFileSync(join(artifactDir, file), 'utf8')));
       if (artifact.app.appId !== profile.appId || artifact.status !== 'approved') continue;
@@ -57,6 +67,10 @@ export class InvocationService {
   catalog(principal: Principal) {
     return [...this.artifacts.values()].filter(a => principalRole(principal) === 'operator' || this.allowlist.includes(a.id))
       .map(a => ({ id: a.id, version: a.version, description: a.description, parameters: a.parameters.filter(p => p.source !== 'server'), outputs: a.outputs, tools: toToolSchema(a) }));
+  }
+  operationContracts() {
+    return this.profile.appId === 'meridian' ? operationIds.map(id => ({ id, parameters: meridianContracts[id].parameters,
+      discovery: Object.hasOwn(discoveryGoals, id) })) : [];
   }
   private isPrivateRecord(record: Pick<JournalRecord, 'capability' | 'invocationScope'>): boolean {
     return record.invocationScope === 'member-identity'
@@ -139,10 +153,10 @@ export class InvocationService {
       throw error;
     }
   }
-  async invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
+  private async withInvocationAdmission<T>(principal: Principal, key: string, lookupOnly: boolean, work: (admission: { attempted: boolean }) => Promise<T>) {
     return this.withAdmission(async () => {
       const admission = { attempted: false };
-      try { return await this.invokeRun(principal, id, args, key, role, false, lookupOnly, admission); }
+      try { return await work(admission); }
       catch (error) {
         if (!lookupOnly && !admission.attempted && error instanceof RequestError
           && [400, 403, 404, 409, 429].includes(error.status)) {
@@ -154,6 +168,9 @@ export class InvocationService {
         throw error;
       }
     });
+  }
+  async invoke(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
+    return this.withInvocationAdmission(principal, key, lookupOnly, admission => this.invokeRun(principal, id, args, key, role, false, lookupOnly, admission));
   }
   private async invokeInternal(principal: Principal, id: string, args: Record<string, string | number>, key: string, role: 'TELLER' | 'SUPERVISOR') {
     return this.withAdmission(() => this.invokeRun(principal, id, args, key, role, true));
@@ -167,7 +184,7 @@ export class InvocationService {
       const recovery = await this.journal.recover(owner, key, recoveryRequest);
       const existing = recovery.existing;
       if (!existing || this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
-      if (existing.capability !== id) throw new RequestError(409, 'Idempotency key already identifies another request');
+      if (existing.kind !== 'replay' || existing.capability !== id) throw new RequestError(409, 'Idempotency key already identifies another request');
       if (existing.recoveryRequest !== undefined) {
         if (!recovery.direct || !recovery.matches) throw new RequestError(409, 'Idempotency key already identifies another request');
         return { runId: existing.runId, reused: true as const };
@@ -175,7 +192,11 @@ export class InvocationService {
       // Legacy records without a recovery digest retain the current-artifact exact lookup below.
     }
     const artifact = this.artifacts.get(id);
-    if (!artifact) throw new RequestError(404, 'Unknown approved capability');
+    if (!artifact) {
+      const prior = await this.journal.findRequest(owner, key);
+      if (prior && prior.kind !== 'replay') throw new RequestError(409, 'Idempotency key already identifies another request');
+      throw new RequestError(404, 'Unknown approved capability');
+    }
     const context = this.profile.appId === 'meridian' ? operatorContext(role) : undefined;
     const publicArtifact = { ...artifact, parameters: artifact.parameters.filter(p => p.source !== 'server') };
     const publicDefaults = Object.fromEntries(Object.entries(artifact.paramDefaults ?? {}).filter(([name]) => publicArtifact.parameters.some(p => p.name === name)));
@@ -193,7 +214,7 @@ export class InvocationService {
     if (existing) {
       if (!privateInvocation && this.isPrivateRecord(existing)) throw new RequestError(404, 'No accepted request found');
       if (privateInvocation && existing.invocationScope !== 'member-identity') throw new RequestError(409, 'Member identity inquiry is unavailable');
-      if (existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
+      if (existing.kind !== 'replay' || existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
       return { runId: existing.runId, reused: true as const };
     }
     if (lookupOnly) throw new RequestError(404, 'No accepted request found');
@@ -266,13 +287,7 @@ export class InvocationService {
         state.state = runtime.surface.mutationDispatched || intentRequested ? 'POST_OUTCOME_UNKNOWN' : 'failure';
         await this.persistState(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
       }).finally(() => { if (runtime.cleanupFailed) this.cleanupFailed = true; finish(); });
-      this.completions.add(completion);
-      this.completionByRun.set(record.runId, completion);
-      const forgetCompletion = () => {
-        this.completions.delete(completion);
-        if (this.completionByRun.get(record.runId) === completion) this.completionByRun.delete(record.runId);
-      };
-      void completion.then(forgetCompletion, forgetCompletion);
+      this.trackCompletion(record.runId, completion);
       if (this.profile.appId === 'meridian' && id === 'meridian-member-record') {
         state.memberIdentity = { status: 'pending' };
         // Only this fresh balance request can start its linked approved read. Status and key reuse cannot.
@@ -312,6 +327,171 @@ export class InvocationService {
       throw error;
     }
     return { runId: record.runId };
+  }
+  private trackCompletion(runId: string, completion: Promise<void>) {
+    this.completions.add(completion);
+    this.completionByRun.set(runId, completion);
+    const forget = () => {
+      this.completions.delete(completion);
+      if (this.completionByRun.get(runId) === completion) this.completionByRun.delete(runId);
+    };
+    void completion.then(forget, forget);
+  }
+  async discover(principal: Principal, id: string, args: Record<string, string | number>, key: string,
+    role: 'TELLER' | 'SUPERVISOR' = 'TELLER', lookupOnly = false) {
+    return this.withInvocationAdmission(principal, key, lookupOnly, async admission => {
+      if (principalRole(principal) !== 'operator') throw new RequestError(403, 'Only operators can start discovery');
+      if (this.profile.appId !== 'meridian' || !Object.hasOwn(discoveryGoals, id)) throw new RequestError(404, 'Unknown discovery capability');
+      if (id === 'meridian-place-hold' && role !== 'SUPERVISOR') throw new RequestError(403, 'Hold discovery requires SUPERVISOR');
+      const capability = id as keyof typeof discoveryGoals;
+      const contract = meridianContracts[capability];
+      if (!validateParams(contract, args).ok) throw new RequestError(400, 'Parameters do not match the capability contract');
+      const normalized = normalizeParams(contract, args);
+      const owner = principalKey(principal);
+      const recoveryRequest = { mode: 'discovery', capability: id, args: normalized, role };
+      const recovery = await this.journal.recover(owner, key, recoveryRequest);
+      if (recovery.existing && (recovery.existing.kind !== 'discovery' || recovery.existing.capability !== id
+        || recovery.existing.caller !== owner || !recovery.direct || !recovery.matches)) throw new RequestError(409, 'Idempotency key already identifies another request');
+      if (lookupOnly) {
+        if (!recovery.existing) throw new RequestError(404, 'No accepted request found');
+        return { runId: recovery.existing.runId, reused: true as const };
+      }
+      const context = operatorContext(role);
+      const goal = discoveryGoals[capability];
+      const version = '1.0.0';
+      const request = { mode: 'discovery', capability: id, version, goalRevision: 1, args: normalized,
+        context: { operator: context.operator, branch: context.branch, role } };
+      const { existing, identity } = await this.journal.lookup(owner, key, request);
+      if (existing) {
+        if (existing.kind !== 'discovery' || existing.identity !== identity) throw new RequestError(409, 'Idempotency key already identifies another request');
+        return { runId: existing.runId, reused: true as const };
+      }
+      if (this.closing) throw new RequestError(503, 'Server is shutting down');
+      if (this.cleanupFailed) throw new RequestError(503, 'Runtime cleanup failed; operator recovery is required');
+      if (await this.journal.hasUnknown(id)) throw new RequestError(409, 'This capability has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.');
+      if (this.active) throw new RequestError(429, 'One run is active; retry with the same idempotency key');
+      if (this.artifacts.has(id)) throw new RequestError(409, 'An approved recording already exists');
+      if (!this.profile.entryUrl) throw new RequestError(503, 'Discovery entry is not configured');
+      const { openai, model } = makeLLMClient();
+      admission.attempted = true;
+      const record = await this.journal.reserve(owner, key, id, version, request, 'discovery', { invocationScope: 'public', recoveryRequest });
+      this.active = record.runId;
+      const session = new ControlSession();
+      const approval = new Approval(session, () => {
+        const live = this.live.get(record.runId);
+        if (live) live.state = approval.pending ? 'awaiting-human' : 'running';
+      }, Date.now() + 600_000);
+      const state = { state: 'running', inputs: normalized, started: Date.now(), approval } as NonNullable<ReturnType<typeof this.live.get>>;
+      this.live.set(record.runId, state);
+      let runtime: ReturnType<typeof createRuntime> | undefined;
+      let intentRequested = false;
+      const serverParams = ['operator', 'password', 'branch'];
+      const params = { ...normalized, operator: '{{operator}}', password: '{{password}}', branch: '{{branch}}' };
+      const sensitive = [...contract.parameters.filter(p => p.sensitive).map(p => p.name), 'password'];
+      const finish = () => { state.finished = Date.now(); this.active = undefined; };
+      try {
+        runtime = createRuntime({ kind: 'discovery', artifact: id, version, policy: this.policy, profile: this.profile,
+          params: { ...normalized, operator: context.operator, password: context.password, branch: context.branch }, sensitive, operator: context,
+          headful: true, runId: record.runId, evidenceDir: this.evidenceDir, session,
+          gate: async (_action, _risk, reason, actionContext) => {
+            const pending = approval.wait({ kind: 'risk_approval', capability: id, goal, reason, url: runtime!.surface.currentUrl() }, actionContext);
+            const approvalId = approval.pending?.id;
+            runtime!.logger.log('intervention.pending', { kind: 'risk_approval', approvalId, expiresAt: approval.pending?.expiresAt });
+            const decision = await pending;
+            runtime!.logger.log('intervention.decided', { approvalId, decision });
+            return decision === 'approve';
+          },
+          beforeDispatch: async () => { intentRequested = true; await this.journal.update(record.runId, 'dispatching'); },
+          assertDispatchAllowed: () => this.journal.assertHealthy(), onClose: () => approval.cancel(),
+          onEvent: event => {
+            if (event === 'action.start' || event === 'step.start') state.step = runtime!.surface.currentStep;
+            if (event === 'detector.recovering') state.state = 'recovering';
+            if (event === 'step.ok') state.state = 'running';
+          },
+        });
+        const running = runtime;
+        state.redactor = running.promptRedactor;
+        state.close = async () => { await closeRuntime(running); if (running.cleanupFailed) this.cleanupFailed = true; };
+        await this.journal.update(record.runId, 'running');
+        const recordingGoal = `${goal}\nRecord explicit fill operator, fill password, and select branch actions using server references before Sign On, even if the selected branch already matches. Add assertions and extract these required outputs: ${contract.outputs.join(', ')}. Table outputs must use named columns. ${id === 'meridian-funds-transfer' ? 'The transaction output must declare exactly one row with canonical columns member, sourceShare, destinationShare, amount, memo, confirmation; use type money only for amount and type string for the other columns, and mark every output and column sensitive. Observe each column selector and header handling from this recording; do not invent them.' : ''} Never choose the first of ambiguous matches.`;
+        const expectedTransfer = id === 'meridian-funds-transfer' ? transferFactsFromParams(normalized) : undefined;
+        const completion = (async () => {
+          const metadata = { runId: record.runId, evidenceDir: running.logger.dir, recoveries: [] as string[] };
+          const failure = (): ReplayResult => ({ ...metadata, status: 'failure', escalated: false,
+            failure: { code: 'DISCOVERY_FAILED', stepId: '(discovery)', intent: goal, expected: 'Verified recording', observed: 'Discovery recording failed' } });
+          let outcome: ReplayResult;
+          try {
+            const result = await runDiscovery(recordingGoal, this.profile.entryUrl!, params, this.policy.allowedOrigins, {
+              surface: running.surface, logger: running.logger, openai, model, maxSteps: this.policy.maxSteps,
+              timeoutMs: this.policy.maxDiscoveryMs, detectors: this.profile.detectors,
+              boundParams: { operator: context.operator, password: context.password, branch: context.branch },
+              sanitizeObservation: text => running.promptRedactor.redactString(text),
+              validateCompletion: expectedTransfer ? outputs => assertTransferOutputs(expectedTransfer, outputs) : running.validateCompletion,
+              escalate: async req => {
+                const detach = await new OperatorConsole(running.browser.page, running.logger, session).recordHumanActions();
+                try { return await approval.wait(req) === 'retry' ? 'retry' : 'abort'; }
+                finally { await detach(); }
+              },
+            });
+            if (result.status === 'success') {
+              const candidate = recordArtifact({ name: id, description: goal, goal, entryUrl: this.profile.entryUrl!, params,
+                sensitiveParams: sensitive, serverParams, allowedOrigins: this.policy.allowedOrigins, appId: this.profile.appId,
+                appDetectors: this.profile.detectors, model, discoveryRunId: record.runId }, result);
+              const artifact = CapabilityArtifact.parse(applyMeridianContract(candidate));
+              if (artifact.status !== 'draft' || artifact.id !== id || artifact.name !== id || artifact.version !== version
+                || artifact.app.appId !== this.profile.appId || artifact.provenance.discoveryRunId !== record.runId
+                || artifact.provenance.model !== model) throw new Error('Unexpected discovery metadata');
+              // Recorder/server metadata and validated contract names are structure, not observed PII.
+              // Scan every recorded text surface; native unrelated PII remains in the mask set.
+              const privacy = new Redactor();
+              privacy.addSensitiveValues([...running.redactor.maskValues(), ...Object.values(normalized), context.operator, context.password, context.branch]);
+              const assertionText = (assertion: CapabilityArtifact['successCondition'] | undefined) => assertion?.kind === 'urlMatches'
+                ? [assertion.pattern] : assertion ? [assertion.text, assertion.frame] : [];
+              const recordedText = [
+                ...assertionText(artifact.successCondition),
+                ...artifact.outputs.flatMap(output => output.columns?.map(column => column.selector) ?? []),
+                ...artifact.steps.flatMap(step => [step.intent, step.url, step.value, ...assertionText(step.assert),
+                  step.target?.description, step.target?.frame, ...Object.values(step.target?.snapshot ?? {}),
+                  ...(step.target?.strategies.flatMap(({ kind: _kind, ...strategy }) => Object.values(strategy)) ?? []),
+                  step.extract?.pattern, step.extract?.rowSelector, ...(step.extract?.columns?.map(column => column.selector) ?? []),
+                ]),
+              ];
+              const names = new Set(artifact.parameters.map(parameter => parameter.name));
+              for (const text of recordedText) if (typeof text === 'string') {
+                const literal = text.replace(/\{\{(\w+)\}\}/g, (token, name: string) => {
+                  if (!names.has(name)) throw new Error('Undeclared recording parameter');
+                  return '';
+                });
+                if (privacy.redactString(literal) !== literal) throw new Error('Recording privacy validation failed');
+              }
+              const drafts = join(this.artifactDir, 'drafts');
+              mkdirSync(drafts, { recursive: true, mode: 0o700 });
+              writeFileSync(join(drafts, `${record.runId}.json`), JSON.stringify(artifact, null, 2), { flag: 'wx', mode: 0o600 });
+              const secrets = new Redactor();
+              secrets.addSensitiveValues([context.password]);
+              outcome = { ...metadata, status: 'success', outputs: secrets.redact(result.outputs) };
+            } else {
+              const safe = persistedResult(result);
+              outcome = safe.status === 'business_outcome' ? { ...metadata, status: 'business_outcome', outcomeCode: safe.outcomeCode, detail: 'Operation ended without posting.' } : failure();
+            }
+          } catch { outcome = failure(); }
+          if (intentRequested || running.surface.mutationDispatched) outcome = postIntentUnknown(outcome);
+          state.result = outcome;
+          state.state = outcome.status === 'failure' && outcome.failure.code === 'POST_OUTCOME_UNKNOWN' ? 'POST_OUTCOME_UNKNOWN' : outcome.status;
+          try { running.logger.writeResult(outcome); } catch { /* Preserve the journal outcome. */ }
+          await this.persistState(record.runId, state.state as 'success' | 'business_outcome' | 'failure' | 'POST_OUTCOME_UNKNOWN');
+        })().finally(async () => { approval.cancel(); await state.close!(); finish(); });
+        this.trackCompletion(record.runId, completion);
+      } catch (error) {
+        approval.cancel();
+        state.state = intentRequested || runtime?.surface.mutationDispatched ? 'POST_OUTCOME_UNKNOWN' : 'failure';
+        await this.persistState(record.runId, state.state as 'failure' | 'POST_OUTCOME_UNKNOWN');
+        if (state.close) await state.close();
+        finish();
+        throw error;
+      }
+      return { runId: record.runId };
+    });
   }
   async get(principal: Principal, runId: string) {
     const record = await this.journal.get(runId);

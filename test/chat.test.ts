@@ -631,6 +631,32 @@ describe('AI SDK chat boundary', () => {
     expect(chatService.invoke).not.toHaveBeenCalled();
   });
 
+  it('directs MERIDIAN guided writes to authoritative forms without changing model tools', async () => {
+    let prompt = '';
+    let tools: string[] = [];
+    const model = mockModel();
+    model.doStream = vi.fn(async options => {
+      prompt = JSON.stringify(options.prompt);
+      tools = Array.isArray(options.tools) ? options.tools.map((tool: { name: string }) => tool.name) : Object.keys(options.tools ?? {});
+      return streamResult([
+        { type: 'stream-start', warnings: [] },
+        { type: 'text-start', id: 'text-1' },
+        { type: 'text-delta', id: 'text-1', delta: 'Use the guided form.' },
+        { type: 'text-end', id: 'text-1' },
+        { type: 'finish', finishReason: finish('stop'), usage },
+      ]);
+    });
+    const chatService = service();
+    Object.assign(chatService, { profile: { appId: 'meridian' } });
+    const { request } = await start(model, chatService);
+    expect((await request('/api/chat', uiBody(), 'guided-copy-key')).status).toBe(200);
+    expect(prompt).toContain('Funds Transfer');
+    expect(prompt).toContain('operation form in chat');
+    expect(prompt).toMatch(/never claim that you started a guided operation/i);
+    expect(tools.sort()).toEqual(['member-hold', 'run_status']);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
   it.each(['/chat', '/api/chat'])('blocks unknown outcomes across API and %s after inference while preserving dedupe and separate reads', async (route) => {
     const dir = mkdtempSync(join(tmpdir(), 'chat-unknown-'));
     const artifactDir = join(dir, 'artifacts');

@@ -58,9 +58,10 @@ type ConversationRecord = {
 type ConversationEvent = {
   id: string;
   sequence: number;
-  kind: 'message_omitted' | 'run_linked';
+  kind: 'message_omitted' | 'run_linked' | 'message_saved';
   role: 'user' | 'assistant';
   runId?: string;
+  text?: string;
   run?: SafeRun;
   createdAt?: string;
 };
@@ -165,7 +166,7 @@ function parseSafeRun(value: unknown): SafeRun | undefined {
 function parseEvent(value: unknown): ConversationEvent {
   if (!plainRecord(value)
     || typeof value.sequence !== 'number' || !Number.isSafeInteger(value.sequence) || value.sequence < 1
-    || (value.kind !== 'message_omitted' && value.kind !== 'run_linked')
+    || (value.kind !== 'message_omitted' && value.kind !== 'run_linked' && value.kind !== 'message_saved')
     || (value.role !== 'user' && value.role !== 'assistant')) {
     throw new Error('Conversation event was invalid.');
   }
@@ -175,6 +176,10 @@ function parseEvent(value: unknown): ConversationEvent {
     kind: value.kind,
     role: value.role,
   };
+  if (value.kind === 'message_saved') {
+    if (typeof value.text !== 'string' || !value.text.length || value.text.length > 4000) throw new Error('Saved conversation text was invalid.');
+    event.text = value.text;
+  }
   if (value.kind === 'run_linked') {
     const runId = lowerUuid(value.runId, 'run id');
     const run = parseSafeRun(value.run);
@@ -261,7 +266,7 @@ export function isSavedConversationMessage(value: unknown): boolean {
 }
 
 function restoredMessage(event: ConversationEvent): UIMessage {
-  const parts: unknown[] = [{ type: 'text', text: event.kind === 'message_omitted' ? MESSAGE_OMITTED_TEXT : RUN_LINKED_TEXT }];
+  const parts: unknown[] = [{ type: 'text', text: event.kind === 'message_saved' ? event.text : event.kind === 'message_omitted' ? MESSAGE_OMITTED_TEXT : RUN_LINKED_TEXT }];
   if (event.kind === 'run_linked' && event.run) {
     parts.push({ type: 'data-saved-run', data: event.run });
   }
@@ -338,9 +343,10 @@ export type ConversationController = {
 
 type EventBody = {
   id: string;
-  kind: 'message_omitted' | 'run_linked';
+  kind: 'message_omitted' | 'run_linked' | 'message_saved';
   role: 'user' | 'assistant';
   runId?: string;
+  text?: string;
   expectedRevision: number;
 };
 
@@ -355,6 +361,7 @@ type QuotaFailures = Map<string, QuotaFailureStatus>;
 
 export function createConversationController(options: {
   subjectId?: string;
+  saveText?: boolean;
   request: ConversationRequest;
   getRunIdForUserMessage?: (userMessageId: string, remoteId: string) => string | undefined;
 }): ConversationController {
@@ -652,6 +659,7 @@ export function createConversationController(options: {
           || event.kind !== body.kind
           || event.role !== body.role
           || event.runId !== body.runId
+          || event.text !== body.text
           || event.sequence !== body.expectedRevision + 1) {
           throw new Error('Conversation event response did not match the saved attempt.');
         }
@@ -697,7 +705,9 @@ export function createConversationController(options: {
     conversations.add(remoteId);
     messageConversations.set(messageId, conversations);
     if (role === 'user') userMessages.set(remoteId, messageId);
-    const omission = queueEvent(remoteId, `message:${remoteId}:${messageId}`, { kind: 'message_omitted', role });
+    const text = options.saveText ? message.parts.filter(part => part.type === 'text').map(part => part.text).join('\n') : '';
+    const omission = queueEvent(remoteId, `message:${remoteId}:${messageId}`, text
+      ? { kind: 'message_saved', role, text } : { kind: 'message_omitted', role });
     let runId: string | undefined;
     let linkedMessageId = messageId;
     if (role === 'assistant') {
@@ -1061,7 +1071,7 @@ export function createConversationController(options: {
 }
 
 export type ConversationRuntimeOptions = {
-  session: Pick<Session, 'principal' | 'subjectId' | 'token'>;
+  session: Pick<Session, 'principal' | 'subjectId' | 'token' | 'conversationText'>;
   request: ConversationRequest;
   chatOptions: UseChatRuntimeOptions<UIMessage>;
   getRunIdForUserMessage?: (userMessageId: string, remoteId: string) => string | undefined;
@@ -1083,7 +1093,7 @@ export function useConversationRuntime({
     holderRef.current?.controller.dispose();
     holderRef.current = {
       key,
-      controller: createConversationController({ subjectId: session.subjectId, request, getRunIdForUserMessage }),
+      controller: createConversationController({ subjectId: session.subjectId, saveText: session.conversationText, request, getRunIdForUserMessage }),
     };
   }
   const controller = holderRef.current.controller;
