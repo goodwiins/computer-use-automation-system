@@ -22,10 +22,10 @@ const otherConversationId = 'abababab-abab-4bab-8bab-abababababab';
 const thirdConversationId = 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd';
 const runId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-function response(body: unknown, status = 200): Response {
+function response(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body === undefined ? undefined : JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
 }
 
@@ -394,7 +394,7 @@ describe('safe conversation UI adapter', () => {
             ownerId: subjectId,
             count: 4096,
             sql: 'SELECT private details',
-          }, status);
+          }, status, status === 429 ? { 'Retry-After': '1' } : {});
         }
         const body = JSON.parse(String(options?.body));
         return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
@@ -435,7 +435,8 @@ describe('safe conversation UI adapter', () => {
       if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
       if (path === `/conversations/${conversationId}/events`) {
         eventAttempts += 1;
-        if (eventAttempts === 1) return response({ error: 'PRIVATE quota details', ownerId: subjectId, count: 4096 }, failureStatus);
+        if (eventAttempts === 1) return response({ error: 'PRIVATE quota details', ownerId: subjectId, count: 4096 }, failureStatus,
+          failureStatus === 429 ? { 'Retry-After': '1' } : {});
         const body = JSON.parse(String(options?.body));
         return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
       }
@@ -472,10 +473,10 @@ describe('safe conversation UI adapter', () => {
   ] as const)('preserves a rate-limited %s failure through %s refresh', async (mutation, refreshKind) => {
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
-        return response({ error: 'private quota details' }, 429);
+        return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
       }
       if (path === `/conversations/${conversationId}` && options?.method === 'DELETE') {
-        return response({ error: 'private quota details' }, 429);
+        return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
       }
       if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
       if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
@@ -502,7 +503,7 @@ describe('safe conversation UI adapter', () => {
     const { request } = requestRecorder(async (path, options) => {
       if (path === `/conversations/${conversationId}/events`) {
         eventAttempts += 1;
-        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
         await retryReleased;
         const body = JSON.parse(String(options?.body));
         return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
@@ -536,7 +537,7 @@ describe('safe conversation UI adapter', () => {
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
         eventAttempts += 1;
-        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
         const body = JSON.parse(String(options.body));
         return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
       }
@@ -567,7 +568,7 @@ describe('safe conversation UI adapter', () => {
     let archiveAttempts = 0;
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
-        return response({ error: 'private rate details' }, 429);
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
       }
       if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
         archiveAttempts += 1;
@@ -591,7 +592,7 @@ describe('safe conversation UI adapter', () => {
   it('preserves an unresolved append failure through history hydration', async () => {
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
-        return response({ error: 'private quota details' }, 429);
+        return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
       }
       if (path === `/conversations/${conversationId}/events?after=0&limit=100`) return response({ events: [] });
       throw new Error(`unexpected request ${path}`);
@@ -607,10 +608,10 @@ describe('safe conversation UI adapter', () => {
     expect(controller.getState(conversationId).error).toContain('not saved');
   });
 
-  it('does not treat a read-side projection-busy 429 as a save rate limit', async () => {
+  it.each([{}, { 'Retry-After': '1' }])('does not treat a read-side 429 with headers %j as a save rate limit', async headers => {
     const { request } = requestRecorder(path => {
       if (path === `/conversations/${conversationId}/events?after=0&limit=100`) {
-        return response({ error: 'Linked-run projection is busy' }, 429);
+        return response({ error: 'Linked-run projection is busy' }, 429, headers);
       }
       throw new Error(`unexpected request ${path}`);
     });
@@ -626,6 +627,229 @@ describe('safe conversation UI adapter', () => {
   });
 
   it.each([
+    ['append', {}],
+    ['archive', {}],
+    ['delete', {}],
+    ['append', { 'Retry-After': '2' }],
+    ['append', { 'Retry-After': '1.0' }],
+    ['append', { 'Retry-After': 'PRIVATE arbitrary header' }],
+  ] as const)('keeps an unmarked mutation 429 generic for %s with headers %j', async (mutation, headers) => {
+    const failureResponse = response({ error: 'Linked-run projection is busy' }, 429, headers);
+    const { request } = requestRecorder((path, options) => {
+      if (mutation === 'append' && path === `/conversations/${conversationId}/events`) {
+        return failureResponse;
+      }
+      if (mutation === 'archive' && path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return failureResponse;
+      }
+      if (mutation === 'delete' && path === `/conversations/${conversationId}` && options?.method === 'DELETE') {
+        return failureResponse;
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+
+    const operation = mutation === 'append'
+      ? controller.historyFor(conversationId).append({
+        parentId: null,
+        message: { id: `unmarked-${mutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+      } as never)
+      : mutation === 'archive'
+        ? controller.adapter.archive(conversationId)
+        : controller.adapter.delete(conversationId);
+    await expect(operation).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 0 });
+    expect(failureResponse.bodyUsed).toBe(false);
+    expect(JSON.stringify(controller.getState(conversationId))).not.toContain('PRIVATE');
+  });
+
+  it('keeps an unmarked run-linked projection-busy mutation generic', async () => {
+    let eventAttempts = 0;
+    const { request } = requestRecorder((path, options) => {
+      if (path !== `/conversations/${conversationId}/events`) throw new Error(`unexpected request ${path}`);
+      eventAttempts += 1;
+      const body = JSON.parse(String(options?.body));
+      if (eventAttempts === 1) return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      return response({ error: 'Linked-run projection is busy' }, 429);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const message = { id: 'unmarked-run-link', role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+
+    await controller.historyFor(conversationId).append({ parentId: null, message });
+    await expect(controller.linkRun(message.id, runId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 1 });
+  });
+
+  it('does not classify an arbitrary thrown status 429 as a rate limit', async () => {
+    const { request } = requestRecorder(path => {
+      if (path !== `/conversations/${conversationId}/events`) throw new Error(`unexpected request ${path}`);
+      throw Object.assign(new Error('synthetic transport failure'), { status: 429 });
+    });
+    const controller = createConversationController({ subjectId, request });
+
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'thrown-429', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 0 });
+  });
+
+  it.each([
+    ['append', 'load', 503],
+    ['archive', 'fetch', 'network'],
+    ['delete', 'fetch', 503],
+  ] as const)('preserves a marked %s quota status after a failed %s read', async (mutation, readKind, readFailure) => {
+    const markedRate = { 'Retry-After': '1' };
+    const { request } = requestRecorder((path, options) => {
+      if (mutation === 'append' && path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private quota details' }, 429, markedRate);
+      }
+      if (mutation === 'archive' && path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'private quota details' }, 429, markedRate);
+      }
+      if (mutation === 'delete' && path === `/conversations/${conversationId}` && options?.method === 'DELETE') {
+        return response({ error: 'private quota details' }, 429, markedRate);
+      }
+      if (readKind === 'load' && path === `/conversations/${conversationId}/events?after=0&limit=100`) {
+        if (readFailure === 'network') throw new Error('network failure');
+        return response({ error: 'storage unavailable' }, readFailure);
+      }
+      if (readKind === 'fetch' && path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        if (readFailure === 'network') throw new Error('network failure');
+        return response({ error: 'storage unavailable' }, readFailure);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const operation = mutation === 'append'
+      ? controller.historyFor(conversationId).append({
+        parentId: null,
+        message: { id: `marked-${mutation}`, role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+      } as never)
+      : mutation === 'archive'
+        ? controller.adapter.archive(conversationId)
+        : controller.adapter.delete(conversationId);
+    await expect(operation).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    const read = readKind === 'load'
+      ? controller.historyFor(conversationId).load()
+      : controller.adapter.fetch(conversationId);
+    await expect(read).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+  });
+
+  it('keeps capacity as the aggregate priority after a failed read', async () => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private capacity details' }, 507);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        return response({ error: 'storage unavailable' }, 503);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'capacity-before-read', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+
+    await expect(controller.adapter.fetch(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'capacity' });
+  });
+
+  it('uses the aggregate quota priority for a failed unselected list read', async () => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private capacity details' }, 507);
+      }
+      if (path === `/conversations/${otherConversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
+      }
+      if (path.startsWith('/conversations?')) return response({ error: 'storage unavailable' }, 503);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'aggregate-list-capacity', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(otherConversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'capacity' });
+    expect(controller.getState(otherConversationId)).toMatchObject({ status: 'rate-limited' });
+
+    await expect(controller.adapter.list()).rejects.toThrow();
+    expect(controller.getState()).toMatchObject({ status: 'capacity' });
+    expect(controller.getState(otherConversationId)).toMatchObject({ status: 'rate-limited' });
+  });
+
+  it('does not surface a foreign quota failure in a selected or new local thread after list failure', async () => {
+    const otherMetadata = { ...metadata, id: otherConversationId };
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
+      }
+      if (path === `/conversations/${otherConversationId}` && options?.method === 'GET') return response(otherMetadata);
+      if (path.startsWith('/conversations?')) return response({ error: 'storage unavailable' }, 503);
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'foreign-list-rate', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await controller.adapter.fetch(otherConversationId);
+    controller.select(otherConversationId);
+    expect(controller.getState()).toMatchObject({ status: 'saved' });
+
+    await expect(controller.adapter.list()).rejects.toThrow();
+    expect(controller.getState()).toMatchObject({ status: 'unavailable' });
+    controller.select(undefined);
+    expect(controller.getState()).toMatchObject({ status: 'saved' });
+    controller.select(conversationId);
+    expect(controller.getState()).toMatchObject({ status: 'rate-limited' });
+    await expect(controller.adapter.list()).rejects.toThrow();
+    expect(controller.getState()).toMatchObject({ status: 'rate-limited' });
+    controller.select(undefined);
+    expect(controller.getState()).toMatchObject({ status: 'saved' });
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+    await expect(controller.adapter.list()).rejects.toThrow();
+    expect(controller.getState()).toMatchObject({ status: 'unavailable' });
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'rate-limited' });
+  });
+
+  it('keeps a stopped conflict ahead of an unrelated quota marker after failed fetch', async () => {
+    const { request } = requestRecorder((path, options) => {
+      if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        return response({ error: 'revision conflict' }, 409);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        return response({ error: 'storage unavailable' }, 503);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'stopped-conflict-quota', role: 'user', parts: [{ type: 'text', text: 'safe' }] },
+    } as never)).rejects.toThrow();
+    await expect(controller.adapter.archive(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'conflict' });
+
+    await expect(controller.adapter.fetch(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'conflict' });
+  });
+
+  it.each([
     [409, 'conflict', 'conflict', 'list'],
     [409, 'conflict', 'conflict', 'fetch'],
     [503, 'unavailable', 'saved', 'list'],
@@ -635,7 +859,7 @@ describe('safe conversation UI adapter', () => {
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
         eventAttempts += 1;
-        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429);
+        if (eventAttempts === 1) return response({ error: 'private quota details' }, 429, { 'Retry-After': '1' });
         return response({ error: `private ${retryState} details` }, retryStatus);
       }
       if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
@@ -665,7 +889,7 @@ describe('safe conversation UI adapter', () => {
   ] as const)('applies deterministic precedence when an independent rate failure coexists with %s', async (newStatus, refreshedState) => {
     const { request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events` && options?.method === 'POST') {
-        return response({ error: 'private rate details' }, 429);
+        return response({ error: 'private rate details' }, 429, { 'Retry-After': '1' });
       }
       if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
         return response({ error: `private ${newStatus} details` }, newStatus);

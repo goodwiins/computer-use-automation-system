@@ -93,11 +93,13 @@ type RequestFailure = Error & { status?: number };
 
 class ConversationRequestError extends Error {
   readonly status: number;
+  readonly quotaRateLimited: boolean;
 
-  constructor(status: number) {
+  constructor(status: number, quotaRateLimited = false) {
     super(status === 503 ? 'Conversation storage is unavailable.' : `Conversation request failed (${status}).`);
     this.name = 'ConversationRequestError';
     this.status = status;
+    this.quotaRateLimited = quotaRateLimited;
   }
 }
 
@@ -296,7 +298,7 @@ function requestFailureStatus(error: unknown, mutation = false): ConversationSav
   const status = errorStatus(error);
   if (status === 503) return 'unavailable';
   if (mutation && status === 507) return 'capacity';
-  if (mutation && status === 429) return 'rate-limited';
+  if (mutation && status === 429 && error instanceof ConversationRequestError && error.quotaRateLimited) return 'rate-limited';
   return 'unsaved';
 }
 
@@ -424,6 +426,29 @@ export function createConversationController(options: {
     return undefined;
   };
 
+  const aggregateQuotaFailureStatus = (): QuotaFailureStatus | undefined => {
+    let hasRateLimited = false;
+    for (const failures of quotaFailures.values()) {
+      for (const status of failures.values()) {
+        if (status === 'capacity') return 'capacity';
+        hasRateLimited = true;
+      }
+    }
+    return hasRateLimited ? 'rate-limited' : undefined;
+  };
+
+  const failedReadStatus = (remoteId: string, error: unknown): ConversationSaveStatus => {
+    const quotaFailure = quotaFailureStatus(remoteId);
+    if (quotaFailure !== undefined) return stopped.has(remoteId) ? 'conflict' : quotaFailure;
+    return requestFailureStatus(error);
+  };
+
+  const failedListStatus = (error: unknown): ConversationSaveStatus => {
+    if (selectedRemoteId === undefined) return aggregateQuotaFailureStatus() ?? requestFailureStatus(error);
+    if (selectedRemoteId === null) return requestFailureStatus(error);
+    return failedReadStatus(selectedRemoteId, error);
+  };
+
   const markQuotaFailure = (remoteId: string, operation: string, error: unknown): ConversationSaveStatus => {
     const status = requestFailureStatus(error, true);
     if (status === 'capacity' || status === 'rate-limited') {
@@ -462,11 +487,14 @@ export function createConversationController(options: {
   };
 
   const setOverallStatus = (status: ConversationSaveStatus) => {
-    const next = { ...unselectedState, status };
+    const next = {
+      ...(typeof selectedRemoteId === 'string' ? currentState(selectedRemoteId) : unselectedState),
+      status,
+    };
     const error = statusError(status);
     if (error === undefined) delete next.error;
     else next.error = error;
-    unselectedState = next;
+    if (selectedRemoteId === undefined || selectedRemoteId === null) unselectedState = next;
     overallState = next;
     notify();
   };
@@ -484,7 +512,11 @@ export function createConversationController(options: {
       throw error;
     }
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-    if (!response.ok) throw new ConversationRequestError(response.status);
+    if (!response.ok) {
+      // The durable write bucket emits this fixed marker; projection-busy 429s do not.
+      const quotaRateLimited = response.status === 429 && response.headers.get('Retry-After') === '1';
+      throw new ConversationRequestError(response.status, quotaRateLimited);
+    }
     if (response.status === 204) return undefined as T;
     try {
       const body = await response.json() as T;
@@ -719,7 +751,7 @@ export function createConversationController(options: {
       return loaded;
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      setState(remoteId, requestFailureStatus(error));
+      setState(remoteId, failedReadStatus(remoteId, error));
       throw error;
     }
   };
@@ -793,9 +825,11 @@ export function createConversationController(options: {
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
       if (errorStatus(error) === 503) {
-        for (const record of metadata.values()) setState(record.id, 'unavailable');
-        setOverallStatus('unavailable');
-      } else setOverallStatus(requestFailureStatus(error));
+        for (const record of metadata.values()) {
+          setState(record.id, failedReadStatus(record.id, error));
+        }
+      }
+      setOverallStatus(failedListStatus(error));
       throw error;
     }
   };
@@ -906,7 +940,7 @@ export function createConversationController(options: {
       return toMetadata(record);
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      setState(remoteId, requestFailureStatus(error));
+      setState(remoteId, failedReadStatus(remoteId, error));
       throw error;
     }
   };

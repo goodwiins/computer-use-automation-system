@@ -779,6 +779,76 @@ describe.sequential('safe conversation real persistence acceptance', () => {
     await page.getByText('Conversations not saved; this chat remains usable.', { exact: true }).waitFor();
   }, 30_000);
 
+  it('keeps a real projection-busy linked-run mutation generic and uncommitted', async () => {
+    const current = await fixture();
+    const firstId = '25500000-0000-4000-8000-000000000001';
+    const secondId = '25500000-0000-4000-8000-000000000002';
+    const firstMessage = { id: 'projection-busy-first', role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const secondMessage = { id: 'projection-busy-second', role: 'user', parts: [{ type: 'text', text: 'safe' }] } as UIMessage;
+    const run = current.journal.reserve(
+      `subject:${ownerId}`, 'projection-busy-linked-run', 'meridian-member-inquiry', '1.0.0', {},
+    );
+    current.journal.update(run.runId, 'success');
+    await current.store.create(ownerId, firstId);
+    await current.store.create(ownerId, secondId);
+    const request = authenticatedRequest(current.origin, ownerToken);
+    const firstController = createConversationController({ subjectId: ownerId, request });
+    const secondController = createConversationController({ subjectId: ownerId, request });
+    await firstController.historyFor(firstId).append({ parentId: null, message: firstMessage } as never);
+    await secondController.historyFor(secondId).append({ parentId: null, message: secondMessage } as never);
+
+    const originalGetMany = current.journal.getMany.bind(current.journal);
+    let projectionEntered!: () => void;
+    let releaseProjection!: () => void;
+    const projectionStarted = new Promise<void>(resolve => { projectionEntered = resolve; });
+    const projectionReleased = new Promise<void>(resolve => { releaseProjection = resolve; });
+    let holdProjection = true;
+    vi.spyOn(current.journal, 'getMany').mockImplementation(async runIds => {
+      const result = await originalGetMany(runIds);
+      if (holdProjection) {
+        holdProjection = false;
+        projectionEntered();
+        await projectionReleased;
+      }
+      return result;
+    });
+
+    let firstLinkError: unknown;
+    const firstLinkSettled = firstController.linkRun(firstMessage.id, run.runId, firstId).then(
+      () => undefined,
+      error => { firstLinkError = error; },
+    );
+    try {
+      await projectionStarted;
+      const beforeEvents = await current.store.events(ownerId, secondId);
+      const beforeQuota = await current.database.pool.query(
+        `SELECT conversation_count, event_count, rate_tokens
+         FROM meridian_conversation_subject_quotas WHERE owner_id = $1`,
+        [ownerId],
+      );
+      await expect(secondController.linkRun(secondMessage.id, run.runId, secondId)).rejects.toMatchObject({ status: 429 });
+      expect(secondController.getState(secondId)).toMatchObject({ status: 'unsaved', revision: 1 });
+      expect((await current.store.events(ownerId, secondId)).events).toEqual(beforeEvents.events);
+      const afterQuota = await current.database.pool.query(
+        `SELECT conversation_count, event_count, rate_tokens
+         FROM meridian_conversation_subject_quotas WHERE owner_id = $1`,
+        [ownerId],
+      );
+      expect(afterQuota.rows).toEqual(beforeQuota.rows);
+
+      releaseProjection();
+      await firstLinkSettled;
+      if (firstLinkError) throw firstLinkError;
+      expect((await current.store.events(ownerId, firstId)).events).toHaveLength(2);
+    } finally {
+      releaseProjection();
+      await firstLinkSettled;
+      firstController.dispose();
+      secondController.dispose();
+      if (firstLinkError) throw firstLinkError;
+    }
+  }, 30_000);
+
   it('maps real authenticated PostgreSQL capacity and rate failures to truthful adapter states', async () => {
     const current = await fixture();
     const capacityId = '26000000-0000-4000-8000-000000000001';
