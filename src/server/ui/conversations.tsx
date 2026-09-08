@@ -292,11 +292,11 @@ function statusError(status: ConversationSaveStatus): string | undefined {
   return undefined;
 }
 
-function requestFailureStatus(error: unknown): ConversationSaveStatus {
+function requestFailureStatus(error: unknown, mutation = false): ConversationSaveStatus {
   const status = errorStatus(error);
   if (status === 503) return 'unavailable';
-  if (status === 507) return 'capacity';
-  if (status === 429) return 'rate-limited';
+  if (mutation && status === 507) return 'capacity';
+  if (mutation && status === 429) return 'rate-limited';
   return 'unsaved';
 }
 
@@ -425,7 +425,7 @@ export function createConversationController(options: {
   };
 
   const markQuotaFailure = (remoteId: string, operation: string, error: unknown): ConversationSaveStatus => {
-    const status = requestFailureStatus(error);
+    const status = requestFailureStatus(error, true);
     if (status === 'capacity' || status === 'rate-limited') {
       const failures = quotaFailures.get(remoteId) ?? new Map<string, QuotaFailureStatus>();
       failures.set(operation, status);

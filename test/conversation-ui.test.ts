@@ -607,6 +607,24 @@ describe('safe conversation UI adapter', () => {
     expect(controller.getState(conversationId).error).toContain('not saved');
   });
 
+  it('does not treat a read-side projection-busy 429 as a save rate limit', async () => {
+    const { request } = requestRecorder(path => {
+      if (path === `/conversations/${conversationId}/events?after=0&limit=100`) {
+        return response({ error: 'Linked-run projection is busy' }, 429);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+
+    await expect(controller.historyFor(conversationId).load()).rejects.toThrow();
+
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 0 });
+    expect(conversationStatusText(controller.getState(conversationId).status, true)).toBe(
+      'Conversations not saved; this chat remains usable.',
+    );
+    expect(JSON.stringify(controller.getState(conversationId))).not.toContain('Linked-run projection is busy');
+  });
+
   it.each([
     [409, 'conflict', 'conflict', 'list'],
     [409, 'conflict', 'conflict', 'fetch'],
