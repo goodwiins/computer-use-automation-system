@@ -185,7 +185,58 @@ describe.sequential('ConversationStore', () => {
 
 const quotaOwner = '33333333-3333-4333-8333-333333333333';
 const quotaOtherOwner = '44444444-4444-4444-8444-444444444444';
+const quotaBoundaryOwner = '55555555-5555-4555-8555-555555555555';
 const testUuid = (prefix: string, value: number) => `${prefix}${value.toString(16).padStart(12, '0')}`;
+
+type QuotaSnapshot = {
+  sourceConversationCount: number;
+  sourceEventCount: number;
+  conversationCount: number;
+  eventCount: number;
+  rateTokens: number;
+};
+
+async function quotaSnapshot(database: Awaited<ReturnType<typeof createPostgresFixture>>, owner: string): Promise<QuotaSnapshot> {
+  const source = await database.pool.query<{ conversations: string; events: string }>(`
+    SELECT count(DISTINCT conversations.id)::bigint AS conversations, count(events.id)::bigint AS events
+    FROM meridian_conversations conversations
+    LEFT JOIN meridian_conversation_events events ON events.conversation_id = conversations.id
+    WHERE conversations.owner_id = $1
+  `, [owner]);
+  const quota = await database.pool.query<{ conversations: string; events: string; tokens: number }>(`
+    SELECT conversation_count AS conversations, event_count AS events, rate_tokens AS tokens
+    FROM meridian_conversation_subject_quotas WHERE owner_id = $1
+  `, [owner]);
+  const sourceRow = source.rows[0]!;
+  const quotaRow = quota.rows[0]!;
+  return {
+    sourceConversationCount: Number(sourceRow.conversations),
+    sourceEventCount: Number(sourceRow.events),
+    conversationCount: Number(quotaRow.conversations),
+    eventCount: Number(quotaRow.events),
+    rateTokens: Number(quotaRow.tokens),
+  };
+}
+
+async function resetQuotaRate(database: Awaited<ReturnType<typeof createPostgresFixture>>, owner: string) {
+  await database.pool.query(
+    `UPDATE meridian_conversation_subject_quotas
+     SET rate_tokens = 20, rate_refilled_at = clock_timestamp()
+     WHERE owner_id = $1`,
+    [owner],
+  );
+}
+
+function expectQuotaSnapshotConsistent(snapshot: QuotaSnapshot) {
+  expect(snapshot.conversationCount).toBe(snapshot.sourceConversationCount);
+  expect(snapshot.eventCount).toBe(snapshot.sourceEventCount);
+}
+
+function expectSuccessfulTokenDelta(before: QuotaSnapshot, after: QuotaSnapshot, successfulMutations: number) {
+  const delta = before.rateTokens - after.rateTokens;
+  expect(delta).toBeGreaterThanOrEqual(successfulMutations - 0.75);
+  expect(delta).toBeLessThanOrEqual(successfulMutations + 0.75);
+}
 
 async function createSourceSchema(database: Awaited<ReturnType<typeof createPostgresFixture>>) {
   await database.pool.query(`
@@ -274,7 +325,7 @@ describe.sequential('ConversationStore durable quotas', () => {
         WHERE owner_id = $1
         RETURNING rate_tokens, rate_refilled_at
       `, [quotaOwner]);
-      expect(before.rows[0]).toMatchObject({ rate_tokens: 3.25 });
+      expect(before.rows[0]).toMatchObject({ rate_tokens: 3.25, rate_refilled_at: new Date('2025-01-02T03:04:05.000Z') });
       await expect(store.migrate()).resolves.toBeUndefined();
       const quotas = await database.pool.query(`
         SELECT owner_id, conversation_count, event_count, rate_tokens, rate_refilled_at
@@ -283,6 +334,7 @@ describe.sequential('ConversationStore durable quotas', () => {
       expect(quotas.rows).toHaveLength(2);
       expect(quotas.rows.find(row => row.owner_id === quotaOwner)).toMatchObject({
         conversation_count: '132', event_count: '4099', rate_tokens: 3.25,
+        rate_refilled_at: before.rows[0]!.rate_refilled_at,
       });
       expect(quotas.rows.find(row => row.owner_id === quotaOtherOwner)).toMatchObject({
         conversation_count: '1', event_count: '1',
@@ -307,6 +359,22 @@ describe.sequential('ConversationStore durable quotas', () => {
       await expect(store.create(quotaOwner, testUuid('71000000-0000-4000-8000-', 1))).rejects.toMatchObject({
         status: 507, message: 'Conversation quota exceeded',
       });
+
+      const deletionBoundary = await seedConversationRows(database, quotaBoundaryOwner, 128, '71000000-0000-4000-8000-');
+      await seedEvents(database, deletionBoundary[0]!, 1, '71010000-0000-4000-9000-');
+      await database.pool.query('UPDATE meridian_conversations SET revision = 1 WHERE id = $1', [deletionBoundary[0]]);
+      await store.migrate();
+      const beforeDelete = await quotaSnapshot(database, quotaBoundaryOwner);
+      expectQuotaSnapshotConsistent(beforeDelete);
+      expect(beforeDelete).toMatchObject({ sourceConversationCount: 128, sourceEventCount: 1, conversationCount: 128, eventCount: 1 });
+      await store.delete(quotaBoundaryOwner, deletionBoundary[0]!, 1);
+      const afterDelete = await quotaSnapshot(database, quotaBoundaryOwner);
+      expectQuotaSnapshotConsistent(afterDelete);
+      expect(afterDelete).toMatchObject({ sourceConversationCount: 128, sourceEventCount: 0, conversationCount: 128, eventCount: 0 });
+      await expect(store.create(quotaBoundaryOwner, deletionBoundary[0]!)).rejects.toMatchObject({ status: 409 });
+      await expect(store.append(quotaBoundaryOwner, deletionBoundary[1]!, {
+        id: testUuid('71020000-0000-4000-9000-', 1), kind: 'message_omitted', role: 'user', expectedRevision: 0,
+      })).resolves.toMatchObject({ sequence: 1 });
 
       const eventConversation = testUuid('72000000-0000-4000-8000-', 1);
       await store.create(quotaOtherOwner, eventConversation);
@@ -408,45 +476,95 @@ describe.sequential('ConversationStore durable quotas', () => {
       const firstStore = new ConversationStore(database.pool);
       const secondStore = new ConversationStore(secondPool);
       await firstStore.migrate();
+      await database.pool.query(
+        `INSERT INTO meridian_conversation_subject_quotas (owner_id)
+         VALUES ($1), ($2) ON CONFLICT (owner_id) DO NOTHING`,
+        [quotaOwner, quotaOtherOwner],
+      );
       const firstConversation = testUuid('7a000000-0000-4000-8000-', 1);
       const secondConversation = testUuid('7a000000-0000-4000-8000-', 2);
+      await resetQuotaRate(database, quotaOwner);
+      const beforeCreates = await quotaSnapshot(database, quotaOwner);
       const created = await Promise.all([
         firstStore.create(quotaOwner, firstConversation),
         secondStore.create(quotaOwner, secondConversation),
       ]);
       expect(created.map(item => item.id).sort()).toEqual([firstConversation, secondConversation].sort());
+      const afterCreates = await quotaSnapshot(database, quotaOwner);
+      expectQuotaSnapshotConsistent(afterCreates);
+      expect(afterCreates).toMatchObject({ sourceConversationCount: 2, sourceEventCount: 0, conversationCount: 2, eventCount: 0 });
+      expectSuccessfulTokenDelta(beforeCreates, afterCreates, 2);
 
       const retryId = testUuid('7b000000-0000-4000-8000-', 1);
+      await resetQuotaRate(database, quotaOwner);
+      const beforeCreateRetry = await quotaSnapshot(database, quotaOwner);
       const retries = await Promise.all([firstStore.create(quotaOwner, retryId), secondStore.create(quotaOwner, retryId)]);
       expect(retries[0]).toEqual(retries[1]);
+      const afterCreateRetry = await quotaSnapshot(database, quotaOwner);
+      expectQuotaSnapshotConsistent(afterCreateRetry);
+      expect(afterCreateRetry).toMatchObject({ sourceConversationCount: 3, sourceEventCount: 0, conversationCount: 3, eventCount: 0 });
+      expectSuccessfulTokenDelta(beforeCreateRetry, afterCreateRetry, 1);
       const event = {
         id: testUuid('7c000000-0000-4000-9000-', 1), kind: 'message_omitted' as const, role: 'user' as const, expectedRevision: 0,
       };
+      await resetQuotaRate(database, quotaOwner);
+      const beforeEventRetry = await quotaSnapshot(database, quotaOwner);
       const eventRetries = await Promise.all([
         firstStore.append(quotaOwner, firstConversation, event),
         secondStore.append(quotaOwner, firstConversation, event),
       ]);
       expect(eventRetries[0]).toEqual(eventRetries[1]);
+      const afterEventRetry = await quotaSnapshot(database, quotaOwner);
+      expectQuotaSnapshotConsistent(afterEventRetry);
+      expect(afterEventRetry).toMatchObject({ sourceConversationCount: 3, sourceEventCount: 1, conversationCount: 3, eventCount: 1 });
+      expectSuccessfulTokenDelta(beforeEventRetry, afterEventRetry, 1);
+      await resetQuotaRate(database, quotaOwner);
+      const beforeCompeting = await quotaSnapshot(database, quotaOwner);
       const competing = await Promise.allSettled([
         firstStore.append(quotaOwner, secondConversation, { ...event, id: testUuid('7d000000-0000-4000-9000-', 1) }),
         secondStore.append(quotaOwner, secondConversation, { ...event, id: testUuid('7d000000-0000-4000-9000-', 2) }),
       ]);
       expect(competing.filter(result => result.status === 'fulfilled')).toHaveLength(1);
       expect(competing.filter(result => result.status === 'rejected')).toMatchObject([{ reason: { status: 409 } }]);
+      const afterCompeting = await quotaSnapshot(database, quotaOwner);
+      expectQuotaSnapshotConsistent(afterCompeting);
+      expect(afterCompeting).toMatchObject({ sourceConversationCount: 3, sourceEventCount: 2, conversationCount: 3, eventCount: 2 });
+      expectSuccessfulTokenDelta(beforeCompeting, afterCompeting, 1);
 
       const globallyConflictingId = testUuid('7e000000-0000-4000-9000-', 1);
       const otherConversation = await firstStore.create(quotaOtherOwner, testUuid('7f000000-0000-4000-8000-', 1));
+      await resetQuotaRate(database, quotaOwner);
+      await resetQuotaRate(database, quotaOtherOwner);
+      const beforeGlobalOwner = await quotaSnapshot(database, quotaOwner);
+      const beforeGlobalOtherOwner = await quotaSnapshot(database, quotaOtherOwner);
       const globalRace = await Promise.allSettled([
         firstStore.append(quotaOwner, firstConversation, { ...event, id: globallyConflictingId, expectedRevision: 1 }),
         secondStore.append(quotaOtherOwner, otherConversation.id, { ...event, id: globallyConflictingId, expectedRevision: 0 }),
       ]);
       expect(globalRace.filter(result => result.status === 'fulfilled')).toHaveLength(1);
       expect(globalRace.filter(result => result.status === 'rejected')).toMatchObject([{ reason: { status: 409 } }]);
+      const afterGlobalOwner = await quotaSnapshot(database, quotaOwner);
+      const afterGlobalOtherOwner = await quotaSnapshot(database, quotaOtherOwner);
+      expectQuotaSnapshotConsistent(afterGlobalOwner);
+      expectQuotaSnapshotConsistent(afterGlobalOtherOwner);
+      expect(afterGlobalOwner.sourceEventCount + afterGlobalOtherOwner.sourceEventCount).toBe(
+        beforeGlobalOwner.sourceEventCount + beforeGlobalOtherOwner.sourceEventCount + 1,
+      );
+      expect(afterGlobalOwner.eventCount + afterGlobalOtherOwner.eventCount).toBe(
+        beforeGlobalOwner.eventCount + beforeGlobalOtherOwner.eventCount + 1,
+      );
+      const globalOwnerEventDelta = afterGlobalOwner.eventCount - beforeGlobalOwner.eventCount;
+      const globalOtherEventDelta = afterGlobalOtherOwner.eventCount - beforeGlobalOtherOwner.eventCount;
+      expect([globalOwnerEventDelta, globalOtherEventDelta].sort()).toEqual([0, 1]);
+      expectSuccessfulTokenDelta(beforeGlobalOwner, afterGlobalOwner, globalOwnerEventDelta);
+      expectSuccessfulTokenDelta(beforeGlobalOtherOwner, afterGlobalOtherOwner, globalOtherEventDelta);
 
       const mixedConversation = await firstStore.create(quotaOtherOwner, testUuid('84000000-0000-4000-8000-', 1));
       await firstStore.append(quotaOtherOwner, mixedConversation.id, {
         id: testUuid('85000000-0000-4000-9000-', 1), kind: 'message_omitted', role: 'user', expectedRevision: 0,
       });
+      await resetQuotaRate(database, quotaOtherOwner);
+      const beforeMixed = await quotaSnapshot(database, quotaOtherOwner);
       const mixed = await Promise.allSettled([
         firstStore.append(quotaOtherOwner, mixedConversation.id, {
           id: testUuid('85000000-0000-4000-9000-', 2), kind: 'message_omitted', role: 'user', expectedRevision: 1,
@@ -455,17 +573,16 @@ describe.sequential('ConversationStore durable quotas', () => {
       ]);
       expect(mixed.filter(result => result.status === 'fulfilled')).toHaveLength(1);
       expect([404, 409]).toContain(mixed.find(result => result.status === 'rejected')?.reason.status);
+      const afterMixed = await quotaSnapshot(database, quotaOtherOwner);
+      expectQuotaSnapshotConsistent(afterMixed);
+      expect(afterMixed.conversationCount).toBe(beforeMixed.conversationCount);
+      expect(Math.abs(afterMixed.eventCount - beforeMixed.eventCount)).toBe(1);
+      expectSuccessfulTokenDelta(beforeMixed, afterMixed, 1);
 
-      const rows = await database.pool.query(`
-        SELECT owner_id, event_count FROM meridian_conversation_subject_quotas ORDER BY owner_id
-      `);
-      const actual = await database.pool.query(`
-        SELECT owner_id, count(events.id)::bigint AS event_count
-        FROM meridian_conversations conversations
-        LEFT JOIN meridian_conversation_events events ON events.conversation_id = conversations.id
-        GROUP BY owner_id ORDER BY owner_id
-      `);
-      expect(rows.rows).toEqual(actual.rows);
+      const finalOwner = await quotaSnapshot(database, quotaOwner);
+      const finalOtherOwner = await quotaSnapshot(database, quotaOtherOwner);
+      expectQuotaSnapshotConsistent(finalOwner);
+      expectQuotaSnapshotConsistent(finalOtherOwner);
     } finally {
       await database.closePool(secondPool);
       await database.close();
