@@ -195,6 +195,30 @@ export function ReviewDialog() {
       className="review-dialog"
       aria-labelledby="review-dialog-heading"
       data-run-id={reviewRunId}
+      onKeyDown={event => {
+        if (event.key !== 'Tab') return;
+        const element = event.currentTarget;
+        const controls = Array.from(element.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        )).filter(control => {
+          const style = getComputedStyle(control);
+          return control.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        });
+        const focusOrder = [heading.current, ...controls.filter(control => control !== heading.current)].filter(
+          (control): control is HTMLElement => control !== null,
+        );
+        if (!focusOrder.length) return;
+        const current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+        const index = current ? focusOrder.indexOf(current) : -1;
+        const wraps = event.shiftKey ? index <= 0 : index < 0 || index === focusOrder.length - 1;
+        const next = event.shiftKey
+          ? index <= 0 ? focusOrder.at(-1) : focusOrder[index - 1]
+          : index === focusOrder.length - 1 || index < 0 ? focusOrder[0] : focusOrder[index + 1];
+        if (next && wraps) {
+          event.preventDefault();
+          next.focus();
+        }
+      }}
       onCancel={event => { event.preventDefault(); closeReview(); }}
       onClose={() => { if (reviewRunId) closeReview(); }}
     >

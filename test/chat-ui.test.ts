@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Locator, type Page } from 'playwright';
 import { MockLanguageModelV3 } from 'ai/test';
 import { simulateReadableStream, type UIMessage, type UIMessageChunk } from 'ai';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -594,6 +594,14 @@ async function visible(page: Page, selector: string, text: string) {
     { selector, text },
   );
 }
+async function expectKeyboardVisibleFocus(target: Locator) {
+  const focusStyle = await target.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+  });
+  expect(focusStyle.style).not.toBe('none');
+  expect(focusStyle.width).toBeGreaterThanOrEqual(2);
+}
 
 it('recovers a real PostgreSQL chat action after the browser loses its response before tool output', async () => {
   for (const role of ['TELLER', 'SUPERVISOR']) {
@@ -1022,7 +1030,7 @@ it('normalizes transport authority and preserves the user message key across ret
     body: { id: 'thread', intent: 'invoke', trigger: 'submit-message', messages: [messages[1]] },
   });
 });
-it('offline bundled UI streams a real SDK tool, shares authoritative run state, renders inert evidence and clears sessions', async () => {
+it('offline bundled UI streams a real SDK tool, shares readable status text, renders keyboard focus for evidence disclosure and clears sessions', async () => {
   const { page, state, connect, errors, url, service } = await fixture();
   await connect();
   expect(await page.locator('#credential').inputValue()).toBe('');
@@ -1076,8 +1084,30 @@ it('offline bundled UI streams a real SDK tool, shares authoritative run state, 
   expect(await page.locator('#messages [data-run-id]').getAttribute('data-run-id')).toBe(
     await page.locator('#runs [data-run-id]').getAttribute('data-run-id'),
   );
-  await page.getByText('Run details and evidence', { exact: true }).click();
-  await page.getByRole('button', { name: 'View result.json', exact: true }).click();
+  const runStatus = page.locator('#runs [data-run-id] .badge[role="status"]');
+  // Production break caught: replacing the human-readable state label with a class or color would hide progress from assistive technology.
+  expect(await runStatus.innerText()).toMatch(/In progress|Awaiting review|Completed|Run stopped/);
+  const evidenceDisclosure = page.getByText('Run details and evidence', { exact: true }).first();
+  await page.keyboard.press('Tab');
+  await evidenceDisclosure.focus();
+  // Production break caught: overriding :focus-visible would make the evidence disclosure invisible to keyboard users.
+  await expectKeyboardVisibleFocus(evidenceDisclosure);
+  await evidenceDisclosure.click();
+  await evidenceDisclosure.focus();
+  const resultEvidence = page.getByRole('button', { name: 'View result.json', exact: true });
+  await resultEvidence.waitFor();
+  let resultEvidenceFocused = false;
+  for (let index = 0; index < 12; index++) {
+    await page.keyboard.press('Tab');
+    if (await resultEvidence.evaluate(element => element === document.activeElement)) {
+      resultEvidenceFocused = true;
+      break;
+    }
+  }
+  expect(resultEvidenceFocused).toBe(true);
+  // Production break caught: removing a keyboard-visible indicator from evidence controls would fail this computed-style assertion.
+  await expectKeyboardVisibleFocus(resultEvidence);
+  await resultEvidence.click();
   await visible(page, '.evidence pre', hostile);
   expect(state.requests.find((r) => r.path.endsWith('/evidence/result.json'))?.authorization).toBe(
     `Bearer ${callerToken}`,
@@ -1746,7 +1776,7 @@ it('keeps historical timeline data on refresh errors and cancels late active rea
   expect(state.requests.filter((request) => request.path.endsWith('/evidence/log.jsonl'))).toHaveLength(disconnectedReads);
   expect(errors).toEqual([]);
 }, 30000);
-it('offline operator controls require live authority, disable expired/duplicate decisions and never retry unknown posting', async () => {
+it('offline operator review controls require live authority, keyboard focus, readable error and never retry unknown posting', async () => {
   const { page, state, connect, errors } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -1791,6 +1821,30 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await dialog.waitFor();
   expect(await dialog.getAttribute('data-run-id')).toBe(runId);
   expect(await page.getByRole('dialog').count()).toBe(1);
+  const heading = dialog.getByRole('heading', { name: 'Review request', exact: true });
+  // Production break caught: autofocus on an approval action instead of the neutral heading could trigger an accidental transaction.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  const dialogFocusTargets = [
+    dialog.getByRole('button', { name: 'Close', exact: true }),
+    dialog.getByText('Details', { exact: true }),
+    dialog.getByRole('button', { name: 'Confirm request', exact: true }),
+    dialog.getByRole('button', { name: 'Refuse request', exact: true }),
+  ];
+  for (let index = 0; index < dialogFocusTargets.length + 2; index++) {
+    // Production break caught: losing native modal containment would let Tab move focus behind this open review dialog.
+    expect(await page.evaluate(() => document.activeElement?.closest('dialog[open]')?.getAttribute('data-run-id'))).toBe(runId);
+    if (index < dialogFocusTargets.length) {
+      // Production break caught: removing the global keyboard focus indicator would make review actions undiscoverable.
+      await expectKeyboardVisibleFocus(dialogFocusTargets[index]!);
+    }
+    await page.keyboard.press('Tab');
+  }
+  await page.keyboard.press('Escape');
+  // Production break caught: failing to restore focus after cancel strands keyboard users outside the review they opened.
+  expect(await review.evaluate(element => element === document.activeElement)).toBe(true);
+  await review.click();
+  await dialog.waitFor();
   const approve = page.getByRole('button', { name: 'Confirm request', exact: true });
   await approve.waitFor();
   expect(await dialog.innerText()).toContain('25.00');
@@ -1813,6 +1867,8 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.locator('#refresh').click();
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   await visible(page, '.approval', 'Intervention expired.');
+  // Production break caught: exposing expiry only through styling would hide the actionable error from screen-reader users.
+  expect(await page.locator('.approval').innerText()).toContain('Intervention expired.');
   expect(await approve.isDisabled()).toBe(true);
   state.runs[0] = {
     ...initialRun(),
@@ -1828,6 +1884,15 @@ it('offline operator controls require live authority, disable expired/duplicate 
   await page.getByRole('button', { name: 'Review request', exact: true }).first().click();
   const retry = page.getByRole('button', { name: 'Retry after repair' });
   await retry.waitFor();
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  expect(await retry.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: a retry control without a keyboard-visible indicator is unreachable for keyboard-only repair.
+  await expectKeyboardVisibleFocus(retry);
+  // Production break caught: changing retry to an icon-only action would remove its readable recovery name.
+  expect(await retry.innerText()).toBe('Retry after repair');
   await retry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve', 'retry']));
   state.runs[0] = {
@@ -1851,7 +1916,7 @@ it('offline operator controls require live authority, disable expired/duplicate 
   expect(errors).toEqual([]);
 }, 20000);
 
-it('resets neutral focus when an open review receives a replacement intervention', async () => {
+it('neutral replacement focus resets when an open review receives a replacement intervention', async () => {
   const { page, state, connect } = await fixture();
   const intervention = publicIntervention({
     id: approvalId,
@@ -2612,7 +2677,7 @@ it.each(['restored', 'chat'] as const)('blocks an unknown %s run after reload an
   expect(state.requests.filter(r => r.path.endsWith('/invoke')).at(-1)?.path).toBe(`/capabilities/${inquiry.id}/invoke`);
 }, 20000);
 
-it('shows the authoritative step and announces meaningful state changes without elapsed-time chatter', async () => {
+it('status text shows the authoritative step and announces meaningful state changes without elapsed-time chatter', async () => {
   const { page, state, connect } = await fixture();
   state.runs.push({ ...initialRun(), step: hostile });
   await connect();
@@ -2629,12 +2694,22 @@ it('shows the authoritative step and announces meaningful state changes without 
   await page.locator('#refresh').click();
   await card.getByText('Elapsed: 10.0 s', { exact: true }).waitFor();
   expect(await status.textContent()).toBe(before);
-  for (const next of ['awaiting-human', 'success', 'business_outcome', 'POST_OUTCOME_UNKNOWN']) {
+  const expectedLabels = {
+    'awaiting-human': 'Awaiting review',
+    success: 'Completed',
+    business_outcome: 'Member not found',
+    POST_OUTCOME_UNKNOWN: 'Unable to verify outcome',
+  } as const;
+  for (const next of ['awaiting-human', 'success', 'business_outcome', 'POST_OUTCOME_UNKNOWN'] as const) {
     state.runs[0]!.state = next;
     state.runs[0]!.step = 'safe-current-step';
-    state.runs[0]!.result = next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
+    state.runs[0]!.result = next === 'success'
+      ? { status: 'success' }
+      : next === 'business_outcome' ? { status: next, outcomeCode: 'NO_SUCH_MEMBER' } : undefined;
     await page.locator('#refresh').click();
     await vi.waitFor(async () => expect(await status.textContent()).toContain(next));
+    // Production break caught: replacing state labels with color or CSS classes would remove the status name from visible text.
+    expect(await status.innerText()).toContain(expectedLabels[next]);
     if (next === 'business_outcome') {
       expect(await status.textContent()).toContain('Member not found');
       await card.getByText('Run details and evidence', { exact: true }).click();
@@ -2821,12 +2896,21 @@ it('disconnects when a subject refresh loses the authenticated subject identity'
   expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
 }, 15000);
 
-it('uses credentials without a local shortcut in subject mode', async () => {
+it('keeps subject conversation controls keyboard reachable without a local shortcut', async () => {
   const { page, connect } = await fixture(true, undefined, { subjectTokens: [subjectCaller] });
   expect(await page.locator('#login-role').count()).toBe(0);
   expect(await page.getByText('TELLER1', { exact: false }).count()).toBe(0);
   await connect(subjectCaller.token);
   await page.getByText('Dashboard access: Caller', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const savedConversations = page.getByRole('navigation', { name: 'Saved conversations', exact: true });
+  await savedConversations.waitFor();
+  const newConversation = savedConversations.getByRole('button', { name: 'New conversation', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await newConversation.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: removing :focus-visible from saved-thread controls would hide the keyboard position.
+  await expectKeyboardVisibleFocus(newConversation);
+  expect(await newConversation.innerText()).toBe('New conversation');
 }, 15000);
 
 it('keeps dashboard, chat, target, branch, and direct request roles distinct', async () => {
@@ -2844,7 +2928,7 @@ it('keeps dashboard, chat, target, branch, and direct request roles distinct', a
   expect(await page.getByText('Branch: Not verified', { exact: true }).count()).toBeGreaterThan(0);
 }, 15000);
 
-it('starts operator Activity in a review-first queue with accurate counts and keyboard filters', async () => {
+it('operator Activity filters start in a review-first queue with accurate counts and keyboard focus', async () => {
   const staleRunId = '11111111-1111-4111-8111-333333333333';
   const noInterventionRunId = '11111111-1111-4111-8111-444444444444';
   const { page, state, connect } = await fixture();
@@ -2863,6 +2947,15 @@ it('starts operator Activity in a review-first queue with accurate counts and ke
   expect(await needs.getAttribute('aria-selected')).toBe('true');
   expect(await page.locator(`#runs [data-run-id="${runId}"]`).count()).toBeGreaterThan(0);
   expect(await page.locator(`#runs [data-run-id="${staleRunId}"]`).count()).toBe(0);
+  await needs.focus();
+  await page.keyboard.press('Tab');
+  expect(await all.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: removing :focus-visible styling from Activity tabs would hide the current filter during keyboard navigation.
+  await expectKeyboardVisibleFocus(all);
+  await page.keyboard.press('Shift+Tab');
+  expect(await needs.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: the first Activity filter must retain a visible indicator when reached by reverse keyboard traversal.
+  await expectKeyboardVisibleFocus(needs);
   await needs.focus();
   await page.keyboard.press('ArrowRight');
   expect(await all.getAttribute('aria-selected')).toBe('true');
