@@ -1088,8 +1088,10 @@ it('offline bundled UI streams a real SDK tool, shares readable status text, ren
   // Production break caught: replacing the human-readable state label with a class or color would hide progress from assistive technology.
   expect(await runStatus.innerText()).toMatch(/In progress|Awaiting review|Completed|Run stopped/);
   const evidenceDisclosure = page.getByText('Run details and evidence', { exact: true }).first();
+  await page.locator('#runs [data-run-id] .table-scroll').focus();
   await page.keyboard.press('Tab');
-  await evidenceDisclosure.focus();
+  // Production break caught: removing the evidence disclosure from the sequential Tab order would strand keyboard users before its controls.
+  expect(await evidenceDisclosure.evaluate(element => element === document.activeElement)).toBe(true);
   // Production break caught: overriding :focus-visible would make the evidence disclosure invisible to keyboard users.
   await expectKeyboardVisibleFocus(evidenceDisclosure);
   await evidenceDisclosure.click();
@@ -1831,6 +1833,17 @@ it('offline operator review controls require live authority, keyboard focus, rea
     dialog.getByRole('button', { name: 'Confirm request', exact: true }),
     dialog.getByRole('button', { name: 'Refuse request', exact: true }),
   ];
+  const outsideFocusSet = dialog.locator('.approval > p').first();
+  await outsideFocusSet.evaluate(element => {
+    element.setAttribute('tabindex', '-1');
+    (element as HTMLElement).focus();
+  });
+  // Production break caught: a focusable dialog descendant outside the computed control set must wrap back to the neutral heading.
+  expect(await outsideFocusSet.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await outsideFocusSet.evaluate(element => element.removeAttribute('tabindex'));
+  await page.keyboard.press('Tab');
   for (let index = 0; index < dialogFocusTargets.length + 2; index++) {
     // Production break caught: losing native modal containment would let Tab move focus behind this open review dialog.
     expect(await page.evaluate(() => document.activeElement?.closest('dialog[open]')?.getAttribute('data-run-id'))).toBe(runId);
@@ -1870,6 +1883,28 @@ it('offline operator review controls require live authority, keyboard focus, rea
   // Production break caught: exposing expiry only through styling would hide the actionable error from screen-reader users.
   expect(await page.locator('.approval').innerText()).toContain('Intervention expired.');
   expect(await approve.isDisabled()).toBe(true);
+  const expiredClose = dialog.getByRole('button', { name: 'Close', exact: true });
+  const expiredDetails = dialog.getByText('Details', { exact: true });
+  await heading.focus();
+  await page.keyboard.press('Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  await expiredDetails.click();
+  expect(await expiredDetails.locator('..').locator('dl').isVisible()).toBe(true);
+  await expiredDetails.focus();
+  await page.keyboard.press('Tab');
+  // Production break caught: a disabled approval or hidden details child must not enter the sequential focus order.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  expect(await approve.evaluate(element => element === document.activeElement)).toBe(false);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: reverse traversal from the neutral heading must skip the disabled actions and return to the visible Details disclosure.
+  expect(await expiredDetails.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await expiredClose.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: Shift+Tab from the first control must wrap to the neutral heading, not escape the modal.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
   state.runs[0] = {
     ...initialRun(),
     state: 'awaiting-human',
@@ -1893,6 +1928,18 @@ it('offline operator review controls require live authority, keyboard focus, rea
   await expectKeyboardVisibleFocus(retry);
   // Production break caught: changing retry to an icon-only action would remove its readable recovery name.
   expect(await retry.innerText()).toBe('Retry after repair');
+  const stop = page.getByRole('button', { name: 'Stop request', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await stop.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Tab');
+  // Production break caught: forward Tab from the last enabled repair action must wrap to the neutral heading.
+  expect(await heading.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  // Production break caught: reverse Tab from the neutral heading must wrap to the last enabled repair action.
+  expect(await stop.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await retry.evaluate(element => element === document.activeElement)).toBe(true);
+  await retry.focus();
   await retry.click();
   await vi.waitFor(() => expect(state.decisions).toEqual(['approve', 'retry']));
   state.runs[0] = {
@@ -2896,21 +2943,108 @@ it('disconnects when a subject refresh loses the authenticated subject identity'
   expect(state.requests.filter(request => request.path === `/runs/${runId}`)).toHaveLength(0);
 }, 15000);
 
-it('keeps subject conversation controls keyboard reachable without a local shortcut', async () => {
+it('keeps saved conversation row controls keyboard reachable without a local shortcut', async () => {
   const { page, connect } = await fixture(true, undefined, { subjectTokens: [subjectCaller] });
   expect(await page.locator('#login-role').count()).toBe(0);
   expect(await page.getByText('TELLER1', { exact: false }).count()).toBe(0);
+  const regularId = '30000000-0000-4000-8000-000000000001';
+  const record = {
+    id: regularId,
+    archived: false,
+    revision: 0,
+    createdAt: '2026-09-08T00:00:00.000Z',
+    updatedAt: '2026-09-08T00:00:00.000Z',
+  };
+  const conversationRequests: string[] = [];
+  await page.route('**/conversations**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    conversationRequests.push(`${request.method()} ${path}${url.search}`);
+    if (request.method() === 'GET' && path === '/conversations') {
+      const archived = url.searchParams.get('archived') === 'true';
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ conversations: record.archived === archived ? [record] : [] }),
+      });
+    }
+    if (request.method() === 'GET' && path === `/conversations/${regularId}/events`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: [] }) });
+    }
+    if (request.method() === 'GET' && path === `/conversations/${regularId}`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(record) });
+    }
+    if (request.method() === 'PATCH' && path === `/conversations/${regularId}`) {
+      const body = request.postDataJSON() as { archived?: boolean };
+      record.archived = body.archived === true;
+      record.revision += 1;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(record) });
+    }
+    if (request.method() === 'DELETE' && path === `/conversations/${regularId}`) {
+      record.archived = true;
+      return route.fulfill({ status: 204, body: '' });
+    }
+    return route.continue();
+  });
   await connect(subjectCaller.token);
   await page.getByText('Dashboard access: Caller', { exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('button', { name: 'Activity', exact: true });
+  await activity.click();
   const savedConversations = page.getByRole('navigation', { name: 'Saved conversations', exact: true });
   await savedConversations.waitFor();
   const newConversation = savedConversations.getByRole('button', { name: 'New conversation', exact: true });
+  await activity.focus();
   await page.keyboard.press('Tab');
   expect(await newConversation.evaluate(element => element === document.activeElement)).toBe(true);
   // Production break caught: removing :focus-visible from saved-thread controls would hide the keyboard position.
   await expectKeyboardVisibleFocus(newConversation);
   expect(await newConversation.innerText()).toBe('New conversation');
+  const open = savedConversations.getByRole('button', { name: 'Open Saved conversation', exact: true });
+  await page.waitForTimeout(250);
+  await page.keyboard.press('Tab');
+  // Production break caught: removing a saved row's trigger from sequential focus would prevent keyboard opening.
+  expect(await open.evaluate(element => element === document.activeElement)).toBe(true);
+  await expectKeyboardVisibleFocus(open);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(conversationRequests.some(path => path === `GET /conversations/${regularId}/events?after=0&limit=100`)).toBe(true));
+  const row = open.locator('..');
+  const archive = row.getByRole('button', { name: 'Archive conversation', exact: true });
+  const deleteRegular = row.getByRole('button', { name: 'Delete conversation', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await archive.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: saved-row archive must remain visibly keyboard focusable.
+  await expectKeyboardVisibleFocus(archive);
+  await page.keyboard.press('Tab');
+  expect(await deleteRegular.evaluate(element => element === document.activeElement)).toBe(true);
+  // Production break caught: saved-row delete must remain visibly keyboard focusable.
+  await expectKeyboardVisibleFocus(deleteRegular);
+  await page.keyboard.press('Shift+Tab');
+  expect(await archive.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(record.archived).toBe(true));
+  const restore = savedConversations.getByRole('button', { name: 'Restore conversation', exact: true });
+  await restore.waitFor();
+  await restore.focus();
+  // Production break caught: archived saved rows must expose a keyboard-reachable restore action.
+  await expectKeyboardVisibleFocus(restore);
+  const deleteArchived = savedConversations.getByRole('button', { name: 'Delete conversation', exact: true });
+  await page.keyboard.press('Tab');
+  expect(await deleteArchived.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await restore.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(() => expect(record.archived).toBe(false));
+  const restoredOpen = savedConversations.getByRole('button', { name: 'Open Saved conversation', exact: true });
+  await restoredOpen.waitFor();
+  await restoredOpen.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  expect(await deleteRegular.evaluate(element => element === document.activeElement)).toBe(true);
+  await page.keyboard.press('Enter');
+  await vi.waitFor(async () => expect(await page.getByRole('button', { name: 'Open Saved conversation', exact: true }).count()).toBe(0));
+  expect(conversationRequests).toContain(`PATCH /conversations/${regularId}`);
+  expect(conversationRequests).toContain(`DELETE /conversations/${regularId}`);
 }, 15000);
 
 it('keeps dashboard, chat, target, branch, and direct request roles distinct', async () => {

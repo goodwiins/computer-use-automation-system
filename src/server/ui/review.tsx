@@ -210,9 +210,12 @@ export function ReviewDialog() {
         if (!focusOrder.length) return;
         const current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
         const index = current ? focusOrder.indexOf(current) : -1;
-        const wraps = event.shiftKey ? index <= 0 : index < 0 || index === focusOrder.length - 1;
+        const firstControlIndex = heading.current ? 1 : 0;
+        const wraps = event.shiftKey
+          ? index <= firstControlIndex
+          : index < 0 || index === focusOrder.length - 1;
         const next = event.shiftKey
-          ? index <= 0 ? focusOrder.at(-1) : focusOrder[index - 1]
+          ? index <= 0 ? focusOrder.at(-1) : index === firstControlIndex ? heading.current : focusOrder[index - 1]
           : index === focusOrder.length - 1 || index < 0 ? focusOrder[0] : focusOrder[index + 1];
         if (next && wraps) {
           event.preventDefault();
