@@ -2,6 +2,7 @@ import type { UIMessage, UIMessageChunk } from 'ai';
 
 export type ChatLifecycle = {
   key: string;
+  conversationId?: string;
   guardKey?: string;
   intent: 'action' | 'status';
   sawTool: boolean;

@@ -13,6 +13,7 @@ import {
   trackConversationWriteFailure,
   type ConversationRequest,
 } from '../src/server/ui/conversations.js';
+import { GuardedAssistantChatTransport } from '../src/server/ui/chat.js';
 import { chatRequest } from '../src/server/ui/transport.js';
 
 const subjectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -65,6 +66,7 @@ describe('safe conversation UI adapter', () => {
     expect(createBody.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(createBody.id).not.toBe('__LOCALID_printable-chat-id');
     expect(String(calls[0]?.options?.body)).not.toContain('__LOCALID_printable-chat-id');
+    await vi.waitFor(() => expect(controller.isConfirmed(initialized.remoteId)).toBe(true));
     expect(controller.toMetadata(metadata)).toMatchObject({
       remoteId: conversationId,
       title: CONVERSATION_TITLE,
@@ -73,7 +75,7 @@ describe('safe conversation UI adapter', () => {
   });
 
   it('loads inert fixed messages and safe run data without live run or chat requests', async () => {
-    const { calls, request } = requestRecorder((path) => {
+    const { calls, request } = requestRecorder((path, options) => {
       if (path.includes('/events')) {
         return response({
           events: [
@@ -137,17 +139,17 @@ describe('safe conversation UI adapter', () => {
   });
 
   it('writes only strict B1 event bodies and freezes message attempts across retries', async () => {
-    const eventId = randomUUID();
     let attempt = 0;
     const { calls, request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events`) {
         attempt += 1;
         if (attempt === 1) return response({ error: 'temporary failure' }, 503);
+        const body = JSON.parse(String(options?.body));
         return response({
-          id: eventId,
+          id: body.id,
           sequence: 1,
-          kind: 'message_omitted',
-          role: 'user',
+          kind: body.kind,
+          role: body.role,
           createdAt: metadata.createdAt,
         }, 201);
       }
@@ -212,14 +214,16 @@ describe('safe conversation UI adapter', () => {
     const controller = createConversationController({ request });
     await expect(controller.adapter.list()).resolves.toEqual({ threads: [] });
     expect(controller.historyFor('__LOCALID_legacy')).toBeUndefined();
+    const title = await controller.adapter.generateTitle('__LOCALID_legacy', []);
+    await expect(title.getReader().read()).resolves.toMatchObject({ done: true });
     expect(request).not.toHaveBeenCalled();
   });
 
   it('maps regular and archived cursors and follows every event page', async () => {
     const firstEvent = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const secondEvent = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-    const afterConversation = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-    const { calls, request } = requestRecorder((path) => {
+    const afterConversation = conversationId;
+    const { calls, request } = requestRecorder((path, options) => {
       if (path === '/conversations?archived=false&limit=50') {
         return response({ conversations: [metadata], nextCursor: afterConversation });
       }
@@ -378,12 +382,13 @@ describe('safe conversation UI adapter', () => {
     const events = (id: string) => ({
       events: [{ id, sequence: 1, kind: 'message_omitted', role: 'user', createdAt: metadata.createdAt }],
     });
-    const { calls, request } = requestRecorder((path) => {
+    const { calls, request } = requestRecorder((path, options) => {
       if (path === `/conversations/${conversationId}/events?after=0&limit=100`) return response(events('dddddddd-dddd-4ddd-8ddd-dddddddddddd'));
       if (path === `/conversations/${otherConversationId}/events?after=0&limit=100`) return response(events('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
-      if (path === `/conversations/${otherConversationId}/events`) return response({
-        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', sequence: 2, kind: 'message_omitted', role: 'assistant', createdAt: metadata.updatedAt,
-      }, 201);
+      if (path === `/conversations/${otherConversationId}/events`) {
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: body.expectedRevision + 1, createdAt: metadata.updatedAt }, 201);
+      }
       throw new Error(`unexpected request ${path}`);
     });
     const controller = createConversationController({ subjectId, request });
@@ -435,8 +440,8 @@ describe('safe conversation UI adapter', () => {
   });
 
   it('preserves independent regular and archived cursors inside the SDK cursor', async () => {
-    const regularCursor = 'f1111111-1111-4111-8111-111111111111';
-    const archivedCursor = 'e2222222-2222-4222-8222-222222222222';
+    const regularCursor = conversationId;
+    const archivedCursor = otherConversationId;
     const archivedSecond = { ...metadata, id: thirdConversationId, archived: true };
     const { calls, request } = requestRecorder((path) => {
       if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata], nextCursor: regularCursor });
@@ -532,7 +537,8 @@ describe('safe conversation UI adapter', () => {
     controller.dispose();
     resolveJson({ ...metadata, id: createdId });
 
-    await expect(pending).rejects.toThrow(/session changed|epoch/i);
+    await expect(pending).resolves.toMatchObject({ remoteId: createdId });
+    await Promise.resolve();
     expect(controller.getState(createdId)).toMatchObject({ status: 'unsaved', revision: 0 });
   });
 
@@ -549,6 +555,17 @@ describe('safe conversation UI adapter', () => {
     await expect(unavailable.adapter.list()).rejects.toThrow();
     expect(unavailable.getState()).toMatchObject({ status: 'unavailable' });
     expect(conversationStatusText(unavailable.getState().status, true)).toContain('unavailable');
+    unavailable.select(undefined);
+    expect(unavailable.getState()).toMatchObject({ status: 'unavailable' });
+
+    const unavailableInitialize = createConversationController({
+      subjectId,
+      request: requestRecorder(() => response({ error: 'offline' }, 503)).request,
+    });
+    const fallback = await unavailableInitialize.adapter.initialize('__LOCALID_unavailable');
+    expect(fallback.remoteId).toMatch(/^[0-9a-f-]{36}$/);
+    await vi.waitFor(() => expect(unavailableInitialize.getState(fallback.remoteId)).toMatchObject({ status: 'unavailable' }));
+    expect(unavailableInitialize.isConfirmed(fallback.remoteId)).toBe(false);
 
     const failedAppend = createConversationController({
       subjectId,
@@ -623,5 +640,311 @@ describe('safe conversation UI adapter', () => {
 
     await expect(controller.linkRun('late-user', runId)).rejects.toThrow(/session changed|epoch/i);
     expect(calls).toHaveLength(0);
+  });
+
+  it('serializes archive behind terminal event persistence and uses the committed revision', async () => {
+    let releaseEvent!: () => void;
+    const eventReleased = new Promise<void>(resolve => { releaseEvent = resolve; });
+    let eventReached!: () => void;
+    const eventStarted = new Promise<void>(resolve => { eventReached = resolve; });
+    const { calls, request } = requestRecorder(async (path, options) => {
+      if (path === `/conversations/${conversationId}/events`) {
+        eventReached();
+        await eventReleased;
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      if (path === `/conversations/${conversationId}` && options?.method === 'PATCH') {
+        const body = JSON.parse(String(options.body));
+        return response({ ...metadata, archived: body.archived, revision: 2 });
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const pending = controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'serialize-message', role: 'assistant', parts: [{ type: 'text', text: 'not stored' }] },
+    } as never);
+    await eventStarted;
+
+    const archived = controller.adapter.archive(conversationId);
+    expect(calls.map(call => `${call.options?.method} ${call.path}`)).toEqual([
+      `POST /conversations/${conversationId}/events`,
+    ]);
+    releaseEvent();
+    await expect(Promise.all([pending, archived])).resolves.toEqual([undefined, undefined]);
+    expect(JSON.parse(String(calls[1]?.options?.body))).toEqual({ archived: true, expectedRevision: 1 });
+  });
+
+  it('preserves stopped conflict state across list and fetch refreshes and reports fetch failures', async () => {
+    let failFetch = false;
+    let loadReached!: () => void;
+    let releaseLoad!: () => void;
+    const loadStarted = new Promise<void>(resolve => { loadReached = resolve; });
+    const loadReleased = new Promise<void>(resolve => { releaseLoad = resolve; });
+    const { calls, request } = requestRecorder(async (path, options) => {
+      if (path === `/conversations/${conversationId}/events`) return response({ error: 'conflict' }, 409);
+      if (path === `/conversations/${conversationId}/events?after=0&limit=100`) {
+        loadReached();
+        await loadReleased;
+        return response({ events: [] });
+      }
+      if (path === '/conversations?archived=false&limit=50') return response({ conversations: [metadata] });
+      if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+      if (path === `/conversations/${conversationId}` && options?.method === 'GET') {
+        return failFetch ? response({ error: 'unavailable' }, 503) : response({ ...metadata, revision: 4 });
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const history = controller.historyFor(conversationId);
+    await expect(history.append({
+      parentId: null,
+      message: { id: 'conflict-refresh', role: 'assistant', parts: [{ type: 'text', text: 'not stored' }] },
+    } as never)).rejects.toThrow();
+    expect(controller.getState(conversationId).status).toBe('conflict');
+
+    await controller.adapter.list();
+    expect(controller.getState(conversationId).status).toBe('conflict');
+    await controller.adapter.fetch(conversationId);
+    expect(controller.getState(conversationId).status).toBe('conflict');
+    const hydration = controller.historyFor(conversationId).load();
+    await loadStarted;
+    expect(controller.getState(conversationId).status).toBe('conflict');
+    expect(conversationStatusText(controller.getState(conversationId).status, true)).toContain('saving stopped');
+    releaseLoad();
+    await hydration;
+    expect(controller.getState(conversationId).status).toBe('conflict');
+    await expect(controller.adapter.delete(conversationId)).rejects.toThrow(/stopped/i);
+    expect(calls.some(call => call.options?.method === 'DELETE')).toBe(false);
+
+    failFetch = true;
+    await expect(controller.adapter.fetch(conversationId)).rejects.toThrow();
+    expect(controller.getState(conversationId).status).toBe('unavailable');
+  });
+
+  it('rejects an ambiguous same-message run link instead of choosing the latest conversation', async () => {
+    const { calls, request } = requestRecorder((path, options) => {
+      if (path.endsWith('/events')) {
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const duplicate = { id: 'same-message-id', role: 'user', parts: [{ type: 'text', text: 'not stored' }] };
+    await expect(controller.linkRun('same-message-id', runId)).rejects.toThrow(/not associated/i);
+    await controller.historyFor(otherConversationId).append({ parentId: null, message: duplicate } as never);
+    await controller.historyFor(conversationId).append({ parentId: null, message: duplicate } as never);
+
+    await expect(controller.linkRun('same-message-id', runId)).rejects.toThrow(/ambiguous/i);
+    expect(calls.filter(call => JSON.parse(String(call.options?.body)).kind === 'run_linked')).toEqual([]);
+  });
+
+  it('binds duplicate message run links and automatic lookups to their originating conversation', async () => {
+    const runA = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const runB = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const sequences = new Map<string, number>();
+    const eventCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const { request } = requestRecorder((path, options) => {
+      if (!path.endsWith('/events')) throw new Error(`unexpected request ${path}`);
+      const body = JSON.parse(String(options?.body)) as Record<string, unknown>;
+      const sequence = (sequences.get(path) ?? 0) + 1;
+      sequences.set(path, sequence);
+      eventCalls.push({ path, body });
+      return response({ ...body, sequence, createdAt: metadata.updatedAt }, 201);
+    });
+    const controller = createConversationController({
+      subjectId,
+      request,
+      getRunIdForUserMessage: (_messageId, remoteId) => remoteId === conversationId ? runA : runB,
+    });
+    const duplicate = { id: 'interleaved-duplicate', role: 'user', parts: [{ type: 'text', text: 'not stored' }] } as UIMessage;
+
+    await controller.historyFor(otherConversationId).append({ parentId: null, message: duplicate });
+    await expect(controller.linkRun(duplicate.id, runA, conversationId)).rejects.toThrow(/not associated/i);
+    await controller.historyFor(conversationId).append({ parentId: null, message: duplicate });
+    await controller.linkRun(duplicate.id, runA, conversationId);
+    await controller.historyFor(otherConversationId).append({
+      parentId: duplicate.id,
+      message: { id: 'assistant-b', role: 'assistant', parts: [{ type: 'text', text: 'not stored' }] } as UIMessage,
+    });
+    await controller.historyFor(conversationId).append({
+      parentId: duplicate.id,
+      message: { id: 'assistant-a', role: 'assistant', parts: [{ type: 'text', text: 'not stored' }] } as UIMessage,
+    });
+
+    const links = eventCalls.filter(call => call.body.kind === 'run_linked');
+    expect(links.map(call => [call.path, call.body.runId])).toEqual([
+      [`/conversations/${conversationId}/events`, runA],
+      [`/conversations/${otherConversationId}/events`, runB],
+    ]);
+  });
+
+  it('returns initialization before create settles and keeps saving visible through the pending event', async () => {
+    let releaseCreate!: () => void;
+    let eventReached!: () => void;
+    let releaseEvent!: () => void;
+    const createReleased = new Promise<void>(resolve => { releaseCreate = resolve; });
+    const eventStarted = new Promise<void>(resolve => { eventReached = resolve; });
+    const eventReleased = new Promise<void>(resolve => { releaseEvent = resolve; });
+    const { calls, request } = requestRecorder(async (path, options) => {
+      if (path === '/conversations') {
+        await createReleased;
+        return response({ ...metadata, id: JSON.parse(String(options?.body)).id }, 201);
+      }
+      if (path.endsWith('/events')) {
+        eventReached();
+        await eventReleased;
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.updatedAt }, 201);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+
+    const initialized = await controller.adapter.initialize('__LOCALID_nonblocking-create');
+    expect(calls.map(call => call.path)).toEqual(['/conversations']);
+    expect(controller.isConfirmed(initialized.remoteId)).toBe(false);
+    const append = controller.historyFor(initialized.remoteId).append({
+      parentId: null,
+      message: { id: 'pending-create-message', role: 'user', parts: [{ type: 'text', text: 'not stored' }] } as UIMessage,
+    });
+    await vi.waitFor(() => expect(controller.getState(initialized.remoteId).status).toBe('saving'));
+
+    releaseCreate();
+    await eventStarted;
+    expect(controller.isConfirmed(initialized.remoteId)).toBe(true);
+    expect(controller.getState(initialized.remoteId).status).toBe('saving');
+    releaseEvent();
+    await expect(append).resolves.toBeUndefined();
+    expect(controller.getState(initialized.remoteId)).toMatchObject({ status: 'saved', revision: 1 });
+  });
+
+  it('keeps original live chat ids isolated across overlapping transport sends', async () => {
+    const bodies: Array<{ id: string; remoteId: string }> = [];
+    const transport = new GuardedAssistantChatTransport({
+      api: '/api/chat',
+      prepareSendMessagesRequest: ({ id: remoteId }, localThreadId) => ({ body: { id: localThreadId, remoteId } }),
+      fetch: async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as { id: string });
+        return new Response(new ReadableStream({ start(controller) { controller.close(); } }), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      },
+    }, new Map(), { complete() {}, uncertain() {} });
+    transport.__internal_setGetThreadListItem(() => ({
+      initialize: async () => ({ remoteId: conversationId, externalId: undefined }),
+    }));
+    const send = (chatId: string, messageId: string) => transport.sendMessages({
+      trigger: 'submit-message',
+      chatId,
+      messageId: undefined,
+      messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text: 'safe' }] }],
+      abortSignal: undefined,
+    } as never);
+
+    await Promise.all([
+      send('__LOCALID_chat-a', 'message-a'),
+      send('__LOCALID_chat-b', 'message-b'),
+    ]);
+    expect(bodies.map(body => body.id).sort()).toEqual(['__LOCALID_chat-a', '__LOCALID_chat-b']);
+    expect(bodies.map(body => body.remoteId)).toEqual([conversationId, conversationId]);
+  });
+
+  it('rejects non-exact list cursors that repeat or skip an endpoint page', async () => {
+    for (const nextCursor of [conversationId, thirdConversationId]) {
+      let secondPage = false;
+      const { request } = requestRecorder((path) => {
+        if (path === '/conversations?archived=false&limit=50') {
+          return response({ conversations: [metadata], nextCursor: conversationId });
+        }
+        if (path === '/conversations?archived=true&limit=50') return response({ conversations: [] });
+        if (path === `/conversations?archived=false&limit=50&after=${conversationId}`) {
+          secondPage = true;
+          return response({
+            conversations: [{ ...metadata, id: otherConversationId }],
+            nextCursor,
+          });
+        }
+        throw new Error(`unexpected request ${path}`);
+      });
+      const controller = createConversationController({ subjectId, request });
+      const first = await controller.adapter.list();
+      await expect(controller.adapter.list({ after: first.nextCursor })).rejects.toThrow(/cursor/i);
+      expect(secondPage).toBe(true);
+    }
+  });
+
+  it('requires an event response to match the frozen attempt exactly', async () => {
+    const { request } = requestRecorder((_path, options) => {
+      const body = JSON.parse(String(options?.body));
+      return response({ ...body, id: randomUUID(), sequence: 1, createdAt: metadata.createdAt }, 201);
+    });
+    const controller = createConversationController({ subjectId, request });
+    await expect(controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'mismatched-response', role: 'user', parts: [{ type: 'text', text: 'not stored' }] },
+    } as never)).rejects.toThrow(/response/i);
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved', revision: 0 });
+  });
+
+  it('retries a failed frozen conversation create before its first event without claiming confirmation', async () => {
+    let createAttempts = 0;
+    const { calls, request } = requestRecorder((path, options) => {
+      if (path === '/conversations') {
+        createAttempts += 1;
+        if (createAttempts === 1) return response({ error: 'offline' }, 503);
+        const body = JSON.parse(String(options?.body));
+        return response({ ...metadata, id: body.id }, 201);
+      }
+      if (path.endsWith('/events')) {
+        const body = JSON.parse(String(options?.body));
+        return response({ ...body, sequence: 1, createdAt: metadata.createdAt }, 201);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    const initialized = await controller.adapter.initialize('__LOCALID_create-retry');
+    expect(controller.isConfirmed(initialized.remoteId)).toBe(false);
+
+    await controller.historyFor(initialized.remoteId).append({
+      parentId: null,
+      message: { id: 'create-retry-message', role: 'user', parts: [{ type: 'text', text: 'not stored' }] },
+    } as never);
+
+    const creates = calls.filter(call => call.path === '/conversations');
+    expect(creates).toHaveLength(2);
+    expect(creates[1]?.options?.body).toBe(creates[0]?.options?.body);
+    expect(controller.isConfirmed(initialized.remoteId)).toBe(true);
+    expect(controller.getState(initialized.remoteId)).toMatchObject({ status: 'saved', revision: 1 });
+  });
+
+  it('does not report a retained conversation failure after the user switches to a new thread', async () => {
+    let release!: () => void;
+    let reached!: () => void;
+    const started = new Promise<void>(resolve => { reached = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const { request } = requestRecorder(async path => {
+      if (path === `/conversations/${conversationId}/events`) {
+        reached();
+        await released;
+        return response({ error: 'failed' }, 500);
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    const controller = createConversationController({ subjectId, request });
+    controller.select(conversationId);
+    const pending = controller.historyFor(conversationId).append({
+      parentId: null,
+      message: { id: 'background-a', role: 'user', parts: [{ type: 'text', text: 'not stored' }] },
+    } as never);
+    await started;
+    controller.select(undefined);
+    release();
+    await expect(pending).rejects.toThrow();
+    expect(controller.getState()).toMatchObject({ status: 'saved' });
+    expect(controller.getState(conversationId)).toMatchObject({ status: 'unsaved' });
   });
 });

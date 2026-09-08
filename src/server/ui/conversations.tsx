@@ -1,7 +1,9 @@
 'use client';
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -223,9 +225,30 @@ function decodeListCursor(value: string | undefined): ListCursor {
   }
 }
 
-function endpointNextCursor(value: unknown, label: string): string | undefined {
-  if (!plainRecord(value) || value.nextCursor === undefined) return undefined;
-  return lowerUuid(value.nextCursor, `${label} conversation cursor`);
+function parseListPage(
+  value: unknown,
+  label: string,
+  archived: boolean,
+  after: ListCursorPart,
+): { records: ConversationRecord[]; nextCursor?: string } {
+  if (!plainRecord(value) || !Array.isArray(value.conversations)) {
+    throw new Error('Conversation list response was invalid.');
+  }
+  const records = value.conversations.map(parseConversation);
+  let previous = typeof after === 'string' ? after : undefined;
+  for (const record of records) {
+    if (record.archived !== archived || (previous !== undefined && record.id <= previous)) {
+      throw new Error(`${label} conversation cursor was invalid.`);
+    }
+    previous = record.id;
+  }
+  if (value.nextCursor === undefined) return { records };
+  const nextCursor = lowerUuid(value.nextCursor, `${label} conversation cursor`);
+  if (records.length === 0 || nextCursor !== records.at(-1)!.id
+    || (typeof after === 'string' && nextCursor <= after)) {
+    throw new Error(`${label} conversation cursor was invalid.`);
+  }
+  return { records, nextCursor };
 }
 
 export function isSavedConversationMessage(value: unknown): boolean {
@@ -290,9 +313,10 @@ export type ConversationController = {
   toMetadata(record: ConversationRecord): RemoteThreadMetadata;
   historyFor(remoteId: string): ThreadHistoryAdapter;
   getState(remoteId?: string): ConversationState;
+  isConfirmed(remoteId?: string): boolean;
   select(remoteId?: string): void;
   subscribe(callback: () => void): () => void;
-  linkRun(userMessageId: string, runId: string): Promise<void>;
+  linkRun(userMessageId: string, runId: string, remoteId?: string): Promise<void>;
   dispose(): void;
 };
 
@@ -313,7 +337,7 @@ type Attempt = {
 export function createConversationController(options: {
   subjectId?: string;
   request: ConversationRequest;
-  getRunIdForUserMessage?: (userMessageId: string) => string | undefined;
+  getRunIdForUserMessage?: (userMessageId: string, remoteId: string) => string | undefined;
 }): ConversationController {
   const subjectId = options.subjectId && uuidPattern.test(options.subjectId) && options.subjectId === options.subjectId.toLowerCase()
     ? options.subjectId
@@ -327,14 +351,15 @@ export function createConversationController(options: {
   const attempts = new Map<string, Attempt>();
   const stopped = new Set<string>();
   const historyAdapters = new Map<string, ThreadHistoryAdapter>();
-  const genericAdapters = new Map<string, WeakMap<object, GenericThreadHistoryAdapter<UIMessage>>>();
-  const messageConversations = new Map<string, string>();
+  const messageConversations = new Map<string, Set<string>>();
   const userMessages = new Map<string, string>();
-  const pendingRunLinks = new Map<string, string>();
   const listeners = new Set<() => void>();
   const localConversationIds = new Map<string, string>();
-  let selectedRemoteId: string | undefined;
+  const locallyCreatedIds = new Set<string>();
+  const creationPromises = new Map<string, Promise<void>>();
+  let selectedRemoteId: string | null | undefined;
   let overallState: ConversationState = { status: subjectId ? 'saved' : 'unsaved', revision: 0 };
+  let unselectedState = overallState;
 
   const notify = () => {
     for (const listener of listeners) listener();
@@ -364,7 +389,10 @@ export function createConversationController(options: {
     if (error === undefined) delete next.error;
     else next.error = error;
     state.set(remoteId, next);
-    if (selectedRemoteId === undefined || selectedRemoteId === remoteId) overallState = next;
+    if (selectedRemoteId === undefined) {
+      unselectedState = next;
+      overallState = next;
+    } else if (selectedRemoteId === remoteId) overallState = next;
     notify();
   };
 
@@ -372,19 +400,21 @@ export function createConversationController(options: {
     if (disposed) return;
     const nextRemoteId = remoteId && uuidPattern.test(remoteId) && remoteId === remoteId.toLowerCase()
       ? remoteId
-      : undefined;
+      : null;
     selectedRemoteId = nextRemoteId;
     overallState = nextRemoteId
       ? currentState(nextRemoteId)
-      : { status: subjectId ? 'saved' : 'unsaved', revision: 0 };
+      : unselectedState;
     notify();
   };
 
   const setOverallStatus = (status: ConversationSaveStatus) => {
-    overallState = { ...overallState, status };
+    const next = { ...unselectedState, status };
     const error = statusError(status);
-    if (error === undefined) delete overallState.error;
-    else overallState.error = error;
+    if (error === undefined) delete next.error;
+    else next.error = error;
+    unselectedState = next;
+    overallState = next;
     notify();
   };
 
@@ -416,14 +446,18 @@ export function createConversationController(options: {
   const remember = (record: ConversationRecord, preserveStatus = false) => {
     metadata.set(record.id, record);
     const existing = currentState(record.id);
+    const preserve = preserveStatus || stopped.has(record.id);
     state.set(record.id, {
       ...existing,
-      status: preserveStatus ? existing.status : 'saved',
+      status: preserve ? existing.status : 'saved',
       revision: record.revision,
       archived: record.archived,
-      ...(preserveStatus && existing.error ? { error: existing.error } : {}),
+      ...(preserve && existing.error ? { error: existing.error } : {}),
     });
-    if (selectedRemoteId === undefined || selectedRemoteId === record.id) overallState = state.get(record.id)!;
+    if (selectedRemoteId === undefined) {
+      unselectedState = state.get(record.id)!;
+      overallState = unselectedState;
+    } else if (selectedRemoteId === record.id) overallState = state.get(record.id)!;
     notify();
   };
 
@@ -435,11 +469,53 @@ export function createConversationController(options: {
       metadata.set(remoteId, record);
       const previous = currentState(remoteId);
       state.set(remoteId, { ...previous, status: 'conflict', revision: record.revision, archived: record.archived, error: statusError('conflict') });
-      if (selectedRemoteId === undefined || selectedRemoteId === remoteId) overallState = state.get(remoteId)!;
+      if (selectedRemoteId === undefined) {
+        unselectedState = state.get(remoteId)!;
+        overallState = unselectedState;
+      } else if (selectedRemoteId === remoteId) overallState = state.get(remoteId)!;
       notify();
     } catch {
       // The conflict state remains visible even if safe metadata reconciliation is unavailable.
     }
+  };
+
+  const enqueueWrite = (remoteId: string, work: () => Promise<void>): Promise<void> => {
+    const previous = queues.get(remoteId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(work);
+    const retained = task.then(
+      () => {
+        if (queues.get(remoteId) === retained) queues.delete(remoteId);
+      },
+      () => {
+        if (queues.get(remoteId) === retained) queues.delete(remoteId);
+      },
+    );
+    queues.set(remoteId, retained);
+    return task;
+  };
+
+  const ensureConversation = (remoteId: string, capturedEpoch: number): Promise<void> => {
+    if (metadata.has(remoteId) || !locallyCreatedIds.has(remoteId)) return Promise.resolve();
+    const existing = creationPromises.get(remoteId);
+    if (existing) return existing;
+    const creation = (async () => {
+      const raw = await requestJson<unknown>('/conversations', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: remoteId }),
+      }, capturedEpoch);
+      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+      const record = parseConversation(raw);
+      if (record.id !== remoteId) throw new Error('Conversation creation returned a different id.');
+      remember(record, currentState(remoteId).status === 'saving');
+    })();
+    let retained: Promise<void>;
+    retained = creation.finally(() => {
+      if (creationPromises.get(remoteId) === retained) creationPromises.delete(remoteId);
+    });
+    creationPromises.set(remoteId, retained);
+    return retained;
   };
 
   const queueEvent = (
@@ -453,13 +529,13 @@ export function createConversationController(options: {
     const attempt = attempts.get(attemptKey) ?? { descriptor, completed: false };
     attempts.set(attemptKey, attempt);
     if (attempt.completed) return Promise.resolve();
-    const previous = queues.get(remoteId) ?? Promise.resolve();
-    const task = previous.catch(() => undefined).then(async () => {
+    return enqueueWrite(remoteId, async () => {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
       if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
       if (attempt.completed) return;
       setState(remoteId, 'saving');
       try {
+        await ensureConversation(remoteId, capturedEpoch);
         if (!attempt.body) {
           attempt.body = Object.freeze({ id: newUuid(), ...attempt.descriptor, expectedRevision: currentState(remoteId).revision });
         }
@@ -472,6 +548,13 @@ export function createConversationController(options: {
         }, capturedEpoch);
         if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
         const event = parseEvent(raw);
+        if (event.id !== body.id
+          || event.kind !== body.kind
+          || event.role !== body.role
+          || event.runId !== body.runId
+          || event.sequence !== body.expectedRevision + 1) {
+          throw new Error('Conversation event response did not match the saved attempt.');
+        }
         const previousRecord = metadata.get(remoteId);
         if (previousRecord) {
           metadata.set(remoteId, { ...previousRecord, revision: event.sequence, updatedAt: typeof event.createdAt === 'string' ? event.createdAt : previousRecord.updatedAt });
@@ -495,16 +578,6 @@ export function createConversationController(options: {
         throw error;
       }
     });
-    const retained = task.then(
-      () => {
-        if (queues.get(remoteId) === retained) queues.delete(remoteId);
-      },
-      () => {
-        if (queues.get(remoteId) === retained) queues.delete(remoteId);
-      },
-    );
-    queues.set(remoteId, retained);
-    return task;
   };
 
   const queueRunLink = (remoteId: string, messageId: string, runId: string): Promise<void> => {
@@ -522,18 +595,17 @@ export function createConversationController(options: {
     } catch (error) {
       return Promise.reject(error);
     }
-    messageConversations.set(messageId, remoteId);
+    const conversations = messageConversations.get(messageId) ?? new Set<string>();
+    conversations.add(remoteId);
+    messageConversations.set(messageId, conversations);
     if (role === 'user') userMessages.set(remoteId, messageId);
     const omission = queueEvent(remoteId, `message:${remoteId}:${messageId}`, { kind: 'message_omitted', role });
     let runId: string | undefined;
     let linkedMessageId = messageId;
-    if (role === 'user') {
-      runId = pendingRunLinks.get(messageId);
-      pendingRunLinks.delete(messageId);
-    } else {
+    if (role === 'assistant') {
       const latestUserId = userMessages.get(remoteId);
       linkedMessageId = latestUserId ?? messageId;
-      runId = latestUserId ? options.getRunIdForUserMessage?.(latestUserId) : undefined;
+      runId = latestUserId ? options.getRunIdForUserMessage?.(latestUserId, remoteId) : undefined;
     }
     if (runId && uuidPattern.test(runId) && runId === runId.toLowerCase()) {
       return omission.then(() => queueRunLink(remoteId, linkedMessageId, runId));
@@ -544,7 +616,11 @@ export function createConversationController(options: {
   const loadEvents = async (remoteId: string): Promise<Array<{ parentId: string | null; message: UIMessage }>> => {
     const capturedEpoch = epoch;
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-    setState(remoteId, 'loading');
+    // A freshly initialized local thread cannot have remote history yet. Its
+    // detached create may still be pending, and history hydration must not
+    // turn that optional persistence request into a live-chat barrier.
+    if (locallyCreatedIds.has(remoteId) && !metadata.has(remoteId)) return [];
+    if (!stopped.has(remoteId)) setState(remoteId, 'loading');
     try {
       const loaded: Array<{ parentId: string | null; message: UIMessage }> = [];
       let after = 0;
@@ -568,7 +644,7 @@ export function createConversationController(options: {
         after = raw.nextCursor;
       }
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      setState(remoteId, 'saved');
+      setState(remoteId, stopped.has(remoteId) ? 'conflict' : 'saved');
       return loaded;
     } catch (error) {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
@@ -579,42 +655,38 @@ export function createConversationController(options: {
   };
 
   const makeGenericHistory = function makeGenericHistory<TMessage, TStorageFormat extends Record<string, unknown>>(
-    remoteId: string,
+    resolveRemoteId: () => string,
     _formatAdapter: MessageFormatAdapter<TMessage, TStorageFormat>,
   ): GenericThreadHistoryAdapter<TMessage> {
     return {
-    load: async () => {
-      const loaded = await loadEvents(remoteId);
-      return {
-        messages: loaded.map(item => ({ parentId: item.parentId, message: item.message as unknown as TMessage })),
-      };
-    },
-    pin: () => {
-      // The remote id and session epoch are captured in this adapter closure;
-      // pin is intentionally not allowed to resolve the currently selected item.
-    },
-    append: item => appendMessage(remoteId, item.message as unknown as UIMessage),
+      load: async () => {
+        const loaded = await loadEvents(resolveRemoteId());
+        return {
+          messages: loaded.map(item => ({ parentId: item.parentId, message: item.message as unknown as TMessage })),
+        };
+      },
+      pin: () => {
+        // The keyed item and session epoch are captured in this adapter closure;
+        // pin is intentionally not allowed to resolve mutable global selection.
+      },
+      append: item => appendMessage(resolveRemoteId(), item.message as unknown as UIMessage),
     };
   };
 
-  const makeHistory = (remoteId: string): ThreadHistoryAdapter => {
+  const makeHistory = (resolveRemoteId: () => string): ThreadHistoryAdapter => {
+    const scopedAdapters = new WeakMap<object, GenericThreadHistoryAdapter<UIMessage>>();
     const history: ThreadHistoryAdapter = {
       load: async () => {
-        const loaded = await loadEvents(remoteId);
+        const loaded = await loadEvents(resolveRemoteId());
         return { messages: loaded.map(item => ({ parentId: item.parentId, message: item.message as unknown as ThreadMessage })) };
       },
-      append: item => appendMessage(remoteId, item.message as unknown as UIMessage),
+      append: item => appendMessage(resolveRemoteId(), item.message as unknown as UIMessage),
       withFormat: <TMessage, TStorageFormat extends Record<string, unknown>>(
         formatAdapter: MessageFormatAdapter<TMessage, TStorageFormat>,
       ) => {
-        let scopedAdapters = genericAdapters.get(remoteId);
-        if (!scopedAdapters) {
-          scopedAdapters = new WeakMap<object, GenericThreadHistoryAdapter<UIMessage>>();
-          genericAdapters.set(remoteId, scopedAdapters);
-        }
         const existing = scopedAdapters.get(formatAdapter as object);
         if (existing) return existing as GenericThreadHistoryAdapter<TMessage>;
-        const generic = makeGenericHistory(remoteId, formatAdapter);
+        const generic = makeGenericHistory(resolveRemoteId, formatAdapter);
         scopedAdapters.set(formatAdapter as object, generic as GenericThreadHistoryAdapter<UIMessage>);
         return generic;
       },
@@ -638,18 +710,14 @@ export function createConversationController(options: {
           : requestJson<unknown>(`/conversations?archived=true&limit=50${archivedSuffix}`, { method: 'GET', cache: 'no-store' }, capturedEpoch),
       ]);
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      const records: ConversationRecord[] = [];
-      for (const raw of [regularRaw, archivedRaw]) {
-        if (!plainRecord(raw) || !Array.isArray(raw.conversations)) throw new Error('Conversation list response was invalid.');
-        for (const item of raw.conversations) records.push(parseConversation(item));
-      }
+      const regularPage = parseListPage(regularRaw, 'regular', false, cursor.regular);
+      const archivedPage = parseListPage(archivedRaw, 'archived', true, cursor.archived);
+      const records = [...regularPage.records, ...archivedPage.records];
       const deduped = new Map(records.map(record => [record.id, record]));
       for (const record of deduped.values()) remember(record);
-      const regularNext = cursor.regular === null ? undefined : endpointNextCursor(regularRaw, 'regular');
-      const archivedNext = cursor.archived === null ? undefined : endpointNextCursor(archivedRaw, 'archived');
       const nextCursor = encodeListCursor({
-        regular: regularNext ?? null,
-        archived: archivedNext ?? null,
+        regular: regularPage.nextCursor ?? null,
+        archived: archivedPage.nextCursor ?? null,
       });
       return { threads: [...deduped.values()].map(toMetadata), ...(nextCursor ? { nextCursor } : {}) };
     } catch (error) {
@@ -668,27 +736,34 @@ export function createConversationController(options: {
     const capturedEpoch = epoch;
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
     if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
-    setState(remoteId, 'saving');
-    try {
-      const expectedRevision = currentState(remoteId).revision;
-      const raw = await requestJson<unknown>(`/conversations/${remoteId}`, {
-        method: 'PATCH', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ archived, expectedRevision }),
-      }, capturedEpoch);
+    return enqueueWrite(remoteId, async () => {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      const record = parseConversation(raw);
-      metadata.set(remoteId, record);
-      setState(remoteId, 'saved', { revision: record.revision, archived: record.archived });
-    } catch (error) {
-      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 409) {
-        stopped.add(remoteId);
-        setState(remoteId, 'conflict');
-        await reconcile(remoteId, capturedEpoch);
-      } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
-      throw error;
-    }
+      if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
+      setState(remoteId, 'saving');
+      try {
+        const expectedRevision = currentState(remoteId).revision;
+        const raw = await requestJson<unknown>(`/conversations/${remoteId}`, {
+          method: 'PATCH', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ archived, expectedRevision }),
+        }, capturedEpoch);
+        if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        const record = parseConversation(raw);
+        if (record.id !== remoteId || record.archived !== archived || record.revision !== expectedRevision + 1) {
+          throw new Error('Conversation archive response was invalid.');
+        }
+        metadata.set(remoteId, record);
+        setState(remoteId, 'saved', { revision: record.revision, archived: record.archived });
+      } catch (error) {
+        if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        if (errorStatus(error) === 409) {
+          stopped.add(remoteId);
+          setState(remoteId, 'conflict');
+          await reconcile(remoteId, capturedEpoch);
+        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
+        else setState(remoteId, 'unsaved');
+        throw error;
+      }
+    });
   };
 
   const deleteConversation = async (remoteId: string) => {
@@ -696,30 +771,35 @@ export function createConversationController(options: {
     lowerUuid(remoteId, 'conversation id');
     const capturedEpoch = epoch;
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-    setState(remoteId, 'saving');
-    try {
-      const expectedRevision = currentState(remoteId).revision;
-      await requestJson<undefined>(`/conversations/${remoteId}`, {
-        method: 'DELETE', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedRevision }),
-      }, capturedEpoch);
+    if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
+    return enqueueWrite(remoteId, async () => {
       if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      metadata.delete(remoteId);
-      state.delete(remoteId);
-      stopped.add(remoteId);
-      if (selectedRemoteId === remoteId) selectConversation(undefined);
-      else if (selectedRemoteId === undefined) setOverallStatus('saved');
-      notify();
-    } catch (error) {
-      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      if (errorStatus(error) === 409) {
+      if (stopped.has(remoteId)) throw new Error('Conversation saving stopped after a revision conflict.');
+      setState(remoteId, 'saving');
+      try {
+        const expectedRevision = currentState(remoteId).revision;
+        await requestJson<undefined>(`/conversations/${remoteId}`, {
+          method: 'DELETE', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expectedRevision }),
+        }, capturedEpoch);
+        if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        metadata.delete(remoteId);
+        state.delete(remoteId);
         stopped.add(remoteId);
-        setState(remoteId, 'conflict');
-        await reconcile(remoteId, capturedEpoch);
-      } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
-      else setState(remoteId, 'unsaved');
-      throw error;
-    }
+        if (selectedRemoteId === remoteId) selectConversation(undefined);
+        else if (selectedRemoteId === undefined) setOverallStatus('saved');
+        notify();
+      } catch (error) {
+        if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+        if (errorStatus(error) === 409) {
+          stopped.add(remoteId);
+          setState(remoteId, 'conflict');
+          await reconcile(remoteId, capturedEpoch);
+        } else if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
+        else setState(remoteId, 'unsaved');
+        throw error;
+      }
+    });
   };
 
   const initialize = async (threadId: string) => {
@@ -728,32 +808,35 @@ export function createConversationController(options: {
     if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
     const id = localConversationIds.get(threadId) ?? newUuid();
     localConversationIds.set(threadId, id);
-    try {
-      const raw = await requestJson<unknown>('/conversations', {
-        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
-      }, capturedEpoch);
-      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-      const record = parseConversation(raw);
-      if (record.id !== id) throw new Error('Conversation creation returned a different id.');
-      remember(record);
-      return { remoteId: record.id, externalId: undefined };
-    } catch (error) {
-      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+    locallyCreatedIds.add(id);
+    // Creation is deliberately detached from initialization: the installed
+    // chat transport awaits this hook before dispatching the live request.
+    // Event persistence joins the same promise and cannot overtake creation.
+    void ensureConversation(id, capturedEpoch).catch(error => {
+      if (!isCurrent(capturedEpoch)) return;
       if (errorStatus(error) === 503) setState(id, 'unavailable');
       else setState(id, 'unsaved');
-      throw error;
-    }
+    });
+    return { remoteId: id, externalId: undefined };
   };
 
   const fetchConversation = async (threadId: string) => {
     if (!subjectId) throw new Error('Saved conversations are unavailable for legacy sessions.');
     const remoteId = localConversationIds.get(threadId) ?? lowerUuid(threadId, 'conversation id');
     const capturedEpoch = epoch;
-    const raw = await requestJson<unknown>(`/conversations/${remoteId}`, { method: 'GET', cache: 'no-store' }, capturedEpoch);
-    if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
-    const record = parseConversation(raw);
-    remember(record);
-    return toMetadata(record);
+    try {
+      const raw = await requestJson<unknown>(`/conversations/${remoteId}`, { method: 'GET', cache: 'no-store' }, capturedEpoch);
+      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+      const record = parseConversation(raw);
+      if (record.id !== remoteId) throw new Error('Conversation fetch returned a different id.');
+      remember(record);
+      return toMetadata(record);
+    } catch (error) {
+      if (!isCurrent(capturedEpoch)) throw new ConversationEpochError();
+      if (errorStatus(error) === 503) setState(remoteId, 'unavailable');
+      else setState(remoteId, 'unsaved');
+      throw error;
+    }
   };
 
   const unsupported = async (): Promise<void> => {
@@ -768,21 +851,29 @@ export function createConversationController(options: {
     unarchive: remoteId => mutateArchive(remoteId, false),
     delete: deleteConversation,
     initialize,
-    generateTitle: async () => {
-      throw new Error('Conversation titles are fixed and cannot be generated.');
-    },
+    generateTitle: async () => new ReadableStream<never>({
+      start(streamController) {
+        // Titles are always the fixed local fallback; never invoke a model or
+        // persist user-derived text when the runtime requests generation.
+        streamController.close();
+      },
+    }),
     fetch: fetchConversation,
     unstable_useAdapters: () => {
       const aui = useAui();
-      const remoteId = aui.threadListItem.source ? aui.threadListItem.getState().remoteId : undefined;
-      useEffect(() => {
-        selectConversation(remoteId);
-      }, [remoteId]);
-      const history = remoteId ? historyAdapters.get(remoteId) ?? (() => {
-        const made = makeHistory(remoteId);
-        historyAdapters.set(remoteId, made);
-        return made;
-      })() : undefined;
+      const item = aui.threadListItem.source ? aui.threadListItem : undefined;
+      const history = useMemo(() => {
+        if (!subjectId || !item) return undefined;
+        let pinnedRemoteId: string | undefined;
+        return makeHistory(() => {
+          const currentRemoteId = lowerUuid(item.getState().remoteId, 'conversation id');
+          if (pinnedRemoteId !== undefined && pinnedRemoteId !== currentRemoteId) {
+            throw new ConversationEpochError();
+          }
+          pinnedRemoteId = currentRemoteId;
+          return currentRemoteId;
+        });
+      }, [item]);
       return useMemo(() => history ? { history } : {}, [history]);
     },
   };
@@ -794,7 +885,7 @@ export function createConversationController(options: {
       if (!subjectId || !uuidPattern.test(remoteId) || remoteId !== remoteId.toLowerCase()) return undefined as unknown as ThreadHistoryAdapter;
       const existing = historyAdapters.get(remoteId);
       if (existing) return existing;
-      const made = makeHistory(remoteId);
+      const made = makeHistory(() => remoteId);
       historyAdapters.set(remoteId, made);
       return made;
     },
@@ -802,11 +893,14 @@ export function createConversationController(options: {
     getState(remoteId) {
       return remoteId ? currentState(remoteId) : overallState;
     },
+    isConfirmed(remoteId) {
+      return remoteId !== undefined && metadata.has(remoteId);
+    },
     subscribe(callback) {
       listeners.add(callback);
       return () => listeners.delete(callback);
     },
-    linkRun(userMessageId, runId) {
+    linkRun(userMessageId, runId, requestedRemoteId) {
       if (!isCurrent(epoch)) return Promise.reject(new ConversationEpochError());
       if (!subjectId) return Promise.reject(new Error('Saved conversations are unavailable for legacy sessions.'));
       try {
@@ -814,10 +908,23 @@ export function createConversationController(options: {
       } catch (error) {
         return Promise.reject(error);
       }
-      const conversationId = messageConversations.get(userMessageId);
-      if (!conversationId) {
-        pendingRunLinks.set(userMessageId, runId);
-        return Promise.resolve();
+      const conversations = messageConversations.get(userMessageId);
+      let conversationId: string;
+      if (requestedRemoteId !== undefined) {
+        try {
+          conversationId = lowerUuid(requestedRemoteId, 'conversation id');
+        } catch (error) {
+          return Promise.reject(error);
+        }
+        if (!conversations?.has(conversationId)) {
+          return Promise.reject(new Error('Conversation message is not associated with the requested saved conversation.'));
+        }
+      } else if ((conversations?.size ?? 0) > 1) {
+        return Promise.reject(new Error('Conversation message identity is ambiguous across saved conversations.'));
+      } else if (!conversations?.size) {
+        return Promise.reject(new Error('Conversation message is not associated with a saved conversation.'));
+      } else {
+        conversationId = conversations.values().next().value!;
       }
       return queueRunLink(conversationId, userMessageId, runId);
     },
@@ -832,13 +939,14 @@ export function createConversationController(options: {
       attempts.clear();
       stopped.clear();
       historyAdapters.clear();
-      genericAdapters.clear();
       messageConversations.clear();
       userMessages.clear();
-      pendingRunLinks.clear();
       localConversationIds.clear();
+      locallyCreatedIds.clear();
+      creationPromises.clear();
       selectedRemoteId = undefined;
       overallState = { status: subjectId ? 'saved' : 'unsaved', revision: 0 };
+      unselectedState = overallState;
       listeners.clear();
     },
   };
@@ -849,7 +957,7 @@ export type ConversationRuntimeOptions = {
   session: Pick<Session, 'principal' | 'subjectId' | 'token'>;
   request: ConversationRequest;
   chatOptions: UseChatRuntimeOptions<UIMessage>;
-  getRunIdForUserMessage?: (userMessageId: string) => string | undefined;
+  getRunIdForUserMessage?: (userMessageId: string, remoteId: string) => string | undefined;
 };
 
 export function useConversationRuntime({
@@ -860,7 +968,7 @@ export function useConversationRuntime({
 }: ConversationRuntimeOptions): {
   runtime: AssistantRuntime;
   controller: ConversationController;
-  linkRun: (userMessageId: string, runId: string) => Promise<void>;
+  linkRun: (userMessageId: string, runId: string, remoteId?: string) => Promise<void>;
 } {
   const key = `${session.principal}:${session.subjectId ?? 'legacy'}:${session.token}`;
   const holderRef = useRef<{ key: string; controller: ConversationController } | undefined>(undefined);
@@ -876,18 +984,28 @@ export function useConversationRuntime({
     adapter: controller.adapter,
     runtimeHook: () => useChatRuntime(chatOptions),
     allowNesting: true,
+    onThreadIdChange: controller.select,
   });
   useEffect(() => () => controller.dispose(), [controller]);
-  const linkRun = useCallback((userMessageId: string, runId: string) => controller.linkRun(userMessageId, runId), [controller]);
+  const linkRun = useCallback((userMessageId: string, runId: string, remoteId?: string) => controller.linkRun(userMessageId, runId, remoteId), [controller]);
   return { runtime, controller, linkRun };
 }
+
+const ConversationControllerContext = createContext<ConversationController | undefined>(undefined);
 
 function ConversationThreadItem({ archived }: { archived: boolean }) {
   const aui = useAui();
   const item = useAuiState(s => s.threadListItem);
+  const controller = useContext(ConversationControllerContext)!;
+  const confirmed = useSyncExternalStore(
+    controller.subscribe,
+    () => controller.isConfirmed(item.remoteId),
+    () => controller.isConfirmed(item.remoteId),
+  );
   const disabled = conversationActionsDisabled(item);
   const title = item.title || CONVERSATION_TITLE;
   const stop = (event: React.MouseEvent) => event.stopPropagation();
+  if (!confirmed) return null;
   if (archived) {
     return (
       <ThreadListItemPrimitive.Root className="conversation-row conversation-row-archived">
@@ -942,16 +1060,18 @@ function ArchivedConversationThreadItem() {
   return <ConversationThreadItem archived />;
 }
 
-export function ConversationNavigation() {
+export function ConversationNavigation({ controller }: { controller: ConversationController }) {
   return (
-    <nav className="conversation-navigation" aria-label="Saved conversations">
-      <ThreadListPrimitive.Root>
-        <ThreadListPrimitive.New className="secondary conversation-new">New conversation</ThreadListPrimitive.New>
-        <ThreadListPrimitive.Items components={{ ThreadListItem: RegularConversationThreadItem }} />
-        <ThreadListPrimitive.Items archived components={{ ThreadListItem: ArchivedConversationThreadItem }} />
-        <ThreadListPrimitive.LoadMore className="secondary conversation-load-more">Load more</ThreadListPrimitive.LoadMore>
-      </ThreadListPrimitive.Root>
-    </nav>
+    <ConversationControllerContext.Provider value={controller}>
+      <nav className="conversation-navigation" aria-label="Saved conversations">
+        <ThreadListPrimitive.Root>
+          <ThreadListPrimitive.New className="secondary conversation-new">New conversation</ThreadListPrimitive.New>
+          <ThreadListPrimitive.Items components={{ ThreadListItem: RegularConversationThreadItem }} />
+          <ThreadListPrimitive.Items archived components={{ ThreadListItem: ArchivedConversationThreadItem }} />
+          <ThreadListPrimitive.LoadMore className="secondary conversation-load-more">Load more</ThreadListPrimitive.LoadMore>
+        </ThreadListPrimitive.Root>
+      </nav>
+    </ConversationControllerContext.Provider>
   );
 }
 

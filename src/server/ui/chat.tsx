@@ -30,6 +30,14 @@ import {
 } from './conversations';
 
 type ChatRunBinding = { runId: string; capability: string; state: string };
+type AssistantTransportOptions = NonNullable<ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0]>;
+type AssistantPrepare = NonNullable<AssistantTransportOptions['prepareSendMessagesRequest']>;
+type GuardedTransportOptions = Omit<AssistantTransportOptions, 'prepareSendMessagesRequest'> & {
+  prepareSendMessagesRequest?: (
+    options: Parameters<AssistantPrepare>[0],
+    localThreadId: string,
+  ) => ReturnType<AssistantPrepare>;
+};
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const capabilityIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const bindingKeys = ['kind', 'runId', 'capability', 'state'] as const;
@@ -53,15 +61,26 @@ function parseChatRunBinding(value: unknown): ChatRunBinding {
   return { runId: result.runId, capability: result.capability, state: result.state };
 }
 
-class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
-  private readonly initOptions: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0];
+export class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
+  private readonly initOptions: GuardedTransportOptions;
+  private readonly localThreadIds: WeakMap<object, string>;
   constructor(
-    options: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0],
+    options: GuardedTransportOptions,
     private readonly lifecycles: Map<string, ChatLifecycle>,
     private readonly callbacks: ChatLifecycleCallbacks,
   ) {
-    super(options);
+    const localThreadIds = new WeakMap<object, string>();
+    const { prepareSendMessagesRequest: prepare, ...normalizedOptions } = options;
+    super({
+      ...normalizedOptions,
+      ...(prepare ? {
+        prepareSendMessagesRequest: requestOptions => prepare({
+          ...requestOptions,
+        }, localThreadIds.get(requestOptions.messages as object) ?? requestOptions.id),
+      } : {}),
+    });
     this.initOptions = options;
+    this.localThreadIds = localThreadIds;
   }
 
   override __internal_clone(): AssistantChatTransport<UIMessage> {
@@ -71,6 +90,7 @@ class GuardedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
   override async sendMessages(options: Parameters<AssistantChatTransport<UIMessage>['sendMessages']>[0]) {
     const key = [...options.messages].reverse().find(message => message.role === 'user')?.id;
     try {
+      this.localThreadIds.set(options.messages as object, options.chatId);
       const stream = await super.sendMessages(options);
       const lifecycle = key ? this.lifecycles.get(key) : undefined;
       if (!lifecycle) return stream;
@@ -154,11 +174,15 @@ export function Chat() {
   const actionHoldRef = useRef(actionHold);
   const lifecycleRef = useRef(new Map<string, ChatLifecycle>());
   const runLinksRef = useRef(new Map<string, string>());
+  const conversationByRequestRef = useRef(new Map<string, string>());
+  const chatThreadIdsRef = useRef(new Map<string, string>());
   const runLinksSessionKeyRef = useRef('');
-  const linkRunRef = useRef<(userMessageId: string, runId: string) => Promise<void>>(() => Promise.resolve());
+  const linkRunRef = useRef<(userMessageId: string, runId: string, remoteId?: string) => Promise<void>>(() => Promise.resolve());
   const runLinksSessionKey = `${session.principal}:${session.subjectId ?? 'legacy'}:${session.token}`;
   if (runLinksSessionKeyRef.current !== runLinksSessionKey) {
     runLinksRef.current.clear();
+    conversationByRequestRef.current.clear();
+    chatThreadIdsRef.current.clear();
     runLinksSessionKeyRef.current = runLinksSessionKey;
   }
   actionHoldRef.current = actionHold;
@@ -185,16 +209,23 @@ export function Chat() {
     () =>
       new GuardedAssistantChatTransport({
         api: '/api/chat',
-        prepareSendMessagesRequest: ({ messages, id }) => {
+        prepareSendMessagesRequest: ({ messages, id }, localThreadId) => {
           const hold = actionHoldRef.current;
-          const prepared = chatRequest(messages, id, hold ? 'status' : 'auto');
+          const conversationId = runIdPattern.test(id) ? id.toLowerCase() : undefined;
+          let chatId = localThreadId;
+          if (runIdPattern.test(localThreadId)) {
+            chatId = chatThreadIdsRef.current.get(localThreadId) ?? `__CHATID_${crypto.randomUUID()}`;
+            chatThreadIdsRef.current.set(localThreadId, chatId);
+          }
+          const prepared = chatRequest(messages, chatId, hold ? 'status' : 'auto');
           const key = String(prepared.headers['Idempotency-Key']);
+          if (conversationId) conversationByRequestRef.current.set(key, conversationId);
           if (hold) {
-            lifecycleRef.current.set(key, { key, guardKey: hold.key, intent: 'status', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
+            lifecycleRef.current.set(key, { key, conversationId, guardKey: hold.key, intent: 'status', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
           } else if (!beginAction({ kind: 'chat', key, body: JSON.stringify(prepared.body) })) {
             throw new ChatRequestError('An operation request is still unresolved. Ask about its status before sending another action. No request was sent.');
           } else {
-            lifecycleRef.current.set(key, { key, intent: 'action', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
+            lifecycleRef.current.set(key, { key, conversationId, intent: 'action', sawTool: false, sawStatusTool: false, sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() });
           }
           setError('');
           return prepared;
@@ -213,8 +244,10 @@ export function Chat() {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
               setLookupRunId(binding.runId);
-              runLinksRef.current.set(current.key, binding.runId);
-              trackConversationWriteFailure(linkRunRef.current(current.key, binding.runId), () => { void refresh(); });
+              if (current.conversationId) {
+                runLinksRef.current.set(`${current.conversationId}:${current.key}`, binding.runId);
+                trackConversationWriteFailure(linkRunRef.current(current.key, binding.runId, current.conversationId), () => { void refresh(); });
+              }
               bindAction(current.key, binding.runId, binding.capability);
               watch(binding.runId);
             }).catch(() => markActionUncertain(current.key));
@@ -236,7 +269,7 @@ export function Chat() {
   const { runtime, controller, linkRun } = useConversationRuntime({
     session,
     request,
-    getRunIdForUserMessage: userMessageId => runLinksRef.current.get(userMessageId),
+    getRunIdForUserMessage: (userMessageId, remoteId) => runLinksRef.current.get(`${remoteId}:${userMessageId}`),
     chatOptions: {
       transport,
       generateId: () => crypto.randomUUID(),
@@ -275,8 +308,11 @@ export function Chat() {
       const binding = await lookupRun(hold.key);
       if (actionHoldRef.current?.key !== hold.key) return;
       setLookupRunId(binding.runId);
-      runLinksRef.current.set(hold.key, binding.runId);
-      void linkRun(hold.key, binding.runId).catch(() => {});
+      const conversationId = conversationByRequestRef.current.get(hold.key);
+      if (conversationId) {
+        runLinksRef.current.set(`${conversationId}:${hold.key}`, binding.runId);
+        void linkRun(hold.key, binding.runId, conversationId).catch(() => {});
+      }
       bindAction(hold.key, binding.runId, binding.capability);
       watch(binding.runId);
     } catch (e) {
@@ -301,7 +337,7 @@ export function Chat() {
     <section aria-labelledby="chat-heading" className="chat">
       <h2 id="chat-heading" className="sr-only">Assistant</h2>
       <AssistantRuntimeProvider runtime={runtime} config={config}>
-        {session.subjectId ? <ConversationNavigation /> : null}
+        {session.subjectId ? <ConversationNavigation controller={controller} /> : null}
         <ConversationStatus controller={controller} subject={Boolean(session.subjectId)} />
         <ThreadPrimitive.Root className="thread-root">
           <ThreadPrimitive.Viewport id="messages" className="messages">
