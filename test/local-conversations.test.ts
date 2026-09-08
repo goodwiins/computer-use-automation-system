@@ -183,3 +183,77 @@ it('keeps local teller and supervisor conversations separate without changing op
     await database.close();
   }
 });
+
+it('binds text keys before writes, verifies legacy ciphertext, and retains the binding across deletion', async () => {
+  const database = await createPostgresFixture();
+  try {
+    const store = new ConversationStore(database.pool, key);
+    expect(store.textEnabled).toBe(false);
+    await store.migrate();
+    const id = randomUUID();
+    await store.create(subjects.caller, id);
+    const pending = { id: randomUUID(), kind: 'message_saved' as const, role: 'user' as const, text: 'Legacy encrypted text', expectedRevision: 0 };
+    const unverified = new ConversationStore(database.pool, key);
+    await expect(unverified.append(subjects.caller, id, pending)).rejects.toMatchObject({ status: 503 });
+    await store.append(subjects.caller, id, pending);
+    for (const legacy of [false, true]) {
+      if (legacy) await database.pool.query('DROP TABLE meridian_conversation_text_key');
+      const wrong = new ConversationStore(database.openPool(), 'f'.repeat(64));
+      expect(wrong.textEnabled).toBe(false);
+      await expect(wrong.migrate()).rejects.toMatchObject({ status: 503 });
+      expect(wrong.textEnabled).toBe(false);
+      await expect(wrong.append(subjects.caller, id, { ...pending, id: randomUUID(), expectedRevision: 1 })).rejects.toMatchObject({ status: 503 });
+      const corrected = new ConversationStore(database.openPool(), key);
+      await corrected.migrate();
+      expect(corrected.textEnabled).toBe(true);
+      expect((await corrected.events(subjects.caller, id)).events[0]?.text).toBe(pending.text);
+    }
+    await store.delete(subjects.caller, id, 1);
+    await expect(new ConversationStore(database.pool, 'f'.repeat(64)).migrate()).rejects.toMatchObject({ status: 503 });
+    const omitted = new ConversationStore(database.pool);
+    await omitted.migrate();
+    expect(omitted.textEnabled).toBe(false);
+    const empty = randomUUID();
+    await omitted.create(subjects.caller, empty);
+    await omitted.append(subjects.caller, empty, { id: randomUUID(), kind: 'message_omitted', role: 'user', expectedRevision: 0 });
+  } finally { await database.close(); }
+});
+
+it('serializes competing key initialization so only the bound key can write', async () => {
+  const database = await createPostgresFixture();
+  try {
+    const stores = [new ConversationStore(database.pool, key), new ConversationStore(database.openPool(), 'f'.repeat(64))];
+    const results = await Promise.allSettled(stores.map(store => store.migrate()));
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(stores.filter(store => store.textEnabled)).toHaveLength(1);
+    const id = randomUUID();
+    await stores[0]!.create(subjects.caller, id);
+    const pending = { id: randomUUID(), kind: 'message_saved' as const, role: 'user' as const, text: 'Only the winner writes', expectedRevision: 0 };
+    await expect(stores.find(store => !store.textEnabled)!.append(subjects.caller, id, pending)).rejects.toMatchObject({ status: 503 });
+    await stores.find(store => store.textEnabled)!.append(subjects.caller, id, pending);
+  } finally { await database.close(); }
+});
+
+it('leaves text writes disabled when legacy ciphertext validation fails partway through migration', async () => {
+  const database = await createPostgresFixture();
+  try {
+    const original = new ConversationStore(database.pool, key);
+    await original.migrate();
+    const id = randomUUID();
+    for (const owner of Object.values(subjects)) {
+      await original.create(owner, id);
+      await original.append(owner, id, { id: randomUUID(), kind: 'message_saved', role: 'user', text: 'Owner-bound text', expectedRevision: 0 });
+    }
+    await database.pool.query('DROP TABLE meridian_conversation_text_key');
+    await database.pool.query("UPDATE meridian_conversation_events SET role = 'assistant' WHERE owner_id = $1", [subjects.operator]);
+    const upgrade = new ConversationStore(database.openPool(), key);
+    await expect(upgrade.migrate()).rejects.toMatchObject({ status: 503 });
+    expect(upgrade.textEnabled).toBe(false);
+    await expect(upgrade.append(subjects.caller, id, { id: randomUUID(), kind: 'message_saved', role: 'user', text: 'Must not write', expectedRevision: 1 })).rejects.toMatchObject({ status: 503 });
+    expect((await database.pool.query("SELECT to_regclass('meridian_conversation_text_key') AS binding")).rows[0].binding).toBeNull();
+    await database.pool.query("UPDATE meridian_conversation_events SET role = 'user' WHERE owner_id = $1", [subjects.operator]);
+    await Promise.all([upgrade.migrate(), new ConversationStore(database.openPool(), key).migrate()]);
+    expect(upgrade.textEnabled).toBe(true);
+    expect((await upgrade.events(subjects.operator, id)).events[0]?.text).toBe('Owner-bound text');
+  } finally { await database.close(); }
+});

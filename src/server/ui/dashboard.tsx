@@ -319,7 +319,8 @@ export function GuidedOperations() {
   const status = contract ? session.availability?.find(item => item.id === contract.id) : undefined;
   const approved = contract ? session.capabilities.some(item => item.id === contract.id) : false;
   const unknown = contract ? runs.some(run => run.capability === contract.id && run.state === 'POST_OUTCOME_UNKNOWN') : false;
-  const mode: 'invoke' | 'discover' | undefined = !contract || unknown ? undefined
+  const operationPending = runs.some(pending);
+  const mode: 'invoke' | 'discover' | undefined = !contract || unknown || operationPending ? undefined
     : status?.state === 'available' && approved ? 'invoke'
       : status?.state === 'not_recorded' && contract.discovery && session.principal === 'operator' ? 'discover'
         : undefined;
@@ -342,11 +343,12 @@ export function GuidedOperations() {
     && acceptedRun.state !== 'POST_OUTCOME_UNKNOWN';
   const finishedInvocation = acceptedRun && completedActionReady(session, acceptedRun);
   const canRelease = acceptedRun?.state === 'POST_OUTCOME_UNKNOWN' || finishedDiscovery || finishedInvocation;
-  const blocked = busy || loading || Boolean(historyError) || Boolean(actionHold);
+  const blocked = busy || loading || Boolean(historyError) || Boolean(actionHold) || operationPending;
 
   function readinessMessage(current?: OperationContract): string {
     if (!current) return 'Guided operation metadata is unavailable. Reconnect or refresh before preparing a request.';
     if (unknown) return 'This operation has an unknown posting outcome. Use a separate read-only inquiry; do not retry it.';
+    if (operationPending) return 'Another operation is active. Resolve its current run before starting another operation.';
     if (!status) return 'Operation readiness is unavailable. Refresh before starting anything.';
     if (status.state === 'available' && !approved) return 'This operation is not authorized for the current session.';
     if (status.state === 'available') return 'An approved recording is available. Starting creates a run; final Save or Post still requires exact inline approval.';

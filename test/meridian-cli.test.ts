@@ -642,6 +642,7 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
   const previousEnv = new Map(envKeys.map(name => [name, process.env[name]]));
   const previousExitCode = process.exitCode;
   let validator: ((outputs: Record<string, unknown>) => void) | undefined;
+  const surface = { mutationDispatched: false };
   process.exitCode = undefined;
   Object.assign(process.env, {
     OPENAI_API_KEY: 'offline-test-only', EVIDENCE_DIR: dir, JOURNAL_HMAC_KEY: JOURNAL_KEY,
@@ -656,7 +657,7 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
       createRuntime: (options: Parameters<typeof actual.createRuntime>[0]) => {
         const redactor = new Redactor();
         return {
-          surface: { mutationDispatched: false }, browser: { page: {} as never },
+          surface, browser: { page: {} as never },
           logger: new RunLogger(options.kind, redactor, options.evidenceDir, true, options.runId), session: {} as never,
           redactor, promptRedactor: redactor, deadline: Date.now() + 600_000, close: async () => {},
         } as unknown as ReturnType<typeof actual.createRuntime>;
@@ -669,7 +670,6 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
       ...actual,
       runDiscovery: async (_goal: string, _entry: string, _params: Record<string, string | number>, _origins: string[], deps: Parameters<typeof actual.runDiscovery>[4]) => {
         validator = deps.validateCompletion as unknown as ((outputs: Record<string, unknown>) => void) | undefined;
-        validator?.({ confirmation: 'CONF-123', transaction: [{ member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture', confirmation: 'CONF-123' }] });
         return {
           status, trace: [], outputs: {}, finalUrl: 'https://web-sample.interface-hiring.com/members/9001',
           stopReason: status === 'business_outcome' ? 'INSUFFICIENT_FUNDS' : 'fixture',
@@ -686,6 +686,11 @@ it.each(['stopped', 'business_outcome'] as const)('supplies the canonical transf
     const { runCli } = await import('../cli.js');
     await runCli(['discover', '--name', 'meridian-funds-transfer', '--goal', 'Transfer', '--profile', 'meridian', '--entry', 'https://web-sample.interface-hiring.com/signon', '--idempotency-key', 'cli-discovery-transfer', '--param', 'member=9001', '--param', 'sourceShare=9001-A', '--param', 'destinationShare=9001-B', '--param', 'amount=1.00', '--param', 'memo=fixture']);
     expect(validator).toBeTypeOf('function');
+    const outputs = { confirmation: 'CONF-123', transaction: [{ member: '9001', sourceShare: '9001-A', destinationShare: '9001-B', amount: '1.00', memo: 'fixture', confirmation: 'CONF-123' }] };
+    expect(() => validator!(outputs)).toThrow('Transfer mutation was not dispatched');
+    surface.mutationDispatched = true;
+    expect(() => validator!(outputs)).not.toThrow();
+    expect(() => validator!({ ...outputs, confirmation: 'WRONG' })).toThrow();
     expect(error).not.toHaveBeenCalledWith(expect.stringContaining('canonical'));
     const journalDir = join(dir, 'journal');
     const records = readdirSync(journalDir).filter(name => name.endsWith('.json'))

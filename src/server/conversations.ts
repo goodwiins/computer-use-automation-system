@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
@@ -80,11 +80,11 @@ const event = (row: EventRow): ConversationEvent => ({
 
 export class ConversationStore {
   private readonly textKey?: Buffer;
-  readonly textEnabled: boolean;
+  private textVerified = false;
+  get textEnabled(): boolean { return this.textVerified; }
   constructor(private readonly pool: Pool, textKey?: string) {
     if (textKey !== undefined && !/^[a-f0-9]{64}$/.test(textKey)) throw new Error('Invalid conversation text key');
     this.textKey = textKey === undefined ? undefined : Buffer.from(textKey, 'hex');
-    this.textEnabled = this.textKey !== undefined;
   }
 
   private decode(row: EventRow, owner: string): ConversationEvent {
@@ -102,7 +102,7 @@ export class ConversationStore {
 
   private encode(owner: string, conversationId: string, pending: AppendEvent): Buffer | null {
     if (pending.kind !== 'message_saved') return null;
-    if (!this.textKey) throw new RequestError(503, 'Conversation text saving is unavailable');
+    if (!this.textKey || !this.textVerified) throw new RequestError(503, 'Conversation text saving is unavailable');
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.textKey, nonce);
     cipher.setAAD(Buffer.from(JSON.stringify([owner, conversationId, pending.id, pending.role])));
@@ -111,11 +111,29 @@ export class ConversationStore {
   }
 
   async migrate(): Promise<void> {
+    this.textVerified = false;
     const sql = await readFile(new URL('./conversations.sql', import.meta.url), 'utf8');
     await this.transaction(async client => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext('meridian_conversations_migration'))");
       await client.query(sql);
+      if (!this.textKey) return;
+      const verifier = createHmac('sha256', this.textKey).update('meridian-conversation-text-key-v1').digest();
+      const binding = await client.query<{ verifier: Buffer }>('SELECT verifier FROM meridian_conversation_text_key');
+      if (binding.rows[0]) {
+        if (!timingSafeEqual(binding.rows[0].verifier, verifier)) throw new RequestError(503, 'Conversation text key does not match storage');
+      } else {
+        // Verify every legacy ciphertext under its original owner-scoped AAD before binding the key.
+        await client.query("DECLARE legacy_text NO SCROLL CURSOR FOR SELECT * FROM meridian_conversation_events WHERE kind = 'message_saved'");
+        for (;;) {
+          const batch = await client.query<EventRow>('FETCH 100 FROM legacy_text');
+          if (!batch.rows.length) break;
+          for (const row of batch.rows) this.decode(row, row.owner_id);
+        }
+        await client.query('CLOSE legacy_text');
+        await client.query('INSERT INTO meridian_conversation_text_key (singleton, verifier) VALUES (true, $1)', [verifier]);
+      }
     });
+    this.textVerified = this.textKey !== undefined;
   }
 
   async create(owner: string, id: string): Promise<Conversation> {
