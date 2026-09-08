@@ -26,10 +26,12 @@ the combined implementation must be reviewed and tested as one source head.
 | `cli-pool-postgres.test.ts` | Terminates only its own isolated idle test connection and checks real PostgreSQL authority and dispatch-intent retention. |
 | `browser-startup-cleanup.test.ts` | Cleanup waits for delayed Chromium launch, prevents further initialization, closes once, and retains close failures. |
 
-Clarification is temporary server memory: at most 100 pending exchanges, each at
+Clarification is temporary server memory: at most 100 retained/in-flight slots, each exchange at
 most 20 messages / 16,000 serialized characters, usable for 10 minutes. Expiry,
 restart, or eviction requires restating the request. A consumed exchange cannot
-be reused by a stale or concurrent follow-up. Accepted journal state, including
+be reused by a stale or concurrent follow-up. Replaced, consumed, expired, or
+evicted producer slots cannot publish a late response back into the cache.
+Accepted journal state, including
 private accepted markers, takes precedence. Client-supplied historical assistant
 text does not establish clarification context.
 

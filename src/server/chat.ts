@@ -171,7 +171,8 @@ async function resolveIntent(model: LanguageModel, messages: ModelMessage[], int
   return schema.parse(call.input).intent;
 }
 
-type Clarification = { messages: ModelMessage[]; keys: string[]; expires: number };
+type Clarification = { messages: ModelMessage[]; keys: string[] };
+type ClarificationSlot = { context?: Clarification; expires: number };
 
 async function textHistory(messages: z.infer<typeof UIMessage>[], service: InvocationService, principal: Principal, clarification?: Clarification) {
   const current = [...messages].reverse().find(message => message.role === 'user');
@@ -214,7 +215,7 @@ function requireConversation(messages: ModelMessage[]) {
 export function createChatHandlers(service: InvocationService, model?: LanguageModel) {
   // Ephemeral server-observed context only. Restart, expiry, eviction or
   // consumption requires restating facts; client history cannot recreate it.
-  const clarifications = new Map<string, Clarification>();
+  const clarifications = new Map<string, ClarificationSlot>();
   return {
     request: async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -293,10 +294,16 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
         for (const [id, entry] of clarifications) if (entry.expires <= Date.now()) clarifications.delete(id);
         const previousId = JSON.stringify([owner, users.at(-2)?.id]);
         const currentId = JSON.stringify([owner, current?.id]);
-        const prior = clarifications.get(previousId);
+        const prior = clarifications.get(previousId)?.context;
         // Consume synchronously before any journal/model await.
         clarifications.delete(previousId);
         clarifications.delete(currentId);
+        // The slot object is this producer's generation. Replacement,
+        // consumption, expiry and eviction all invalidate late completion.
+        // In-flight metadata and retained exchanges share the same hard cap.
+        const slot: ClarificationSlot = { expires: Date.now() + 10 * 60_000 };
+        if (clarifications.size >= 100) clarifications.delete(clarifications.keys().next().value!);
+        clarifications.set(currentId, slot);
         const history = await textHistory(body.messages, service, principal, prior);
         requireConversation(history.safe);
         const chatModel = model ?? makeChatModel();
@@ -310,12 +317,11 @@ export function createChatHandlers(service: InvocationService, model?: LanguageM
           ...modelOptions(chatModel, messages, tools, service.catalog(principal)), streamRetries: 0,
           onError: () => { failed = true; }, onAbort: () => { failed = true; },
           onEnd: event => {
-            if (failed || intent !== 'invoke' || !current || event.finishReason !== 'stop' || event.toolCalls.length || !event.text.trim()) return;
+            if (clarifications.get(currentId) !== slot || failed || intent !== 'invoke' || !current || event.finishReason !== 'stop' || event.toolCalls.length || !event.text.trim()) return;
             const context: ModelMessage[] = [...(continuation?.messages ?? []), history.safe.at(-1)!, { role: 'assistant', content: event.text }];
             if (context.length > 20 || JSON.stringify(context).length > 16000) return;
-            clarifications.delete(currentId);
-            if (clarifications.size >= 100) clarifications.delete(clarifications.keys().next().value!);
-            clarifications.set(currentId, { messages: context, keys: [...(continuation?.keys ?? []), key], expires: Date.now() + 10 * 60_000 });
+            slot.context = { messages: context, keys: [...(continuation?.keys ?? []), key] };
+            slot.expires = Date.now() + 10 * 60_000;
           },
         });
         await pipeUIMessageStreamToResponse({

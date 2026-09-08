@@ -402,6 +402,54 @@ describe('AI SDK chat boundary', () => {
     expect(chatService.invoke).toHaveBeenCalledOnce();
   });
 
+  it('does not let a delayed duplicate producer resurrect consumed clarification', async () => {
+    const chatService = service();
+    const accepted = new Map<string, { runId: string; capability: string; state: string }>();
+    vi.mocked(chatService.requestContexts).mockImplementation(async (_principal, keys) => new Map(
+      keys.flatMap(key => accepted.has(key) ? [[key, accepted.get(key)!] as const] : [])));
+    vi.mocked(chatService.invoke).mockImplementation(async (_principal, capability, _args, key) => {
+      accepted.set(key, { runId, capability, state: 'success' });
+      return { runId };
+    });
+    const model = mockModel();
+    model.doGenerate = vi.fn(async options => generateResult(toolContent('route_request', {
+      intent: JSON.stringify(options.prompt).includes('DELAYED_SERVER_CONTEXT') ? 'invoke' : 'conversation',
+    })));
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let producers = 0;
+    model.doStream = vi.fn(async options => {
+      const prompt = JSON.stringify(options.prompt);
+      const ready = prompt.includes('DELAYED_SERVER_CONTEXT') && prompt.includes('9001');
+      if (prompt.includes('DELAYED_SERVER_CONTEXT') && !ready && ++producers === 1) await held;
+      return streamResult([
+        { type: 'stream-start', warnings: [] },
+        ...(ready ? toolContent('member-hold', { member: '9001', share: '1-A' }) : [
+          { type: 'text-start', id: 'answer' },
+          { type: 'text-delta', id: 'answer', delta: 'Which member number?' },
+          { type: 'text-end', id: 'answer' },
+        ]),
+        { type: 'finish', finishReason: finish(ready ? 'tool-calls' : 'stop'), usage },
+      ]);
+    });
+    const { request } = await start(model, chatService);
+    const original = { id: 'delayed-original', role: 'user', parts: [{ type: 'text', text: 'DELAYED_SERVER_CONTEXT hold share 1-A' }] };
+    const delayed = request('/api/chat', { intent: 'auto', messages: [original] }, original.id);
+    try {
+      await vi.waitFor(() => expect(producers).toBe(1));
+      expect((await request('/api/chat', { intent: 'auto', messages: [original] }, original.id)).status).toBe(200);
+      expect((await request('/api/chat', { intent: 'auto', messages: [original,
+        { id: 'first-answer', role: 'user', parts: [{ type: 'text', text: '9001' }] },
+      ] }, 'first-answer')).status).toBe(200);
+      expect(chatService.invoke).toHaveBeenCalledOnce();
+    } finally { release(); await delayed; }
+    expect((await request('/api/chat', { intent: 'auto', messages: [original,
+      { id: 'stale-answer', role: 'user', parts: [{ type: 'text', text: '9001' }] },
+    ] }, 'stale-answer')).status).toBe(200);
+    expect(JSON.stringify(vi.mocked(model.doGenerate).mock.calls.at(-1)?.[0].prompt)).not.toContain('DELAYED_SERVER_CONTEXT');
+    expect(chatService.invoke).toHaveBeenCalledOnce();
+  });
+
   it.each(['status', 'conversation'] as const)('does not expose pending operation tools for automatic %s replies', async intent => {
     const chatService = service();
     const model = mockModel(toolContent('route_request', { intent }), [
