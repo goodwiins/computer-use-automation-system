@@ -15,6 +15,7 @@
     "eval": "tsx scripts/evaluate-run.ts",
     "test": "vitest run",
     "test:smoke": "vitest run test/browser-inspection-tsx.test.ts test/evidence-eval.test.ts",
+    "benchmark:workers": "tsx scripts/benchmark-workers.ts",
     "ci": "npm run typecheck && npm run typecheck:ui && npm test",
     "typecheck": "tsc --noEmit",
     "build": "vite build --config vite.config.ts",
