@@ -1260,6 +1260,11 @@ it('preserves the conversation across responsive Activity navigation', async () 
     if (width <= 768) {
       expect(await back.isVisible()).toBe(true);
       expect(await back.evaluate((node) => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Tab');
+      const disclosure = page.locator('summary').filter({ hasText: 'Invoke an approved capability directly' });
+      expect(await disclosure.evaluate(node => node === document.activeElement)).toBe(true);
+      await page.keyboard.press('Shift+Tab');
+      expect(await back.evaluate(node => node === document.activeElement)).toBe(true);
       await page.keyboard.press('Enter');
       expect(await activity.getAttribute('aria-expanded')).toBe('false');
       expect(await activity.evaluate((node) => node === document.activeElement)).toBe(true);
@@ -1431,8 +1436,20 @@ it('restores the latest scroll after wide Activity becomes narrow before closing
   });
   expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
   await page.setViewportSize({ width: 320, height: 900 });
+  await back.waitFor({ state: 'visible' });
+  // A queued viewport event must still observe the retained reading position while chat is visually hidden.
+  expect(await page.locator('.chat').isVisible()).toBe(false);
+  expect(await messages.evaluate(node => node.scrollTop)).toBe(520);
+  await messages.evaluate(node => node.dispatchEvent(new Event('scroll')));
   await back.click();
   await page.waitForFunction(() => (document.querySelector('.messages') as HTMLElement | null)?.scrollTop === 520);
+  expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
+  await settleConversationLayout(page);
+  // Later streamed content must not resume following the bottom after Activity hides a scrolled-up conversation.
+  await page.locator('.conversation').evaluate((node) => {
+    (node as HTMLElement).style.minHeight = '1202px';
+  });
+  await settleConversationLayout(page);
   expect(await messages.evaluate((node) => (node as HTMLElement).scrollTop)).toBe(520);
   expect(errors).toEqual([]);
 }, 15000);

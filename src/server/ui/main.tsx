@@ -218,7 +218,6 @@ function Workspace() {
     return () => breakpoint.removeEventListener('change', changeLayout);
   }, [activityOpen]);
   useLayoutEffect(() => {
-    let restoreFrame: number | undefined;
     if (chatHidden && !chatWasHiddenRef.current) {
       const active = document.activeElement;
       if (focusBackAfterResizeRef.current || active === activityTriggerRef.current || document.querySelector('.chat')?.contains(active)) {
@@ -228,25 +227,13 @@ function Workspace() {
     }
     if (!chatHidden && chatWasHiddenRef.current) {
       const messages = document.querySelector<HTMLElement>('.messages');
-      const restoreScroll = () => {
-        if (messages) messages.scrollTop = messageScrollTopRef.current;
-      };
-      restoreScroll();
-      restoreFrame = requestAnimationFrame(() => {
-        restoreScroll();
-        restoreFrame = requestAnimationFrame(() => {
-          restoreScroll();
-        });
-      });
+      if (messages) messages.scrollTop = messageScrollTopRef.current;
     }
     if (!activityOpen && shouldRestoreConversationFocusRef.current) {
       activityTriggerRef.current?.focus();
       shouldRestoreConversationFocusRef.current = false;
     }
     chatWasHiddenRef.current = chatHidden;
-    return () => {
-      if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
-    };
   }, [activityOpen, chatHidden]);
   return <div id="workspace" data-activity-open={activityOpen} data-chat-hidden={chatHidden}>
     <div className="workspace-header">

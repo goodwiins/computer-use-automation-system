@@ -55,8 +55,10 @@ section { min-width: 0; }
 .workspace-header > span { font-size: .9rem; font-weight: 550; }
 .workspace-header button { font-size: .8rem; }
 .review-count { margin-left: .5rem; color: #835b20; }
-.chat { min-height: 0; padding: 0; }
-#workspace[data-chat-hidden="true"] .chat { display: none; }
+.chat { grid-area: 2 / 1; min-height: 0; padding: 0; }
+/* Keep the scroll viewport measurable while Activity covers it. Zero-sized hidden
+   viewports re-arm assistant-ui's follow-bottom behavior during resize events. */
+#workspace[data-chat-hidden="true"] .chat { visibility: hidden; pointer-events: none; }
 .thread-root { height: 100%; min-height: 0; }
 .messages { display: flex; flex-direction: column; height: 100%; overflow-y: auto; overflow-x: hidden; padding: 0 1.5rem; scroll-padding-bottom: 1rem; }
 .conversation { width: 100%; max-width: 760px; margin: 0 auto; flex: 1; padding: 1.5rem 0; }
@@ -98,7 +100,7 @@ section { min-width: 0; }
 .conversation-status { max-width: 760px; margin: .5rem auto; padding: 0 1.5rem; color: var(--muted); font-size: .75rem; }
 .saved-run-card { display: grid; gap: .25rem; margin: .6rem 0; padding: .75rem; background: var(--cream); border: 1px solid var(--line); border-radius: 8px; font-size: .78rem; }
 .saved-run-card small { color: var(--muted); }
-.activity-panel { overflow: auto; border-left: 1px solid var(--line); padding: 1.25rem; background: #fafbf9; }
+.activity-panel { grid-area: 2 / 2; overflow: auto; border-left: 1px solid var(--line); padding: 1.25rem; background: #fafbf9; }
 .activity-back { display: none; width: fit-content; }
 #workspace[data-chat-hidden="true"] .activity-back { display: inline-flex; }
 .activity-panel > section + section { border-top: 1px solid var(--line); margin-top: 1.5rem; padding-top: 1rem; }
@@ -160,7 +162,7 @@ th { background: #eef2ed; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 @media (max-width: 1023px) {
   #workspace[data-activity-open="true"] { grid-template-columns: minmax(0, 1fr); }
-  .activity-panel { border-left: 0; }
+  .activity-panel { grid-column: 1; border-left: 0; }
 }
 @media (max-width: 700px) {
   .app-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
