@@ -330,100 +330,12 @@ export function ResultCard({ run }: { run: Run }) {
   );
 }
 export function EscalationCard({ run }: { run: Run }) {
-  const { session } = useRuns();
-  if (!run.intervention || run.state !== 'awaiting-human') return null;
-  if (session.principal !== 'operator' || !('id' in run.intervention))
-    return <p className="warning">Waiting for an operator.</p>;
-  return <ApprovalPanel key={run.intervention.id} run={run} />;
+  return <ReviewRequestButton run={run} />;
 }
-export function ApprovalPanel({ run }: { run: Run }) {
-  const { request, refresh, error: connectionError } = useRuns();
-  const [now, setNow] = useState(Date.now());
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState('');
-  const locked = useRef(false);
-  const uncertain = useRef(false);
-  const probing = useRef(false);
-  const mounted = useRef(true);
-  useEffect(() => {
-    if (!uncertain.current || probing.current) return;
-    probing.current = true;
-    // A failed POST is not retry permission. Probe the current intervention after a fresh history update.
-    void request(`/runs/${segment(run.runId)}`).then((response) => response.json()).then((current: Run) => {
-      if (mounted.current && current.runId === run.runId && current.state === 'awaiting-human'
-        && current.intervention && 'id' in current.intervention
-        && run.intervention && 'id' in run.intervention
-        && current.intervention.id === run.intervention.id && Date.now() < current.intervention.expiresAt) {
-        uncertain.current = false;
-        locked.current = false;
-        setSent(false);
-        setError('The server confirms this intervention is still pending. You may choose a decision again.');
-      }
-    }).catch(() => { /* Keep locked until a later authoritative refresh succeeds. */ })
-      .finally(() => { probing.current = false; });
-  }, [run, request]);
-  useEffect(() => {
-    mounted.current = true;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => { mounted.current = false; clearInterval(timer); };
-  }, []);
-  const intervention = run.intervention;
-  if (!intervention || !('id' in intervention)) return null;
-  const expired = now >= intervention.expiresAt;
-  const approval = intervention.request.kind === 'risk_approval';
-  async function decide(decision: 'approve' | 'retry' | 'abort') {
-    if (
-      connectionError ||
-      locked.current ||
-      !intervention ||
-      !('id' in intervention) ||
-      Date.now() >= intervention.expiresAt
-    )
-      return;
-    locked.current = true;
-    setSent(true);
-    try {
-      await request(`/runs/${segment(run.runId)}/decision`, {
-        method: 'POST',
-        body: JSON.stringify({ approvalId: intervention.id, decision }),
-      });
-    } catch (e) {
-      uncertain.current = true;
-      setError(
-        `${e instanceof Error ? e.message : 'Decision response unavailable.'} Refresh to inspect authoritative state.`,
-      );
-    } finally {
-      await refresh();
-    }
-  }
-  return (
-    <div className="approval">
-      <h4>{approval ? 'Operator approval required' : 'Operator repair required'}</h4>
-      <p>{intervention.request.reason}</p>
-      <p>
-        {expired ? 'Intervention expired.' : `Expires ${new Date(intervention.expiresAt).toLocaleString()}`}
-      </p>
-      <pre>{JSON.stringify(intervention.action ?? intervention.request, null, 2)}</pre>
-      {!approval && <p>Repair the active browser session, then request one bounded retry.</p>}
-      <div className="actions">
-        <button
-          disabled={Boolean(connectionError) || expired || sent || (approval && !intervention.action)}
-          onClick={() => void decide(approval ? 'approve' : 'retry')}
-        >
-          {approval ? 'Approve submission' : 'Retry after repair'}
-        </button>
-        <button
-          className="abort"
-          disabled={Boolean(connectionError) || expired || sent}
-          onClick={() => void decide('abort')}
-        >
-          Abort
-        </button>
-      </div>
-      {sent && <p>Decision submitted. Waiting for authoritative run updates.</p>}
-      {error && <p role="alert">{error}</p>}
-    </div>
-  );
+function ReviewRequestButton({ run }: { run: Run }) {
+  const { openReview } = useRuns();
+  if (!run.intervention || run.state !== 'awaiting-human') return null;
+  return <button type="button" className="secondary review-request" onClick={() => openReview(run.runId)}>Review request</button>;
 }
 export function RunDetail({ run }: { run: Run }) {
   const [open, setOpen] = useState(false);
@@ -486,9 +398,9 @@ export function CapabilityRunCard({ runId, detail = false }: { runId: string; de
           Run updates disconnected; last confirmed state shown.
         </p>
       )}
+      <ReviewRequestButton run={run} />
       {detail && (
         <>
-          <EscalationCard run={run} />
           <RunDetail run={run} />
         </>
       )}

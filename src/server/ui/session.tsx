@@ -33,6 +33,8 @@ export async function authenticatedFetch(token: string, path: string, options: R
 const Context = createContext<{
   session: Session;
   runs: Run[];
+  reviewRunId?: string;
+  refreshVersion: number;
   watched: ReadonlySet<string>;
   loading: boolean;
   error: string;
@@ -45,7 +47,20 @@ const Context = createContext<{
   request: (path: string, options?: RequestInit) => Promise<Response>;
   refresh: () => Promise<void>;
   watch: (id: string) => void;
+  openReview: (runId: string) => void;
+  closeReview: () => void;
+  getReviewAttempt: (key: string) => ReviewAttempt;
+  updateReviewAttempt: (key: string, patch: Partial<ReviewAttempt>) => void;
 } | null>(null);
+export type ReviewAttempt = {
+  locked: boolean;
+  uncertain: boolean;
+  probing: boolean;
+  sent: boolean;
+  error?: string;
+  probeVersion?: number;
+  probeSettled?: boolean;
+};
 export function useRuns() {
   const value = useContext(Context);
   if (!value) throw new Error('Run cache requires a session');
@@ -66,12 +81,16 @@ export function RunProvider({
   const [availability, setAvailability] = useState(session.availability);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [actionHold, setActionHold] = useState<ActionHold>();
   const actionHoldRef = useRef<ActionHold | undefined>(undefined);
   const abort = useRef(new AbortController());
   const busy = useRef(false);
   const queued = useRef(false);
   const watched = useRef(new Set<string>());
+  const [reviewRunId, setReviewRunId] = useState<string>();
+  const reviewAttempts = useRef(new Map<string, ReviewAttempt>());
+  const [, rerenderReview] = useState(0);
   const updateAction = useCallback((key: string, update: (current: ActionHold) => ActionHold | undefined) => {
     const current = actionHoldRef.current;
     if (!current || current.key !== key) return;
@@ -137,6 +156,7 @@ export function RunProvider({
       );
       if (!abort.current.signal.aborted) {
         setRuns([...history, ...extra]);
+        setRefreshVersion(version => version + 1);
         setCapabilities(nextCapabilities);
         capabilitiesRef.current = nextCapabilities;
         setAvailability(nextAvailability);
@@ -167,6 +187,27 @@ export function RunProvider({
     },
     [refresh],
   );
+  const openReview = useCallback((runId: string) => {
+    setReviewRunId(runId);
+    watched.current.add(runId);
+    if (!runs.some(run => run.runId === runId)) void refresh();
+  }, [refresh, runs]);
+  const closeReview = useCallback(() => setReviewRunId(undefined), []);
+  const getReviewAttempt = useCallback((key: string): ReviewAttempt => reviewAttempts.current.get(key) ?? {
+    locked: false,
+    uncertain: false,
+    probing: false,
+    sent: false,
+  }, []);
+  const updateReviewAttempt = useCallback((key: string, patch: Partial<ReviewAttempt>) => {
+    const current = getReviewAttempt(key);
+    reviewAttempts.current.set(key, { ...current, ...patch });
+    rerenderReview(version => version + 1);
+  }, [getReviewAttempt]);
+  useEffect(() => {
+    reviewAttempts.current.clear();
+    setReviewRunId(undefined);
+  }, [session.token]);
   useEffect(() => {
     void refresh();
     const online = () => {
@@ -191,8 +232,8 @@ export function RunProvider({
   }, [runs, error, loading, refresh]);
   const currentSession = { ...session, capabilities, availability };
   return (
-    <Context.Provider value={{ session: currentSession, runs, watched: watched.current, loading, error, actionHold,
-      beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch }}>
+    <Context.Provider value={{ session: currentSession, runs, reviewRunId, refreshVersion, watched: watched.current, loading, error, actionHold,
+      beginAction, markActionUncertain, bindAction, clearAction, abandonAction, request, refresh, watch, openReview, closeReview, getReviewAttempt, updateReviewAttempt }}>
       {children}
     </Context.Provider>
   );
