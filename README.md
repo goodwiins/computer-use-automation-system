@@ -19,6 +19,7 @@ Evidence from real runs: **[evidence/](evidence/)**.
 
 The assignment target is **https://web-sample.interface-hiring.com**. Start here:
 [demo-day guide](docs/meridian/demo-day.md),
+[copy-and-paste chat prompts](docs/meridian/demo-day.md#copy-and-paste-chat-prompts),
 [short adaptation write-up](docs/meridian/adaptation-writeup.md), and
 [recorded hosted evidence](docs/meridian/live-evidence.md).
 The latest recorded acceptance is **4/7 capabilities**; transfer, contact update

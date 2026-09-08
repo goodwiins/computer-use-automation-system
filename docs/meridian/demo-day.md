@@ -40,6 +40,86 @@ the presentation terminal. Do not enter target passwords into chat.
    opens with networking disabled. Keep the private current evidence and journal
    available only to the operator; do not upload `.env` or HMAC keys.
 
+## Copy-and-paste chat prompts
+
+Replace `[MEMBER]` with one selected, currently valid demo member number,
+`[ABSENT_MEMBER]` with a deliberately absent member number, and `[RUN_ID]` with
+the exact ID from the balance run. These brackets are placeholders, not literal
+inputs. Connect first and send **one prompt at a time**, waiting for the run and
+any linked identity lookup to finish before starting the next operation.
+These are suggested rehearsal prompts; this wording has not been live-verified.
+
+### 1. Find a member — show typed inquiry
+
+```text
+Search for member number [MEMBER].
+```
+
+Expected capability: `meridian-member-inquiry`. Show the matching member in the
+result and the same run in Activity. Say: “The chatbot selects a named capability;
+the recorded workflow performs the lookup.” Stop if the match is ambiguous.
+
+### 2. Read balances — show a successful capability
+
+```text
+Show the share balances for member [MEMBER].
+```
+
+Expected capability: `meridian-member-record`. Wait for `Completed`, show the
+share IDs, types, balances and statuses, and copy the run ID. Say: “The model
+interprets the request, but the browser replays reviewed steps without a model.”
+Check that Activity reports `success`; an acknowledgment alone is insufficient.
+
+### 3. Ask for status — show that checking does not rerun
+
+```text
+What is the status of run [RUN_ID]?
+```
+
+Expected tool: `run_status`, referring to the same balance run. Show that its run
+ID is unchanged. Say: “A status question reads the existing result; it does not
+start another balance lookup.”
+
+### 4. Trigger a business exception — show a clean outcome
+
+```text
+Search for member number [ABSENT_MEMBER].
+```
+
+Expected capability: `meridian-member-inquiry`, ending in `Member not found` /
+`business_outcome` / `NO_SUCH_MEMBER`. Show the outcome and its evidence in
+Activity. Say: “No matching member is an explicit business outcome, not a crash
+or an invented balance.” If the number exists, this did not demonstrate the
+exception; select a verified absent number before the presentation.
+
+### Optional: demonstrate an intentional new read
+
+```text
+Run a new balance lookup for member [MEMBER].
+```
+
+Use only after the prior read is complete and you want another read. Expect a
+new run ID. This contrasts with the status prompt above. Avoid vague “again,”
+“yes,” or “next” during the presentation; restate the operation and member.
+
+### Optional: introduce the guided write flow
+
+```text
+How do I prepare an Open New Share request in the operation form?
+```
+
+This is an explanation request. Show the **Open New Share** form in chat, select
+current facts there, and inspect the preview. The prompt does not authorize a
+posting. Starting the operation and the operator's final approval are separate
+explicit actions; there is no chat prompt that grants approval. Only demonstrate
+a real posting after its facts and separate approval are arranged.
+
+Funds Transfer, Update Member Information and Place Account Hold also use the
+guided forms. Their accepted complete recording/replay pairs remain pending;
+presenting a form is not a successful write-capability run. For an escalation
+showcase, use the explicitly labeled offline fixture below rather than asking
+chat to invent an error or approve an action.
+
 ## Presentation script (about five minutes, label LIVE)
 
 | Beat | Action | Show / completion condition |
