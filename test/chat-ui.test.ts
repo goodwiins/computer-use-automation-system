@@ -865,7 +865,7 @@ it('keeps the Next.js chat focused and preserves a draft when Activity is toggle
 it('Connect signs on directly and waits for verified operator details before opening chat', async () => {
   const { page, service, state, errors } = await fixture(true);
   service.catalog = () => [{ ...capability, id: 'meridian-sign-on', parameters: [] }];
-  await page.getByLabel('Dashboard access', { exact: true }).waitFor();
+  await page.getByLabel('Role', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
   state.runs[0]!.capability = 'meridian-sign-on';
@@ -892,7 +892,7 @@ it.each(['failure', 'wrong-role', 'cancel'] as const)('Connect does not open cha
   let release!: () => void;
   const waiting = new Promise<void>(resolve => { release = resolve; });
   await page.route('**/runs/' + runId, async route => { await waiting; await route.continue(); });
-  await page.getByLabel('Dashboard access', { exact: true }).waitFor();
+  await page.getByLabel('Role', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
   Object.assign(state.runs[0]!, { capability: 'meridian-sign-on', state: outcome === 'failure' ? 'failure' : 'success',
@@ -904,40 +904,46 @@ it.each(['failure', 'wrong-role', 'cancel'] as const)('Connect does not open cha
   expect(service.invoke).toHaveBeenCalledTimes(1);
 }, 15000);
 
-it('connects a local teller without input and requires an operator credential for SUPER1', async () => {
-  const { page, errors } = await fixture(true);
-  const role = page.getByLabel('Dashboard access', { exact: true });
-  await role.waitFor();
-  expect(await role.inputValue()).toBe('teller');
-  expect(await page.locator('#credential').count()).toBe(0);
-  await role.focus();
-  await page.keyboard.press('Tab');
-  expect(await page.getByRole('button', { name: 'Connect', exact: true }).evaluate(el => el === document.activeElement)).toBe(true);
-  await page.keyboard.press('Enter');
-  await visible(page, '#status', 'Connected as caller');
-  expect(await page.locator('#operator').count()).toBe(0);
-  await role.selectOption('operator');
-  expect(await page.locator('#workspace').count()).toBe(0);
-  const credential = page.getByLabel('Operator API credential', { exact: true });
-  expect(await credential.inputValue()).toBe('');
-  await credential.fill(callerToken);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await visible(page, '#status', 'Operator dashboard requires an operator API credential');
-  expect(await page.locator('#workspace').count()).toBe(0);
-  await credential.fill(operatorToken);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await visible(page, '#status', 'Connected as operator');
-  expect(await credential.inputValue()).toBe('');
-  await role.selectOption('teller');
-  expect(await page.locator('#workspace').count()).toBe(0);
-  expect(await page.locator('#credential').count()).toBe(0);
-  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
-  for (const width of [320, 768, 1024, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
-    expect(await role.isVisible()).toBe(true);
-    expect(await page.locator('#login').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-  }
-  expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([]);
+it('connects a local supervisor using operator and password, clearing the password after submit', async () => {
+  vi.stubEnv('MERIDIAN_SUPERVISOR_OPERATOR', 'SUPER1');
+  vi.stubEnv('MERIDIAN_SUPERVISOR_PASSWORD', 'offline-supervisor-password');
+  vi.stubEnv('MERIDIAN_BRANCH', 'MAIN');
+  try {
+    const { page, service, state, errors } = await fixture(true);
+    const role = page.getByLabel('Role', { exact: true });
+    await role.waitFor();
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await visible(page, '#status', 'Connected as caller');
+    await role.selectOption('operator');
+    expect(await page.locator('#credential').count()).toBe(0);
+    const operator = page.getByLabel('Operator', { exact: true });
+    const password = page.getByLabel('Password', { exact: true });
+    expect(await operator.inputValue()).toBe('SUPER1');
+    await password.fill('wrong-password');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await visible(page, '#status', 'Check operator and password');
+    expect(await password.inputValue()).toBe('');
+    expect(await page.locator('#workspace').count()).toBe(0);
+    expect(service.invoke).not.toHaveBeenCalled();
+    await page.waitForTimeout(1100); // Local login throttle intentionally covers failed attempts.
+    await password.fill('offline-supervisor-password');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await vi.waitFor(() => expect(service.invoke).toHaveBeenCalledTimes(1));
+    expect(await password.inputValue()).toBe('');
+    expect(await page.locator('#workspace').count()).toBe(0);
+    Object.assign(state.runs[0]!, { capability: 'meridian-sign-on', state: 'success', result: {
+      status: 'success', outputs: { operator: 'SUPER1', role: 'SUPERVISOR', branch: 'MAIN' },
+    } });
+    await visible(page, '#status', 'Signed in as SUPER1 · SUPERVISOR · Branch MAIN');
+    await page.locator('#workspace').waitFor();
+    expect(state.requests.filter(request => request.path === '/api/chat')).toHaveLength(0);
+    expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+    expect(errors).toEqual([]);
+    for (const width of [320, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.locator('#login').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+  } finally { vi.unstubAllEnvs(); }
 }, 15000);
 it('shows linked identity only for the exact balance in this login, hides stale names, and never invokes on render', async () => {
   const { page, state, connect, service, errors } = await fixture();

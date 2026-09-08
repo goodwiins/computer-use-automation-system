@@ -39,7 +39,7 @@ export default function App() {
       .then(data => {
         if (typeof data?.localTellerLogin?.teller === 'string' && typeof data.localTellerLogin.supervisor === 'string') {
           setLocalLogin(data.localTellerLogin);
-          setStatus('Choose caller or operator dashboard access. Local caller access is credential-free; operator dashboard access requires an API credential.');
+          setStatus('Choose Teller or sign in with your supervisor operator and password.');
         }
       }).catch(() => {}); // Keep credential login available when local login cannot be discovered.
     return () => controller.abort();
@@ -49,6 +49,7 @@ export default function App() {
     if (preview || connecting) return;
     const form = event.currentTarget;
     let token = String(new FormData(form).get('credential') ?? '');
+    const supervisor = { operator: String(new FormData(form).get('operator') ?? ''), password: String(new FormData(form).get('password') ?? '') };
     form.reset();
     setSession(undefined);
     setConnecting(true);
@@ -59,6 +60,21 @@ export default function App() {
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]);
     setStatus('Connecting…');
     try {
+      let supervisorStatus: string | undefined;
+      if (localLogin && loginRole === 'operator') {
+        setStatus('Signing in as supervisor…');
+        const login = fetch('/session/supervisor', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(supervisor) });
+        supervisor.password = '';
+        const response = await login;
+        if (!response.ok) {
+          const failure = await response.json().catch(() => ({}));
+          throw new Error(typeof failure.error === 'string' ? failure.error : 'Supervisor sign-in failed.');
+        }
+        const signedIn = await response.json();
+        if (typeof signedIn.token !== 'string' || signedIn.role !== 'SUPERVISOR' || typeof signedIn.operator !== 'string' || typeof signedIn.branch !== 'string') throw new Error('Supervisor access was not confirmed.');
+        token = signedIn.token;
+        supervisorStatus = `Signed in as ${signedIn.operator} · SUPERVISOR · Branch ${signedIn.branch}.`;
+      }
       if (localLogin && loginRole === 'teller') {
         const response = await fetch('/session/teller', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!response.ok) throw new Error('Local teller connection failed. Try connecting again.');
@@ -96,7 +112,7 @@ export default function App() {
         capabilities: metadata.capabilities as Session['capabilities'],
         availability: Array.isArray(metadata.availability) ? metadata.availability as Session['availability'] : undefined,
       });
-      setStatus(connectedStatus);
+      setStatus(supervisorStatus ?? connectedStatus);
     } catch (e) {
       if (attempt === loginAttempt.current) setStatus(signal.aborted ? 'Sign-on timed out. Access has not been confirmed.' : e instanceof Error ? e.message : 'Connection failed.');
     } finally {
@@ -115,29 +131,25 @@ export default function App() {
         <section aria-label="Session" className="session">
           <form ref={loginForm} id="login" onSubmit={connect} autoComplete="off">
             {localLogin && <>
-              <label htmlFor="login-role">Dashboard access</label>
+              <label htmlFor="login-role">Role</label>
               <select id="login-role" value={loginRole} disabled={connecting} onChange={event => {
                 const role = event.target.value;
                 disconnect();
                 setLoginRole(role);
               }}>
-                <option value="teller">{localLogin.teller} · Caller dashboard</option>
-                <option value="operator">{localLogin.supervisor} · Operator dashboard</option>
+                <option value="teller">{localLogin.teller} · Teller</option>
+                <option value="operator">{localLogin.supervisor} · Supervisor</option>
               </select>
             </>}
-            {(!localLogin || loginRole === 'operator') && <label htmlFor="credential">{localLogin ? 'Operator API credential (dashboard controls only)' : 'API credential'}</label>}
-            {localLogin && loginRole === 'operator' && <p className="muted">This credential grants operator dashboard controls; it does not authenticate a target SUPERVISOR session.</p>}
+            {localLogin && loginRole === 'operator' && <>
+              <label htmlFor="supervisor-operator">Operator</label>
+              <input id="supervisor-operator" name="operator" defaultValue={localLogin.supervisor} required maxLength={128} disabled={connecting} autoComplete="off" spellCheck={false} />
+              <label htmlFor="supervisor-password">Password</label>
+              <input id="supervisor-password" name="password" type="password" required maxLength={512} disabled={connecting} autoComplete="off" />
+            </>}
+            {!localLogin && <label htmlFor="credential">API credential</label>}
             <div className="login-row">
-              {(!localLogin || loginRole === 'operator') && <input
-                id="credential"
-                name="credential"
-                aria-label={localLogin ? 'Operator API credential' : undefined}
-                type="password"
-                disabled={preview}
-                required
-                autoComplete="off"
-                spellCheck={false}
-              />}
+              {!localLogin && <input id="credential" name="credential" type="password" disabled={preview} required autoComplete="off" spellCheck={false} />}
               <button disabled={preview || connecting}>{connecting ? 'Connecting…' : 'Connect'}</button>
               {(session || connecting) && (
                 <button type="button" onClick={disconnect}>
