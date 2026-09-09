@@ -120,7 +120,7 @@
       "description": "Operator lacks required supervisor authority",
       "match": {
         "kind": "textVisible",
-        "text": "SUPERVISOR OVERRIDE REQUIRED"
+        "text": "is not authorized to perform this function."
       },
       "classification": "fatal",
       "outcomeCode": "PERMISSION_DENIED"
