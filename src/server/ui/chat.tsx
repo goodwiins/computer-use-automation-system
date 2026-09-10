@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   AssistantRuntimeProvider,
   AuiConfig,
@@ -10,6 +11,7 @@ import {
   MessagePartPrimitive,
   ComposerPrimitive,
   AuiIf,
+  useAuiState,
 } from '@assistant-ui/react';
 import { AssistantChatTransport } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
@@ -107,8 +109,19 @@ export class GuardedAssistantChatTransport extends AssistantChatTransport<UIMess
   }
 }
 
-function RunTool({ result, status }: { result?: unknown; status?: { type: string } }) {
-  const { watch } = useRuns();
+// An empty thread must not follow the bottom: the guided Operations card sits
+// above the welcome block and bottom-scrolling on mount would clip its top.
+// With messages present, run-start scrolling re-engages the follow behavior.
+function MessagesViewport({ children }: { children: ReactNode }) {
+  const hasMessages = useAuiState(s => s.thread.messages.length > 0);
+  return (
+    <ThreadPrimitive.Viewport id="messages" className="messages" autoScroll={hasMessages} scrollToBottomOnInitialize={false}>
+      {children}
+    </ThreadPrimitive.Viewport>
+  );
+}
+
+function RunTool({ result, status }: { result?: unknown; status?: { type: string } }) {  const { watch } = useRuns();
   const output = result && typeof result === 'object' ? (result as Record<string, unknown>) : undefined;
   const runId = output?.kind === 'run' && typeof output.runId === 'string' ? output.runId : undefined;
   useEffect(() => {
@@ -355,7 +368,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
         {session.subjectId && conversationSidebar ? createPortal(<ConversationNavigation controller={controller} />, conversationSidebar) : null}
         <ConversationStatus controller={controller} subject={Boolean(session.subjectId)} />
         <ThreadPrimitive.Root className="thread-root">
-          <ThreadPrimitive.Viewport id="messages" className="messages">
+          <MessagesViewport>
             <div className="conversation">
               {session.readinessRequired !== false && <GuidedOperations />}
               <ThreadPrimitive.Empty>
@@ -404,7 +417,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
               <p className="composer-note">Transactions require operator approval.</p>
               <p className="composer-note">Stopping the response does not cancel a run or undo a transaction.</p>
             </ThreadPrimitive.ViewportFooter>
-          </ThreadPrimitive.Viewport>
+          </MessagesViewport>
         </ThreadPrimitive.Root>
       </AssistantRuntimeProvider>
     </section>
