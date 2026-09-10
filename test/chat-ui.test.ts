@@ -628,8 +628,7 @@ async function fixture(
     appId?: string;
   } = {},
 ) {
-  return withFixtureCleanup(async resources => {
-  const capability = {
+  return withFixtureCleanup(async resources => {  const capability = {
     ...(options.capability ?? defaultCapability),
     id: options.capabilityId ?? (options.capability ?? defaultCapability).id,
   };
@@ -666,6 +665,8 @@ async function fixture(
     capabilityPartial: false,
     releaseCapabilityBody: undefined as (() => void) | undefined,
     offline: false,
+    actionToolName: undefined as string | undefined,
+    actionToolInput: undefined as Record<string, unknown> | undefined,
   };
   const service = {
     profile: { appId: options.appId ?? 'meridian' },
@@ -783,8 +784,8 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : capability.id,
-            input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
+            toolName: state.actionToolName ?? (statusOnly ? 'run_status' : capability.id),
+            input: JSON.stringify(state.actionToolInput ?? (statusOnly && !state.actionToolName ? { runId } : { member: 'offline-member' })),
           }]),
           {
             type: 'finish',
@@ -835,8 +836,8 @@ async function fixture(
           ...(statusNeedsNoTool || state.noTool ? [] : [{
             type: 'tool-call',
             toolCallId: 'offline-tool',
-            toolName: statusOnly ? 'run_status' : capability.id,
-            input: JSON.stringify(statusOnly ? { runId } : { member: 'offline-member' }),
+            toolName: state.actionToolName ?? (statusOnly ? 'run_status' : capability.id),
+            input: JSON.stringify(state.actionToolInput ?? (statusOnly && !state.actionToolName ? { runId } : { member: 'offline-member' })),
           }]),
           {
             type: 'finish',
@@ -2124,6 +2125,36 @@ it('keeps an action-tool tool-calls hold through finish until transport cancella
   expect(state.invocations.size).toBe(1);
   await page.getByText('Invoke an approved capability directly', { exact: true }).click();
   expect(await page.getByRole('button', { name: 'Invoke capability', exact: true }).isDisabled()).toBe(true);
+}, 30000);
+
+it('releases the hold after a prepare-only turn and starts the run on the confirmed facts', async () => {
+  const { page, state, connect } = await fixture(false, undefined, { capabilityId: 'meridian-funds-transfer' });
+  const transferFacts = { member: '102777', sourceShare: '102777-MMKT-47', destinationShare: '102777-S0001-48', amount: '1.00', memo: 'demo' };
+  state.actionToolName = 'prepare_funds_transfer';
+  state.actionToolInput = transferFacts;
+  await page.route('**/api/chat/request', async route => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'run', runId, capability: 'meridian-funds-transfer', state: 'running' }) });
+  });
+  await connect();
+  await page.locator('#message').fill('Transfer for member 102777');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByText('Funds Transfer prepared', { exact: false }).waitFor();
+  expect(await page.getByText('Acceptance is unconfirmed', { exact: false }).count()).toBe(0);
+  expect(await page.getByRole('button', { name: 'Look up original request', exact: true }).count()).toBe(0);
+  expect(state.toolSchemas.at(-1)).toContain('prepare_funds_transfer');
+  expect(state.invocations.size).toBe(0);
+
+  state.actionToolName = 'meridian-funds-transfer';
+  state.actionToolInput = transferFacts;
+  await page.locator('#message').fill('confirm');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByText('The original request was bound to run', { exact: false }).waitFor();
+  expect(state.invocations.size).toBe(1);
+  const chats = state.requests.filter(request => request.path === '/api/chat');
+  expect(chats).toHaveLength(2);
+  expect(chats[0]?.body.intent).toBe('auto');
+  expect(chats[1]?.body.intent).toBe('auto');
+  expect(state.toolSchemas.at(-1)).toContain('meridian-funds-transfer');
 }, 30000);
 
 it.each(['error-chunk', 'second-finish'] as const)('keeps a no-tool stop hold for a %s after-finish stream', async mode => {

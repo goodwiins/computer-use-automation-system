@@ -41,6 +41,15 @@ export function allActionToolsRejected(lifecycle: ChatLifecycle): boolean {
   return calls.length > 0 && calls.length === lifecycle.actionOutputs?.size
     && calls.every(([id]) => lifecycle.actionOutputs?.get(id) === true);
 }
+export const PREPARE_TOOL = 'prepare_funds_transfer';
+// A finished prepare-only turn validates facts without reserving a run, so it
+// must release the action hold instead of triggering a journal lookup.
+export function preparedWithoutInvocation(lifecycle: ChatLifecycle): boolean {
+  if (!lifecycle.finishSeen || lifecycle.failed || lifecycle.postFinishFailure || lifecycle.rejectionProtocolInvalid) return false;
+  if (lifecycle.finishReason !== 'tool-calls' || !lifecycle.sawOtherTool) return false;
+  const calls = [...lifecycle.toolNames.values()];
+  return calls.length > 0 && calls.every(name => name === PREPARE_TOOL);
+}
 export type ChatLifecycleCallbacks = {
   complete: (lifecycle: ChatLifecycle) => void;
   uncertain: (key: string) => void;

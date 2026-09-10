@@ -10,6 +10,7 @@
   --muted: #626e68;
 }
 * { box-sizing: border-box; }
+html, body, #root { height: 100%; }
 body { margin: 0; }
 [hidden] { display: none !important; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -29,7 +30,7 @@ h3 { font-size: 1rem; }
 h4 { font-size: .9rem; }
 p { margin: .75rem 0; }
 section { min-width: 0; }
-.app-shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); height: 100dvh; overflow: hidden; }
+.app-shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); height: 100%; min-height: 100dvh; overflow: hidden; }
 .sidebar { background: var(--cream); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 1.25rem; min-height: 0; overflow: auto; }
 .brand { display: flex; align-items: center; gap: .75rem; margin-bottom: 2.5rem; }
 .brand h1 { font-size: 1.1rem; letter-spacing: -.03em; margin: 0; font-weight: 650; }
@@ -82,7 +83,7 @@ section { min-width: 0; }
 .guided-fields input, .guided-fields select { margin-top: .3rem; }
 .operation-preview { margin-top: .75rem; padding-top: .75rem; border-top: 1px solid var(--line); }
 .operation-preview .eyebrow { color: #835b20; }
-.composer-footer { position: sticky; bottom: 0; width: 100%; max-width: 760px; margin: auto auto 0; background: #fff; padding: 1rem 0 .75rem; }
+.composer-footer { position: sticky; bottom: 0; width: 100%; max-width: 760px; margin: auto auto 0; background: #fff; padding: 2.5rem 0 .75rem; }
 .composer { border: 1px solid #d7ded8; border-radius: 20px; padding: .75rem; box-shadow: 0 2px 8px #20332808; }
 .composer:focus-within { border-color: #769386; }
 .composer textarea { border: 0; min-height: 3rem; max-height: 10rem; padding: .25rem .5rem; resize: none; line-height: 1.6; background: transparent; }
@@ -94,7 +95,7 @@ section { min-width: 0; }
 .send-button svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .send-button rect { fill: currentColor; stroke: none; }
 .composer-note { text-align: center; color: var(--muted); font-size: .7rem; margin: .6rem 0 0; }
-.scroll-bottom { position: absolute; bottom: calc(100% + .25rem); left: calc(50% - 22px); width: 44px; border-radius: 50%; box-shadow: 0 2px 8px #20332810; }
+.scroll-bottom { position: absolute; top: .6rem; right: 1.5rem; left: auto; bottom: auto; width: 44px; border-radius: 50%; box-shadow: 0 2px 8px #20332810; }
 .scroll-bottom:disabled { display: none; }
 .conversation-sidebar { min-width: 0; }
 .conversation-navigation { border-top: 1px solid var(--line); margin-top: 1.25rem; padding-top: 1rem; }

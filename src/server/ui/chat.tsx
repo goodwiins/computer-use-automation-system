@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   AssistantRuntimeProvider,
   AuiConfig,
@@ -10,6 +11,7 @@ import {
   MessagePartPrimitive,
   ComposerPrimitive,
   AuiIf,
+  useAuiState,
 } from '@assistant-ui/react';
 import { AssistantChatTransport } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
@@ -18,6 +20,7 @@ import {
   allActionToolsRejected,
   chatRequest,
   observeGuardedChatStream,
+  preparedWithoutInvocation,
   type ChatLifecycle,
   type ChatLifecycleCallbacks,
 } from './transport';
@@ -106,8 +109,19 @@ export class GuardedAssistantChatTransport extends AssistantChatTransport<UIMess
   }
 }
 
-function RunTool({ result, status }: { result?: unknown; status?: { type: string } }) {
-  const { watch } = useRuns();
+// An empty thread must not follow the bottom: the guided Operations card sits
+// above the welcome block and bottom-scrolling on mount would clip its top.
+// With messages present, run-start scrolling re-engages the follow behavior.
+function MessagesViewport({ children }: { children: ReactNode }) {
+  const hasMessages = useAuiState(s => s.thread.messages.length > 0);
+  return (
+    <ThreadPrimitive.Viewport id="messages" className="messages" autoScroll={hasMessages} scrollToBottomOnInitialize={false}>
+      {children}
+    </ThreadPrimitive.Viewport>
+  );
+}
+
+function RunTool({ result, status }: { result?: unknown; status?: { type: string } }) {  const { watch } = useRuns();
   const output = result && typeof result === 'object' ? (result as Record<string, unknown>) : undefined;
   const runId = output?.kind === 'run' && typeof output.runId === 'string' ? output.runId : undefined;
   useEffect(() => {
@@ -117,6 +131,17 @@ function RunTool({ result, status }: { result?: unknown; status?: { type: string
     {output?.reused === true && <p role="status">Using a previously accepted run. No new operation was started.</p>}
     <CapabilityRunCard runId={runId} inlineApproval />
   </>;
+  if (output?.kind === 'prepared') {
+    const facts = output.args && typeof output.args === 'object' ? output.args as Record<string, unknown> : {};
+    return (
+      <div className="operation-preview">
+        <p role="status">Funds Transfer prepared — no run started yet. Reply with an explicit confirmation to start it.</p>
+        <dl className="review-facts">{Object.entries(facts).map(([name, value]) => (
+          <div key={name}><dt>{name}</dt><dd>{String(value)}</dd></div>
+        ))}</dl>
+      </div>
+    );
+  }
   if (output?.kind === 'error')
     return (
       <p role="alert">{typeof output.error === 'string' ? output.error : 'Capability request failed.'}</p>
@@ -241,6 +266,8 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
             markActionUncertain(current.key);
           } else if (allActionToolsRejected(current)) {
             clearAction(current.key);
+          } else if (preparedWithoutInvocation(current)) {
+            clearAction(current.key);
           } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
@@ -291,7 +318,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
     () =>
       defineToolkit(
         Object.fromEntries(
-          [...session.capabilities.map((c) => c.id), 'run_status'].map((id) => [
+          [...session.capabilities.map((c) => c.id), 'run_status', 'prepare_funds_transfer'].map((id) => [
             id,
             { type: 'backend' as const, render: RunTool },
           ]),
@@ -341,7 +368,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
         {session.subjectId && conversationSidebar ? createPortal(<ConversationNavigation controller={controller} />, conversationSidebar) : null}
         <ConversationStatus controller={controller} subject={Boolean(session.subjectId)} />
         <ThreadPrimitive.Root className="thread-root">
-          <ThreadPrimitive.Viewport id="messages" className="messages">
+          <MessagesViewport>
             <div className="conversation">
               {session.readinessRequired !== false && <GuidedOperations />}
               <ThreadPrimitive.Empty>
@@ -390,7 +417,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
               <p className="composer-note">Transactions require operator approval.</p>
               <p className="composer-note">Stopping the response does not cancel a run or undo a transaction.</p>
             </ThreadPrimitive.ViewportFooter>
-          </ThreadPrimitive.Viewport>
+          </MessagesViewport>
         </ThreadPrimitive.Root>
       </AssistantRuntimeProvider>
     </section>

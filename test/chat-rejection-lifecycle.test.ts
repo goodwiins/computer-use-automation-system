@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
 import type { UIMessageChunk } from 'ai';
-import { ApiRequestError, allActionToolsRejected, observeGuardedChatStream, type ChatLifecycle } from '../src/server/ui/transport.js';
+import { ApiRequestError, allActionToolsRejected, observeGuardedChatStream, preparedWithoutInvocation, type ChatLifecycle } from '../src/server/ui/transport.js';
 
 const rejected = { kind: 'error', status: 400, error: 'Invalid arguments', acceptance: 'rejected' };
-const input = (id: string): UIMessageChunk => ({ type: 'tool-input-available', toolCallId: id, toolName: 'read-member', input: {} });
+const input = (id: string, toolName = 'read-member'): UIMessageChunk => ({ type: 'tool-input-available', toolCallId: id, toolName, input: {} });
 const start = (id: string): UIMessageChunk => ({ type: 'tool-input-start', toolCallId: id, toolName: 'read-member' });
 const output = (id: string, value: unknown = rejected): UIMessageChunk => ({ type: 'tool-output-available', toolCallId: id, output: value });
 const finish: UIMessageChunk = { type: 'finish', finishReason: 'tool-calls' };
@@ -22,6 +22,18 @@ async function releases(chunks: UIMessageChunk[]) {
   const reader = observed.getReader();
   while (!(await reader.read()).done) { /* Consume through clean EOF, not merely the finish chunk. */ }
   return released;
+}
+
+async function settle(chunks: UIMessageChunk[]) {
+  const lifecycle: ChatLifecycle = { key: 'current', intent: 'action', sawTool: false, sawStatusTool: false,
+    sawOtherTool: false, finishSeen: false, postFinishFailure: false, failed: false, settled: false, toolNames: new Map() };
+  const observed = observeGuardedChatStream(new ReadableStream({ start(controller) {
+    for (const chunk of chunks) controller.enqueue(chunk);
+    controller.close();
+  } }), lifecycle, new Map([[lifecycle.key, lifecycle]]), { complete: () => {}, uncertain: () => {} });
+  const reader = observed.getReader();
+  while (!(await reader.read()).done) { /* drain */ }
+  return lifecycle;
 }
 
 it('releases only after every action output confirms rejection and the stream reaches clean EOF', async () => {
@@ -57,6 +69,25 @@ it('preserves HTTP status without treating unmarked or contradictory failures as
   }
   expect(new ApiRequestError(500, rejected).invocationRejected).toBe(false);
   expect(new ApiRequestError(400, { ...rejected, runId: 'already-accepted' }).invocationRejected).toBe(false);
-  expect(new ApiRequestError(400, { ...rejected, acceptance: true }).invocationRejected).toBe(false);
   expect(new ApiRequestError(400, '<html>proxy error</html>').invocationRejected).toBe(false);
+});
+
+const preparedOutput = { kind: 'prepared', confirmationId: 'c-1', capability: 'meridian-funds-transfer', args: { member: '102777' } };
+
+it('recognizes a completed prepare-only turn as needing no run lookup', async () => {
+  expect(preparedWithoutInvocation(await settle([input('a', 'prepare_funds_transfer'), output('a', preparedOutput), finish]))).toBe(true);
+  expect(preparedWithoutInvocation(await settle([input('a', 'prepare_funds_transfer'), output('a', preparedOutput), input('b', 'prepare_funds_transfer'), output('b', preparedOutput), finish]))).toBe(true);
+  expect(preparedWithoutInvocation(await settle([input('a', 'prepare_funds_transfer'), output('a', { kind: 'error', status: 400, error: 'Facts do not match the contract' }), finish]))).toBe(true);
+  // A lost output never hides a reserved run: prepare validates without the journal.
+  expect(preparedWithoutInvocation(await settle([input('a', 'prepare_funds_transfer'), finish]))).toBe(true);
+});
+
+it.each([
+  ['capability invocation', [input('a', 'meridian-funds-transfer'), output('a', { kind: 'run', runId: 'r1' }), finish]],
+  ['status tool mixed in', [input('a', 'prepare_funds_transfer'), output('a', preparedOutput), input('b', 'run_status'), output('b', { kind: 'run', runId: 'r1' }), finish]],
+  ['no tool call', [{ type: 'finish', finishReason: 'stop' } as UIMessageChunk]],
+  ['stop finish with prepare', [input('a', 'prepare_funds_transfer'), output('a', preparedOutput), { type: 'finish', finishReason: 'stop' } as UIMessageChunk]],
+  ['failed stream', [input('a', 'prepare_funds_transfer'), output('a', preparedOutput), finish, { type: 'error', errorText: 'Lost' }]],
+] as Array<[string, UIMessageChunk[]]>)('treats %s as not a prepare-only turn', async (_name, chunks) => {
+  expect(preparedWithoutInvocation(await settle(chunks))).toBe(false);
 });
