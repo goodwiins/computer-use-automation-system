@@ -18,6 +18,7 @@ import {
   allActionToolsRejected,
   chatRequest,
   observeGuardedChatStream,
+  preparedWithoutInvocation,
   type ChatLifecycle,
   type ChatLifecycleCallbacks,
 } from './transport';
@@ -117,6 +118,17 @@ function RunTool({ result, status }: { result?: unknown; status?: { type: string
     {output?.reused === true && <p role="status">Using a previously accepted run. No new operation was started.</p>}
     <CapabilityRunCard runId={runId} inlineApproval />
   </>;
+  if (output?.kind === 'prepared') {
+    const facts = output.args && typeof output.args === 'object' ? output.args as Record<string, unknown> : {};
+    return (
+      <div className="operation-preview">
+        <p role="status">Funds Transfer prepared — no run started yet. Reply with an explicit confirmation to start it.</p>
+        <dl className="review-facts">{Object.entries(facts).map(([name, value]) => (
+          <div key={name}><dt>{name}</dt><dd>{String(value)}</dd></div>
+        ))}</dl>
+      </div>
+    );
+  }
   if (output?.kind === 'error')
     return (
       <p role="alert">{typeof output.error === 'string' ? output.error : 'Capability request failed.'}</p>
@@ -241,6 +253,8 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
             markActionUncertain(current.key);
           } else if (allActionToolsRejected(current)) {
             clearAction(current.key);
+          } else if (preparedWithoutInvocation(current)) {
+            clearAction(current.key);
           } else if (current.finishReason === 'tool-calls' && current.sawOtherTool) {
             void lookupRun(current.key).then(binding => {
               if (actionHoldRef.current?.key !== current.key) return;
@@ -291,7 +305,7 @@ export function Chat({ conversationSidebar }: { conversationSidebar: HTMLDivElem
     () =>
       defineToolkit(
         Object.fromEntries(
-          [...session.capabilities.map((c) => c.id), 'run_status'].map((id) => [
+          [...session.capabilities.map((c) => c.id), 'run_status', 'prepare_funds_transfer'].map((id) => [
             id,
             { type: 'backend' as const, render: RunTool },
           ]),

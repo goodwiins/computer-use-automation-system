@@ -955,3 +955,170 @@ describe('AI SDK chat boundary', () => {
     expect(chatService.invoke).toHaveBeenCalledTimes(1);
   });
 });
+
+const transferFacts = {
+  member: '102777',
+  sourceShare: '102777-MMKT-47',
+  destinationShare: '102777-S0001-48',
+  amount: '1.00',
+  memo: 'MERIDIAN transfer discovery demo',
+};
+
+function fundsService() {
+  const chatService = service();
+  vi.mocked(chatService.catalog).mockReturnValue([{
+    id: 'meridian-funds-transfer', version: '1.0.0', description: 'Funds transfer', outputs: [], parameters: [],
+    tools: { openai: { type: 'function', function: { name: 'meridian-funds-transfer', description: 'Funds transfer', parameters: {
+      type: 'object', properties: {
+        member: { type: 'string' }, sourceShare: { type: 'string' }, destinationShare: { type: 'string' },
+        amount: { type: 'string' }, memo: { type: 'string' },
+      },
+      required: ['member', 'sourceShare', 'destinationShare', 'amount', 'memo'], additionalProperties: false,
+    } } }, mcp: {} },
+  }] as never);
+  Object.assign(chatService, { profile: { appId: 'meridian' } });
+  return chatService;
+}
+
+function toolCallModel(toolName: string, input: Record<string, unknown>, toolCallId = 'call-1') {
+  return sequenceModel([{ toolName, input, toolCallId }]);
+}
+
+function sequenceModel(steps: { toolName: string; input: Record<string, unknown>; toolCallId: string }[]) {
+  const model = mockModel();
+  const prompts: string[] = [];
+  const toolNames: string[][] = [];
+  model.doStream = vi.fn(async options => {
+    prompts.push(JSON.stringify(options.prompt));
+    toolNames.push(Array.isArray(options.tools) ? options.tools.map((tool: { name: string }) => tool.name) : Object.keys(options.tools ?? {}));
+    const step = steps.shift() ?? { toolName: 'run_status', input: { runId }, toolCallId: 'call-extra' };
+    return streamResult([
+      { type: 'stream-start', warnings: [] },
+      ...toolContent(step.toolName, step.input, step.toolCallId),
+      { type: 'finish', finishReason: finish('tool-calls'), usage },
+    ]);
+  });
+  return { model, prompts, toolNames };
+}
+
+describe('guided funds transfer chat confirmation', () => {
+  it('offers the prepare step while keeping form deflection for the other guided operations', async () => {
+    let classifierPrompt = '';
+    const { model } = toolCallModel('prepare_funds_transfer', transferFacts);
+    model.doGenerate = vi.fn(async options => {
+      classifierPrompt = JSON.stringify(options.prompt);
+      return generateResult(toolContent('route_request', { intent: 'invoke' }));
+    });
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    const response = await request('/api/chat', {
+      intent: 'auto',
+      messages: [{ id: 'user-1', role: 'user', parts: [{ type: 'text', text: `Funds transfer for member ${transferFacts.member}` }] }],
+    }, 'prepare-offer-key');
+    expect(response.status).toBe(200);
+    expect(classifierPrompt).toMatch(/prepared/i);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
+  it('exposes the prepare tool alongside the capability while keeping form deflection for other guided operations', async () => {
+    const { model, prompts, toolNames } = toolCallModel('prepare_funds_transfer', transferFacts);
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    expect((await request('/api/chat', uiBody(), 'prepare-copy-key')).status).toBe(200);
+    expect(toolNames.at(-1)).toContain('prepare_funds_transfer');
+    expect(toolNames.at(-1)).toContain('meridian-funds-transfer');
+    expect(toolNames.at(-1)).toContain('run_status');
+    expect(prompts.at(-1)).toContain('prepare_funds_transfer');
+    expect(prompts.at(-1)).toContain('operation form in chat');
+    expect(prompts.at(-1)).toMatch(/never claim that you started a guided operation/i);
+    expect(prompts.at(-1)).toContain('Open New Share');
+  });
+
+  it('rejects a direct funds-transfer invocation with no prepared confirmation', async () => {
+    const { model } = toolCallModel('meridian-funds-transfer', transferFacts);
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    const response = await request('/api/chat', uiBody(), 'direct-key');
+    expect(response.status).toBe(200);
+    expect(response.text).toMatch(/prepare_funds_transfer/i);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
+  it('starts the run only after prepare, an explicit confirmation, and matching facts', async () => {
+    const { model } = sequenceModel([
+      { toolName: 'prepare_funds_transfer', input: transferFacts, toolCallId: 'call-prepare' },
+      { toolName: 'meridian-funds-transfer', input: transferFacts, toolCallId: 'call-confirm' },
+    ]);
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    const first = await request('/api/chat', uiBody([{ type: 'text', text: 'Transfer $1 for member 102777' }]), 'prepare-key');
+    expect(first.status).toBe(200);
+    expect(first.text).toContain('confirmationId');
+    expect(chatService.invoke).not.toHaveBeenCalled();
+
+    const second = await request('/api/chat', {
+      id: 'chat-2', trigger: 'submit-message', messageId: 'user-2',
+      messages: [
+        { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'Transfer $1 for member 102777' }] },
+        { id: 'user-2', role: 'user', parts: [{ type: 'text', text: 'confirm' }] },
+      ],
+    }, 'confirm-key');
+    expect(second.status).toBe(200);
+    expect(chatService.invoke).toHaveBeenCalledTimes(1);
+    const [principal, capability, args] = vi.mocked(chatService.invoke).mock.calls[0]!;
+    expect(principal).toBe('caller');
+    expect(capability).toBe('meridian-funds-transfer');
+    expect(args).toEqual(transferFacts);
+    expect(Object.keys(args as Record<string, unknown>)).not.toContain('confirmationId');
+    const confirmPrompt = vi.mocked(model.doStream).mock.calls[1]![0];
+    expect(JSON.stringify(confirmPrompt.prompt)).toContain('awaiting explicit confirmation');
+    expect(JSON.stringify(confirmPrompt.prompt)).toContain('MERIDIAN transfer discovery demo');
+  });
+
+  it('rejects a confirmation whose facts differ from the prepared preview', async () => {
+    const changed = { ...transferFacts, memo: 'different memo' };
+    const { model } = sequenceModel([
+      { toolName: 'prepare_funds_transfer', input: transferFacts, toolCallId: 'call-prepare' },
+      { toolName: 'meridian-funds-transfer', input: changed, toolCallId: 'call-confirm' },
+    ]);
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    expect((await request('/api/chat', uiBody(), 'mismatch-prepare-key')).status).toBe(200);
+    const response = await request('/api/chat', uiBody([{ type: 'text', text: 'confirm' }]), 'mismatch-confirm-key');
+    expect(response.status).toBe(200);
+    expect(response.text).toMatch(/prepare_funds_transfer/i);
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+
+  it('consumes the prepared confirmation after one accepted start', async () => {
+    const { model } = sequenceModel([
+      { toolName: 'prepare_funds_transfer', input: transferFacts, toolCallId: 'call-prepare' },
+      { toolName: 'meridian-funds-transfer', input: transferFacts, toolCallId: 'call-confirm' },
+      { toolName: 'meridian-funds-transfer', input: transferFacts, toolCallId: 'call-repeat' },
+    ]);
+    const chatService = fundsService();
+    const { request } = await start(model, chatService);
+    expect((await request('/api/chat', uiBody(), 'consume-prepare-key')).status).toBe(200);
+    expect((await request('/api/chat', uiBody([{ type: 'text', text: 'confirm' }]), 'consume-confirm-key')).status).toBe(200);
+    expect(chatService.invoke).toHaveBeenCalledTimes(1);
+    const again = await request('/api/chat', uiBody([{ type: 'text', text: 'confirm again' }]), 'consume-repeat-key');
+    expect(again.status).toBe(200);
+    expect(again.text).toMatch(/prepare_funds_transfer/i);
+    expect(chatService.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no prepare step outside the meridian profile', async () => {
+    const { model, toolNames } = toolCallModel('prepare_funds_transfer', transferFacts);
+    const chatService = service();
+    vi.mocked(chatService.catalog).mockReturnValue([{
+      id: 'meridian-funds-transfer', version: '1.0.0', description: 'Funds transfer', outputs: [], parameters: [],
+      tools: { openai: { type: 'function', function: { name: 'meridian-funds-transfer', description: 'Funds transfer', parameters: {
+        type: 'object', properties: {}, required: [], additionalProperties: false,
+      } } }, mcp: {} },
+    }] as never);
+    const { request } = await start(model, chatService);
+    expect((await request('/api/chat', uiBody(), 'non-meridian-key')).status).toBe(200);
+    expect(toolNames.at(-1)).not.toContain('prepare_funds_transfer');
+    expect(chatService.invoke).not.toHaveBeenCalled();
+  });
+});
